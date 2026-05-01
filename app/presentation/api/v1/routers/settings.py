@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.users.settings import UserSettingsUseCase
 from app.bootstrap.container import user_repository
-from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.schemas.common import ResponseModel
@@ -17,22 +17,46 @@ from app.presentation.api.v1.schemas.settings import (
 router = APIRouter(prefix="/v1/user", tags=["settings"])
 
 
-@router.get("/settings", response_model=ResponseModel[UserSettingsResponse])
+def settings_response(settings: UserSettings) -> UserSettingsResponse:
+    return UserSettingsResponse(
+        departure_time=settings.departure_time,
+        device_token=settings.device_token,
+        push_enabled=settings.push_enabled,
+        location=settings.location,
+    )
+
+
+@router.get(
+    "/settings",
+    response_model=ResponseModel[UserSettingsResponse],
+    response_model_exclude_none=True,
+)
 async def get_user_settings(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ResponseModel[UserSettingsResponse]:
     use_case = UserSettingsUseCase(user_repository(session))
     settings = await use_case.get_settings(current_user.id)
-    return ResponseModel(data=UserSettingsResponse(departure_time=settings.departure_time))
+    return ResponseModel(data=settings_response(settings))
 
 
-@router.patch("/settings", response_model=ResponseModel[UserSettingsResponse])
+@router.patch(
+    "/settings",
+    response_model=ResponseModel[UserSettingsResponse],
+    response_model_exclude_none=True,
+)
 async def update_user_settings(
     payload: UpdateUserSettingsRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ResponseModel[UserSettingsResponse]:
     use_case = UserSettingsUseCase(user_repository(session))
-    settings = await use_case.update_settings(current_user.id, payload.departure_time)
-    return ResponseModel(data=UserSettingsResponse(departure_time=settings.departure_time))
+    settings = await use_case.update_settings(
+        current_user.id,
+        departure_time=payload.departure_time,
+        departure_time_set=payload.is_set("departure_time"),
+        device_token=payload.device_token,
+        push_enabled=payload.push_enabled,
+        location=payload.location,
+    )
+    return ResponseModel(data=settings_response(settings))

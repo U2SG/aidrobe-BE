@@ -13,9 +13,22 @@ class UserSettingsUseCase:
         return await self.user_repository.get_or_create_settings(user_id)
 
     async def update_settings(
-        self, user_id: uuid.UUID, departure_time: time | None
+        self,
+        user_id: uuid.UUID,
+        departure_time: time | None = None,
+        departure_time_set: bool = False,
+        device_token: str | None = None,
+        push_enabled: bool | None = None,
+        location: str | None = None,
     ) -> UserSettings:
         settings = await self.user_repository.get_or_create_settings(user_id)
-        settings.departure_time = departure_time
+        if departure_time_set:
+            settings.departure_time = departure_time
+        if device_token is not None:
+            settings.device_token = device_token
+        if push_enabled is not None:
+            settings.push_enabled = push_enabled
+        if location is not None:
+            settings.location = location
         await self.user_repository.flush()
         return settings

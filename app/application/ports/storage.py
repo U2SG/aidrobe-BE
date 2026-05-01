@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 
@@ -7,6 +7,9 @@ class PresignResult:
     upload_url: str
     file_url: str
     object_key: str
+    # Non-empty when the upload_url is a presigned POST (S3 multipart form).
+    # Clients must include these fields alongside the file in the form body.
+    fields: dict[str, str] = field(default_factory=dict)
 
 
 class ObjectStoragePort(Protocol):
