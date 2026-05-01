@@ -1,0 +1,52 @@
+[project]
+name = "aidrobe"
+version = "0.1.0"
+description = "Aidrobe V1 Slim backend"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.13.0",
+    "apscheduler>=3.10.4",
+    "asyncpg>=0.29.0",
+    "fastapi[standard]>=0.115.0",
+    "httpx>=0.27.0",
+    "pydantic-settings>=2.4.0",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "structlog>=24.4.0",
+    "testcontainers[postgres]>=4.8.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.11.0",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["UP046"]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/versions/*.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+strict = true
+warn_unused_ignores = true
+warn_return_any = true
+
+[[tool.mypy.overrides]]
+module = "apscheduler.*"
+ignore_missing_imports = true
