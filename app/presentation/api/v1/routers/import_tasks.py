@@ -2,17 +2,25 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.import_tasks.confirm_import import ConfirmImageImportTask
 from app.application.import_tasks.create_import import CreateImageImportTask
-from app.bootstrap.container import vision_service
+from app.bootstrap.container import link_parser, vision_rate_limiter, vision_service
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
+from app.infrastructure.cache.client import get_redis_client, invalidate_daily_recommendation_cache
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.repositories.import_task_repo import (
     SqlAlchemyImportTaskRepository,
+)
+from app.infrastructure.persistence.repositories.operation_log_repo import (
+    SqlAlchemyOperationLogRepository,
+)
+from app.infrastructure.persistence.repositories.recommendation_repo import (
+    SqlAlchemyRecommendationRepository,
 )
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
@@ -47,12 +55,18 @@ async def create_import_task(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ResponseModel[ImportTaskResponse]:
+    image_url = payload.image_url
+    if image_url is None and payload.source_url is not None:
+        image_url = await link_parser().extract_image_url(payload.source_url)
+    if image_url is None:
+        raise FriendlyException(error_codes.VALIDATION_ERROR, "image_url is required", status_code=422)
+
     repository = SqlAlchemyImportTaskRepository(session)
-    use_case = CreateImageImportTask(repository, vision_service())
+    use_case = CreateImageImportTask(repository, vision_service(), vision_rate_limiter())
     task = await use_case.execute(
         user_id=current_user.id,
         source_type=payload.source_type,
-        image_url=payload.image_url,
+        image_url=image_url,
     )
     return ResponseModel(data=to_response(task))
 
@@ -63,10 +77,12 @@ async def confirm_import_task(
     payload: ConfirmImportRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[Redis, Depends(get_redis_client)],
 ) -> ResponseModel[ConfirmImportResponse]:
     use_case = ConfirmImageImportTask(
         SqlAlchemyImportTaskRepository(session),
         SqlAlchemyWardrobeRepository(session),
+        SqlAlchemyRecommendationRepository(session),
     )
     item = await use_case.execute(
         task_id=task_id,
@@ -75,6 +91,12 @@ async def confirm_import_task(
         category=payload.category,
         color_main=payload.color_main,
     )
+    await SqlAlchemyOperationLogRepository(session).add(
+        current_user.id,
+        "item_imported",
+        {"category": item.category, "color_main": item.color_main},
+    )
+    await invalidate_daily_recommendation_cache(redis_client, current_user.id)
     return ResponseModel(data=ConfirmImportResponse(item_id=item.id))
 
 
