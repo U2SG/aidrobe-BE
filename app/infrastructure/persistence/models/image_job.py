@@ -18,7 +18,9 @@ class ImageProcessingJob(UUIDPrimaryKeyMixin, Base):
         ForeignKey("wardrobe_items.id", ondelete="SET NULL"), nullable=True, index=True
     )
     job_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="queued", server_default="queued", nullable=False, index=True)
+    status: Mapped[str] = mapped_column(
+        String(32), default="queued", server_default="queued", nullable=False, index=True
+    )
     source_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     result_payload: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

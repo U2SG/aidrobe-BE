@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 import structlog
 
 from app.application.recommendations.generator import RecommendationGenerator
-from app.bootstrap.container import weather_service
+from app.bootstrap.container import llm_service, weather_service
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
@@ -48,7 +48,7 @@ class RecommendationBackgroundService:
             if datetime.now(UTC) - updated_at < timedelta(seconds=30):
                 return False
         await RecommendationGenerator(
-            self.repository, self.style_repository, weather_service=weather_service()
+            self.repository, self.style_repository, llm=llm_service(), weather_service=weather_service()
         ).generate_for_user(user_id, today, "mutation")
         return True
 

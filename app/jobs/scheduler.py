@@ -7,7 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config.settings import get_settings
 from app.infrastructure.logging.setup import setup_logging
 from app.infrastructure.persistence.session import AsyncSessionLocal
-from app.jobs.recommendation_jobs import cron_departure_pre_generate, cron_nightly_fallback
+from app.jobs.recommendation_jobs import (
+    cron_departure_pre_generate,
+    cron_fit_profile_aggregation,
+    cron_nightly_fallback,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -25,8 +29,14 @@ def create_scheduler(session_factory: async_sessionmaker[AsyncSession]) -> Async
             await cron_nightly_fallback(session)
             await session.commit()
 
+    async def run_fit_profile_job() -> None:
+        async with session_factory() as session:
+            await cron_fit_profile_aggregation(session)
+            await session.commit()
+
     scheduler.add_job(run_departure_job, "interval", minutes=5, id="departure_pre_generate")
     scheduler.add_job(run_nightly_job, "cron", hour=3, minute=0, id="nightly_fallback")
+    scheduler.add_job(run_fit_profile_job, "cron", hour=3, minute=30, id="fit_profile_aggregation")
     logger.warning(
         "scheduler_single_process_required",
         message="Run APScheduler in one process only to avoid duplicate jobs.",

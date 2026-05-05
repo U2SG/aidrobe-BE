@@ -1,5 +1,4 @@
 import io
-import uuid
 from typing import TYPE_CHECKING
 
 import httpx
@@ -14,13 +13,15 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 try:
-    from PIL import Image, ImageOps
+    from PIL import Image
+
     _PIL_AVAILABLE = True
 except ImportError:
     _PIL_AVAILABLE = False
 
 try:
     import rembg
+
     _REMBG_AVAILABLE = True
 except ImportError:
     _REMBG_AVAILABLE = False

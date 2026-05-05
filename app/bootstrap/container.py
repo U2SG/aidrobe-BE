@@ -1,5 +1,15 @@
+from urllib.parse import urlparse
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
+try:
+    from arq.connections import RedisSettings, create_pool
+except ImportError:
+    RedisSettings = None
+    create_pool = None
+
+from app.application.ports.embedding import EmbeddingPort
+from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherPort
 from app.config.settings import get_settings
 from app.infrastructure.cache.client import get_redis_client
@@ -62,5 +72,58 @@ def weather_service() -> WeatherPort | None:
     raise ValueError(f"Unsupported weather provider: {settings.WEATHER_PROVIDER}")
 
 
+def llm_service() -> LlmPort:
+    from app.infrastructure.llm.openai_llm import NoOpLlm, OpenAiLlm
+    from app.infrastructure.llm.qwen_llm import QwenLlm
+
+    settings = get_settings()
+    if settings.LLM_PROVIDER == "none":
+        return NoOpLlm()
+    if settings.LLM_PROVIDER == "openai":
+        return OpenAiLlm(settings)
+    if settings.LLM_PROVIDER == "qwen":
+        return QwenLlm(settings)
+    raise ValueError(f"Unsupported LLM provider: {settings.LLM_PROVIDER}")
+
+
+def embedding_service() -> EmbeddingPort:
+    from app.infrastructure.embedding.clip_embedder import ClipEmbedder
+    from app.infrastructure.embedding.fake_embedding import FakeEmbedding
+    from app.infrastructure.embedding.remote_clip_embedding import RemoteClipEmbedding
+
+    settings = get_settings()
+    if settings.EMBEDDING_PROVIDER == "fake":
+        return FakeEmbedding()
+    if settings.EMBEDDING_PROVIDER in {"clip", "open_clip"}:
+        return ClipEmbedder(settings)
+    if settings.EMBEDDING_PROVIDER == "remote_clip":
+        return RemoteClipEmbedding(settings)
+    raise ValueError(f"Unsupported embedding provider: {settings.EMBEDDING_PROVIDER}")
+
+
 def push_provider() -> ApnsProvider:
     return ApnsProvider(get_settings())
+
+
+async def arq_pool():  # type: ignore[no-untyped-def]
+    """Lazy-initialized ARQ Redis pool for enqueuing jobs from endpoints.
+
+    Returns None when arq is not installed.
+    """
+    if create_pool is None or RedisSettings is None:
+        return None
+    settings = get_settings()
+    return await create_pool(_redis_settings_from_url(settings.ARQ_REDIS_URL))
+
+
+def _redis_settings_from_url(url: str):  # type: ignore[no-untyped-def]
+    if RedisSettings is None:
+        return None
+    parsed = urlparse(url)
+    return RedisSettings(
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 6379,
+        database=int((parsed.path or "/0").lstrip("/") or "0"),
+        password=parsed.password,
+        ssl=parsed.scheme == "rediss",
+    )

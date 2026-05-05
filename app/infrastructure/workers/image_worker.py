@@ -11,13 +11,9 @@ MAX_RETRIES = 3
 
 
 async def process_image_job(ctx: object, job_id: str) -> None:
-    from sqlalchemy import select
-
-    from app.bootstrap.container import get_settings
-    from app.common.enums import ImageType
+    from app.config.settings import get_settings
     from app.infrastructure.image.rembg_processor import RembgImageProcessor
-    from app.infrastructure.persistence.models.image_job import ImageProcessingJob
-    from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
+    from app.infrastructure.persistence.models.wardrobe import WardrobeItemImage
     from app.infrastructure.persistence.repositories.image_job_repo import SqlAlchemyImageJobRepository
 
     settings = get_settings()

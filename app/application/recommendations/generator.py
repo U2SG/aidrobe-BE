@@ -4,9 +4,12 @@ from decimal import Decimal
 from typing import Any
 
 import structlog
+from sqlalchemy import select
 
+from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo, WeatherPort
 from app.application.recommendations.engine import EngineItem, RecommendationEngine
+from app.application.recommendations.fit_profile import build_fit_profile
 from app.application.style.build_style_profile import build_style_profile
 from app.common.enums import OutfitType, RecommendationStatus, TimeSensitivity
 from app.infrastructure.persistence.models.recommendation import (
@@ -14,6 +17,7 @@ from app.infrastructure.persistence.models.recommendation import (
     Outfit,
     OutfitItem,
 )
+from app.infrastructure.persistence.models.user import UserSettings
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
@@ -28,11 +32,12 @@ class RecommendationGenerator:
         repository: SqlAlchemyRecommendationRepository,
         style_repository: SqlAlchemyStyleRepository | None = None,
         engine: RecommendationEngine | None = None,
+        llm: "LlmPort | None" = None,
         weather_service: WeatherPort | None = None,
     ) -> None:
         self.repository = repository
         self.style_repository = style_repository
-        self.engine = engine or RecommendationEngine()
+        self.engine = engine or RecommendationEngine(llm=llm)
         self.weather_service = weather_service
 
     async def generate_for_user(
@@ -55,8 +60,9 @@ class RecommendationGenerator:
         )
         style_profile = await self._load_style_profile(user_id)
         weather = await self._load_weather(user_id)
+        fit_profile = await self._load_fit_profile(user_id)
 
-        result = self.engine.generate(
+        result = await self.engine.generate(
             [
                 EngineItem(
                     item_id=str(item.id),
@@ -65,6 +71,7 @@ class RecommendationGenerator:
                     color_main=item.color_main,
                     location=item.location,
                     fit_status=item.fit_status,
+                    fit_intent=item.fit_intent,
                 )
                 for item in items
             ],
@@ -72,6 +79,7 @@ class RecommendationGenerator:
             target_date=target_date,
             style_profile=style_profile,
             weather=weather,
+            fit_profile=fit_profile,
             recent_worn_outfit_item_ids=recent_outfits,
         )
 
@@ -144,6 +152,23 @@ class RecommendationGenerator:
             )
         except Exception as exc:
             logger.warning("style_profile_load_failed", user_id=str(user_id), error=str(exc))
+            return {}
+
+    async def _load_fit_profile(self, user_id: uuid.UUID) -> dict[str, Any]:
+        try:
+            from app.infrastructure.persistence.session import AsyncSessionLocal
+
+            async with AsyncSessionLocal() as session:
+                settings = await session.scalar(
+                    select(UserSettings).where(UserSettings.user_id == user_id)
+                )
+                if settings is not None and isinstance(settings.preferences_json, dict):
+                    fit_profile = settings.preferences_json.get("fit_profile")
+                    if isinstance(fit_profile, dict):
+                        return fit_profile
+                return await build_fit_profile(session, user_id, persist=False)
+        except Exception as exc:
+            logger.warning("fit_profile_load_failed", user_id=str(user_id), error=str(exc))
             return {}
 
     async def _load_weather(self, user_id: uuid.UUID) -> WeatherInfo | None:

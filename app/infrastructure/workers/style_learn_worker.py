@@ -32,8 +32,9 @@ def _infer_style_tags(source_url: str | None) -> list[str]:
 
 async def learn_style_source(ctx: object, profile_id: str) -> None:
     settings = get_settings()
-    from app.infrastructure.persistence.models.style import UserStyleProfile
     from sqlalchemy import select
+
+    from app.infrastructure.persistence.models.style import UserStyleProfile
 
     async with AsyncSessionLocal() as session:
         try:

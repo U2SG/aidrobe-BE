@@ -1,5 +1,5 @@
 import uuid
-from typing import cast
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,7 +28,7 @@ class SqlAlchemyImageJobRepository:
         self,
         job: ImageProcessingJob,
         status: str,
-        result_payload: dict | None = None,
+        result_payload: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> None:
         job.status = status

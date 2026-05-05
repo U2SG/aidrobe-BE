@@ -9,6 +9,9 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "postgresql+asyncpg://aidrobe:aidrobe@localhost:5432/aidrobe"
     REDIS_URL: str = "redis://localhost:6379/0"
+    ARQ_REDIS_URL: str = "redis://localhost:6379/1"
+    ARQ_JOB_TIMEOUT_SECONDS: int = 300
+    ARQ_MAX_JOBS: int = 50
     APP_ENV: Literal["dev", "test", "prod"] = "dev"
     ENABLE_SCHEDULER: bool = False
     VISION_PROVIDER: str = "fake"
@@ -49,9 +52,15 @@ class Settings(BaseSettings):
     APNS_TIMEOUT_SECONDS: float = 5.0
     LINK_PARSE_TIMEOUT_SECONDS: float = 5.0
     LLM_PROVIDER: str = "none"
+    OPENAI_API_KEY: str | None = None
+    OPENAI_LLM_MODEL: str = "gpt-5.2"
     QWEN_LLM_MODEL: str = "qwen-turbo"
     QWEN_LLM_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     LLM_TIMEOUT_SECONDS: float = 3.0
+    EMBEDDING_PROVIDER: str = "fake"
+    CLIP_EMBEDDING_API_KEY: str | None = None
+    CLIP_EMBEDDING_BASE_URL: str = "https://api.openai.com/v1/embeddings"
+    CLIP_EMBEDDING_TIMEOUT_SECONDS: float = 10.0
     WEATHER_PROVIDER: str = "none"
     QWEATHER_API_KEY: str | None = None
     QWEATHER_BASE_URL: str = "https://devapi.qweather.com"

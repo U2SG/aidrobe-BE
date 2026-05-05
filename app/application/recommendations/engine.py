@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.colors import color_score
 from app.application.style.build_style_profile import aesthetic_score as compute_aesthetic_score
@@ -23,6 +24,18 @@ NO_LONGER_FITS = "no_longer_fits"
 REPETITION_SIMILARITY_THRESHOLD = 0.6
 REPETITION_PENALTY = 0.2
 
+_REASON_TEMPLATES: dict[str, str] = {
+    OutfitType.SAFE.value: "经典颜色搭配，适合日常通勤",
+    OutfitType.FAST.value: "你最近常穿的单品，省时间",
+    OutfitType.STYLISH.value: "换个风格试试：{title}",
+}
+
+_TITLE_TEMPLATES: dict[str, str] = {
+    OutfitType.SAFE.value: "最稳妥",
+    OutfitType.FAST.value: "最省时间",
+    OutfitType.STYLISH.value: "更有风格感",
+}
+
 
 @dataclass(frozen=True)
 class EngineItem:
@@ -32,6 +45,7 @@ class EngineItem:
     color_main: str
     location: str | None = None
     fit_status: str = "unknown"
+    fit_intent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -52,7 +66,10 @@ class EngineResult:
 
 
 class RecommendationEngine:
-    def generate(
+    def __init__(self, llm: LlmPort | None = None) -> None:
+        self.llm = llm
+
+    async def generate(
         self,
         items: list[EngineItem],
         recent_worn_main_item_ids: set[str] | None = None,
@@ -60,6 +77,7 @@ class RecommendationEngine:
         style_profile: dict[str, Any] | None = None,
         weather: WeatherInfo | None = None,
         recent_worn_outfit_item_ids: list[set[str]] | None = None,
+        fit_profile: dict[str, Any] | None = None,
     ) -> EngineResult:
         recent_worn_main_item_ids = recent_worn_main_item_ids or set()
         recent_worn_outfit_item_ids = recent_worn_outfit_item_ids or []
@@ -71,12 +89,13 @@ class RecommendationEngine:
                 guidance_text="再加一件下装就能搭",
             )
 
-        candidates = self._build_candidates(
+        candidates = await self._build_candidates(
             wearable,
             recent_worn_main_item_ids,
             style_profile or {},
             weather,
             recent_worn_outfit_item_ids,
+            fit_profile or {},
         )
         if not candidates:
             return EngineResult(
@@ -107,13 +126,14 @@ class RecommendationEngine:
 
         return EngineResult(status="ready", outfits=selected[:3])
 
-    def _build_candidates(
+    async def _build_candidates(
         self,
         items: list[EngineItem],
         recent_worn_main_item_ids: set[str],
         style_profile: dict[str, Any],
         weather: WeatherInfo | None,
         recent_worn_outfit_item_ids: list[set[str]],
+        fit_profile: dict[str, Any],
     ) -> list[EngineOutfit]:
         tops = [item for item in items if item.category == Category.TOP.value]
         bottoms = [item for item in items if item.category == Category.BOTTOM.value]
@@ -153,18 +173,19 @@ class RecommendationEngine:
                 OutfitType.STYLISH.value,
             ]:
                 candidates.append(
-                    self._score_combo(
+                    await self._score_combo(
                         combo,
                         outfit_type,
                         recent_worn_main_item_ids,
                         style_profile,
                         weather,
                         recent_worn_outfit_item_ids,
+                        fit_profile,
                     )
                 )
         return candidates
 
-    def _score_combo(
+    async def _score_combo(
         self,
         combo: list[EngineItem],
         outfit_type: str,
@@ -172,6 +193,7 @@ class RecommendationEngine:
         style_profile: dict[str, Any],
         weather: WeatherInfo | None,
         recent_worn_outfit_item_ids: list[set[str]],
+        fit_profile: dict[str, Any],
     ) -> EngineOutfit:
         colors = [item.color_main for item in combo]
         categories = [item.category for item in combo]
@@ -181,7 +203,7 @@ class RecommendationEngine:
         aesthetic_score = compute_aesthetic_score(colors, categories, style_profile)
         time_cost_score = self._time_cost_score(combo)
         weather_score = self._weather_score(combo, weather)
-        fit_score = self._fit_score(combo)
+        fit_score = self._fit_score(combo, fit_profile)
         repetition_penalty = self._repetition_penalty(combo, recent_worn_outfit_item_ids)
         type_boost = {
             OutfitType.SAFE.value: 0.05,
@@ -189,9 +211,8 @@ class RecommendationEngine:
             OutfitType.STYLISH.value: 0.01,
         }[outfit_type]
 
-        has_profile = bool(
-            style_profile.get("color_weights") or style_profile.get("category_weights")
-        )
+        has_profile = bool(style_profile.get("color_weights") or style_profile.get("category_weights"))
+        has_fit_signal = bool(fit_profile) or any(item.fit_status != "unknown" for item in combo)
         if has_profile:
             total = (
                 utility_score * 0.25
@@ -202,19 +223,32 @@ class RecommendationEngine:
                 + fit_score * 0.10
                 - repetition_penalty
             )
+        elif has_fit_signal:
+            total = (
+                utility_score * 0.50
+                + freshness_score * 0.30
+                + fit_score * 0.20
+                + type_boost
+                - repetition_penalty
+            )
         else:
             total = utility_score * 0.6 + freshness_score * 0.4 + type_boost - repetition_penalty
 
-        reason = {
-            OutfitType.SAFE.value: "经典颜色搭配，适合日常通勤",
-            OutfitType.FAST.value: "你最近常穿的单品，省时间",
-            OutfitType.STYLISH.value: f"换个风格试试：{combo[0].title}",
-        }[outfit_type]
-        title = {
-            OutfitType.SAFE.value: "最稳妥",
-            OutfitType.FAST.value: "最省时间",
-            OutfitType.STYLISH.value: "更有风格感",
-        }[outfit_type]
+        title = _TITLE_TEMPLATES[outfit_type]
+        template = _REASON_TEMPLATES[outfit_type]
+        reason = template.format(title=combo[0].title)
+
+        # Polish reason with LLM if available
+        if self.llm is not None:
+            try:
+                prompt = self._build_reason_prompt(outfit_type, combo, colors, categories)
+                polished = await self.llm.polish_reason(prompt)
+                if polished.strip():
+                    reason = polished.strip()
+            except Exception:
+                # Fall through to template reason
+                pass
+
         return EngineOutfit(
             outfit_type=outfit_type,
             title=title,
@@ -231,6 +265,30 @@ class RecommendationEngine:
                 "fit_score": fit_score,
                 "repetition_penalty": repetition_penalty,
             },
+        )
+
+    def _build_reason_prompt(
+        self,
+        outfit_type: str,
+        combo: list[EngineItem],
+        colors: list[str],
+        categories: list[str],
+    ) -> str:
+        items_desc = "、".join(
+            f"{item.category}（{item.color_main}）" for item in combo
+        )
+        type_labels = {
+            OutfitType.SAFE.value: "稳妥通勤",
+            OutfitType.FAST.value: "省时快捷",
+            OutfitType.STYLISH.value: "风格尝试",
+        }
+        return (
+            f"你是一个穿搭助手。请为一个推荐结果写一条简短的理由，15字以内，中文。\n"
+            f"搭配风格：{type_labels.get(outfit_type, outfit_type)}\n"
+            f"包含单品：{items_desc}\n"
+            f"颜色组合：{' + '.join(colors)}\n"
+            f"品类组合：{' + '.join(categories)}\n\n"
+            f"写出自然、有说服力的推荐理由，不要重复\"经典颜色搭配\"等套话。"
         )
 
     def _time_cost_score(self, combo: list[EngineItem]) -> float:
@@ -258,7 +316,17 @@ class RecommendationEngine:
             score -= 0.25
         return _clamp_score(score)
 
-    def _fit_score(self, combo: list[EngineItem]) -> float:
+    def _fit_score(self, combo: list[EngineItem], fit_profile: dict[str, Any]) -> float:
+        """Score fit quality per item, adjusted by learned user preferences.
+
+        fit_profile may be either the persisted profile shape or a legacy
+        category → preference mapping:
+          "prefers_loose" → boosts items with loose/oversized signals
+          "prefers_fitted" → boosts items with fitted/tight signals
+          "balanced" → neutral
+        """
+        category_preferences = _category_fit_preferences(fit_profile)
+        body_shape_weights = _body_shape_tag_weights(fit_profile)
         scores = []
         for item in combo:
             score = 0.5
@@ -266,6 +334,24 @@ class RecommendationEngine:
                 score += 0.1
             elif item.fit_status in FIT_DOWNGRADE_STATUSES:
                 score -= 0.15
+
+            # Cross-item preference adjustment from learned fit profile
+            pref = category_preferences.get(item.category)
+            if pref == "prefers_loose":
+                if item.fit_status in ("loose", "oversized_ok"):
+                    score += 0.1
+                elif item.fit_status == "tight":
+                    score -= 0.1
+            elif pref == "prefers_fitted":
+                if item.fit_status == "tight":
+                    score += 0.05
+                elif item.fit_status in ("loose", "oversized_ok"):
+                    score -= 0.1
+
+            if item.fit_intent:
+                score += _fit_weight(body_shape_weights.get(item.fit_intent)) * 0.08
+                score += _fit_weight(body_shape_weights.get(f"{item.category}:{item.fit_intent}")) * 0.12
+
             scores.append(score)
         return _clamp_score(sum(scores) / len(scores)) if scores else 0.5
 
@@ -293,3 +379,35 @@ class RecommendationEngine:
 
 def _clamp_score(value: float) -> float:
     return min(1.0, max(0.0, value))
+
+
+def _category_fit_preferences(fit_profile: dict[str, Any]) -> dict[str, str]:
+    preferences = fit_profile.get("category_preferences")
+    if isinstance(preferences, dict):
+        return {
+            str(category): str(preference)
+            for category, preference in preferences.items()
+            if isinstance(preference, str)
+        }
+    return {
+        str(category): str(preference)
+        for category, preference in fit_profile.items()
+        if isinstance(preference, str)
+    }
+
+
+def _body_shape_tag_weights(fit_profile: dict[str, Any]) -> dict[str, float]:
+    weights = fit_profile.get("body_shape_tag_weights")
+    if not isinstance(weights, dict):
+        return {}
+    return {
+        str(tag): _fit_weight(weight)
+        for tag, weight in weights.items()
+        if isinstance(weight, int | float)
+    }
+
+
+def _fit_weight(value: Any) -> float:
+    if not isinstance(value, int | float):
+        return 0.0
+    return min(1.0, max(-1.0, float(value)))
