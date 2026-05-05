@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, SmallInteger, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.common.enums import ImageType, ItemStatus
@@ -22,6 +22,12 @@ class WardrobeItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     cover_image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     original_image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    size_label: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    size_region: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    fit_intent: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    fit_status: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
+    comfort_score: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     images: Mapped[list["WardrobeItemImage"]] = relationship(

@@ -22,7 +22,7 @@ class ImportTask(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     input_type: Mapped[str] = mapped_column(String(32), nullable=False)
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)
     task_status: Mapped[str] = mapped_column(
-        String(32), default=ImportStatus.WAITING_CONFIRM.value, nullable=False, index=True
+        String(32), default=ImportStatus.QUEUED.value, nullable=False, index=True
     )
     input_payload: Mapped[JsonDict] = mapped_column(JSONB, nullable=False, default=dict)
     candidate_payload: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)

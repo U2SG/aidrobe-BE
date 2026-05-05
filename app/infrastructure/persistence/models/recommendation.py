@@ -17,7 +17,11 @@ from app.infrastructure.persistence.models.base import (
 
 class DailyRecommendation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "daily_recommendations"
-    __table_args__ = (UniqueConstraint("user_id", "recommendation_date"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "recommendation_date", name="uq_daily_recommendations_user_id"
+        ),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
@@ -48,6 +52,7 @@ class Outfit(UUIDPrimaryKeyMixin, Base):
     reason_text: Mapped[str] = mapped_column(String(512), nullable=False)
     score_total: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
     rank_order: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    time_sensitivity: Mapped[str] = mapped_column(String(32), default="standard", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     daily_recommendation: Mapped[DailyRecommendation] = relationship(back_populates="outfits")
@@ -84,6 +89,7 @@ class OutfitFeedback(UUIDPrimaryKeyMixin, Base):
     feedback_type: Mapped[str] = mapped_column(
         String(32), default=FeedbackType.LIKE.value, nullable=False
     )
+    reason_tags: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
