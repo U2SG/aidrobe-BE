@@ -3,7 +3,8 @@ from collections.abc import AsyncIterator, Iterator
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from testcontainers.postgres import PostgresContainer
 
 from app.infrastructure.persistence.models import Base
@@ -27,22 +28,22 @@ def postgres_url() -> Iterator[str]:
         )
 
 
-@pytest_asyncio.fixture
-async def db_engine(postgres_url: str) -> AsyncIterator[AsyncEngine]:
-    engine = create_async_engine(postgres_url, pool_pre_ping=True)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-
-    yield engine
-
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.drop_all)
-    await engine.dispose()
+@pytest.fixture(scope="session", autouse=True)
+def create_schema(postgres_url: str) -> None:
+    # Use a synchronous engine to create the schema once for the whole session.
+    # This avoids sharing asyncpg connections across event loops.
+    sync_url = postgres_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+    engine = create_engine(sync_url)
+    Base.metadata.create_all(engine)
+    engine.dispose()
 
 
 @pytest_asyncio.fixture
-async def db_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
-    async with db_engine.connect() as connection:
+async def db_session(postgres_url: str) -> AsyncIterator[AsyncSession]:
+    # Each test gets its own engine + connection + transaction so there are
+    # no cross-event-loop issues with asyncpg.
+    engine = create_async_engine(postgres_url)
+    async with engine.connect() as connection:
         transaction = await connection.begin()
         session = AsyncSession(bind=connection, expire_on_commit=False)
         try:
@@ -51,3 +52,4 @@ async def db_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
             await session.close()
             if transaction.is_active:
                 await transaction.rollback()
+    await engine.dispose()

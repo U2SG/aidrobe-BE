@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 from fastapi import FastAPI
@@ -45,7 +46,7 @@ async def test_create_import_task_only_accepts_image(db_session: AsyncSession) -
     assert response.json()["code"] == 4001
 
 
-async def test_create_import_task_reaches_waiting_confirm(db_session: AsyncSession) -> None:
+async def test_create_import_task_returns_queued_response(db_session: AsyncSession) -> None:
     app = build_import_tasks_app(db_session)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://testserver"
@@ -60,11 +61,29 @@ async def test_create_import_task_reaches_waiting_confirm(db_session: AsyncSessi
             },
         )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     data = response.json()["data"]
-    assert data["status"] == "waiting_confirm"
-    assert data["candidate_item"]["category"] == "top"
-    assert data["candidate_item"]["color_main"] == "white"
+    assert data["status"] == "queued"
+    assert data["candidate_item"] is None
+
+
+async def wait_for_task_status(
+    client: AsyncClient,
+    task_id: str,
+    user_id: uuid.UUID,
+    expected_status: str,
+) -> dict[str, object]:
+    data: dict[str, object] = {}
+    for _ in range(5):
+        response = await client.get(
+            f"/v1/import-tasks/{task_id}",
+            headers={"X-User-Id": str(user_id)},
+        )
+        data = response.json()["data"]
+        if data["status"] == expected_status:
+            return data
+        await asyncio.sleep(0)
+    return data
 
 
 async def test_get_import_task_returns_candidate_item(db_session: AsyncSession) -> None:
@@ -83,25 +102,22 @@ async def test_get_import_task_returns_candidate_item(db_session: AsyncSession) 
             },
         )
         task_id = create_response.json()["data"]["task_id"]
-        get_response = await client.get(
-            f"/v1/import-tasks/{task_id}",
-            headers={"X-User-Id": str(user_id)},
-        )
 
-    assert get_response.status_code == 200
-    data = get_response.json()["data"]
+        data = await wait_for_task_status(client, task_id, user_id, "waiting_confirm")
+
     assert data["candidate_item"]["title"] == "Black trousers"
     assert data["candidate_item"]["category"] == "bottom"
 
 
 async def test_failed_vision_response_stores_failed_task(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
     app = build_import_tasks_app(db_session)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://testserver"
     ) as client:
         response = await client.post(
             "/v1/import-tasks",
-            headers={"X-User-Id": str(uuid.uuid4())},
+            headers={"X-User-Id": str(user_id)},
             json={
                 "input_type": "image",
                 "source_type": "camera",
@@ -109,8 +125,12 @@ async def test_failed_vision_response_stores_failed_task(db_session: AsyncSessio
             },
         )
 
-    assert response.status_code == 200
-    data = response.json()["data"]
+    assert response.status_code == 202
+    task_id = response.json()["data"]["task_id"]
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        data = await wait_for_task_status(client, task_id, user_id, "failed")
     assert data["status"] == "failed"
     assert data["error_code"] == "vision_failed"
 

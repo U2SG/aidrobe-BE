@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 from fastapi import FastAPI
@@ -39,7 +40,16 @@ async def create_task(client: AsyncClient, user_id: uuid.UUID) -> str:
             "image_url": "https://cdn/shirt.jpg",
         },
     )
-    return response.json()["data"]["task_id"]
+    task_id = response.json()["data"]["task_id"]
+    for _ in range(5):
+        poll = await client.get(
+            f"/v1/import-tasks/{task_id}",
+            headers={"X-User-Id": str(user_id)},
+        )
+        if poll.json()["data"]["status"] == "waiting_confirm":
+            return task_id
+        await asyncio.sleep(0)
+    return task_id
 
 
 async def test_confirm_waiting_task_creates_wardrobe_item(db_session: AsyncSession) -> None:
@@ -62,6 +72,35 @@ async def test_confirm_waiting_task_creates_wardrobe_item(db_session: AsyncSessi
     assert item.title == "Office shirt"
     images = list(await db_session.scalars(select(WardrobeItemImage)))
     assert {image.image_type for image in images} == {"original", "standard"}
+
+
+async def test_confirm_accepts_location_and_fit_fields(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        task_id = await create_task(client, user_id)
+        response = await client.post(
+            f"/v1/import-tasks/{task_id}/confirm",
+            headers={"X-User-Id": str(user_id)},
+            json={
+                "title": "Office shirt",
+                "category": "top",
+                "color_main": "white",
+                "location": "main closet",
+                "size_label": "M",
+                "fit_status": "fits_well",
+            },
+        )
+
+    assert response.status_code == 200
+    item_id = response.json()["data"]["item_id"]
+    item = await db_session.get(WardrobeItem, uuid.UUID(item_id))
+    assert item is not None
+    assert item.location == "main closet"
+    assert item.size_label == "M"
+    assert item.fit_status == "fits_well"
 
 
 async def test_confirm_completed_task_returns_409(db_session: AsyncSession) -> None:

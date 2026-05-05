@@ -1,3 +1,4 @@
+from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.engine import EngineItem, RecommendationEngine
 
 
@@ -66,3 +67,65 @@ def test_reasons_are_template_generated_and_include_subscores() -> None:
 
     assert all(outfit.reason_text for outfit in result.outfits)
     assert all("color_score" in outfit.score_breakdown for outfit in result.outfits)
+
+
+def test_no_longer_fits_items_are_hard_filtered() -> None:
+    result = RecommendationEngine().generate(
+        [
+            EngineItem("1", "Old white shirt", "top", "white", fit_status="no_longer_fits"),
+            EngineItem("2", "Blue shirt", "top", "blue"),
+            EngineItem("3", "Black pants", "bottom", "black"),
+            EngineItem("4", "Black shoes", "shoes", "black"),
+        ]
+    )
+
+    assert result.status == "ready"
+    assert all("1" not in outfit.item_ids for outfit in result.outfits)
+
+
+def test_repetition_penalty_downgrades_recently_worn_similar_outfit() -> None:
+    items = [
+        EngineItem("1", "White shirt", "top", "white"),
+        EngineItem("2", "Black pants", "bottom", "black"),
+        EngineItem("3", "Black shoes", "shoes", "black"),
+    ]
+    repeated = RecommendationEngine().generate(
+        items,
+        recent_worn_outfit_item_ids=[{"1", "2", "3"}],
+    )
+    fresh = RecommendationEngine().generate(items)
+
+    assert repeated.outfits[0].score_breakdown["repetition_penalty"] > 0
+    assert repeated.outfits[0].score_total < fresh.outfits[0].score_total
+
+
+def test_weather_score_falls_back_to_neutral_without_weather_data() -> None:
+    result = RecommendationEngine().generate(
+        [
+            EngineItem("1", "White shirt", "top", "white"),
+            EngineItem("2", "Black pants", "bottom", "black"),
+            EngineItem("3", "Black shoes", "shoes", "black"),
+        ],
+        style_profile={"color_weights": {"white": 1.0}},
+    )
+
+    assert result.outfits[0].score_breakdown["weather_score"] == 0.5
+
+
+def test_weather_penalizes_light_shoes_on_rainy_days() -> None:
+    result = RecommendationEngine().generate(
+        [
+            EngineItem("1", "White shirt", "top", "white"),
+            EngineItem("2", "Black pants", "bottom", "black"),
+            EngineItem("3", "White shoes", "shoes", "white"),
+        ],
+        weather=WeatherInfo(
+            temperature_c=18.0,
+            feels_like_c=18.0,
+            rain_probability=0.8,
+            condition="Rain",
+        ),
+        style_profile={"color_weights": {"white": 1.0}},
+    )
+
+    assert result.outfits[0].score_breakdown["weather_score"] < 0.8

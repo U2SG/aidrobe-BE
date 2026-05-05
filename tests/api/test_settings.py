@@ -41,11 +41,8 @@ async def test_get_user_settings_returns_departure_time(db_session: AsyncSession
 
     assert patch_response.status_code == 200
     assert get_response.status_code == 200
-    assert get_response.json() == {
-        "code": 0,
-        "message": "ok",
-        "data": {"departure_time": "08:30:00"},
-    }
+    data = get_response.json()["data"]
+    assert data["departure_time"] == "08:30:00"
 
 
 async def test_patch_user_settings_updates_departure_time(db_session: AsyncSession) -> None:
@@ -62,7 +59,7 @@ async def test_patch_user_settings_updates_departure_time(db_session: AsyncSessi
         )
 
     assert response.status_code == 200
-    assert response.json()["data"] == {"departure_time": "07:45:00"}
+    assert response.json()["data"]["departure_time"] == "07:45:00"
 
 
 async def test_patch_user_settings_rejects_invalid_time(db_session: AsyncSession) -> None:

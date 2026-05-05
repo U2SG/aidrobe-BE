@@ -1,14 +1,11 @@
+import asyncio
 import uuid
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.recommendations.generator import RecommendationGenerator
 from app.config.settings import Settings, get_settings
-from app.infrastructure.persistence.repositories.recommendation_repo import (
-    SqlAlchemyRecommendationRepository,
-)
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import (
     import_tasks,
@@ -50,6 +47,15 @@ async def add_item(client: AsyncClient, user_id: uuid.UUID, image_url: str) -> s
         json={"input_type": "image", "source_type": "camera", "image_url": image_url},
     )
     task = task_response.json()["data"]
+    for _ in range(5):
+        poll = await client.get(
+            f"/v1/import-tasks/{task['task_id']}",
+            headers={"X-User-Id": str(user_id)},
+        )
+        task = poll.json()["data"]
+        if task["status"] == "waiting_confirm":
+            break
+        await asyncio.sleep(0)
     candidate = task["candidate_item"]
     confirm = await client.post(
         f"/v1/import-tasks/{task['task_id']}/confirm",
@@ -85,9 +91,6 @@ async def test_v1_slim_full_flow(db_session: AsyncSession) -> None:
         await add_item(client, user_id, "https://cdn/blue-shirt.jpg")
         await add_item(client, user_id, "https://cdn/pants.jpg")
 
-        await RecommendationGenerator(
-            SqlAlchemyRecommendationRepository(db_session)
-        ).generate_for_user(user_id, __import__("datetime").date.today(), "manual")
         today = await client.get("/v1/recommendations/today", headers={"X-User-Id": str(user_id)})
         outfit_id = today.json()["data"]["outfits"][0]["outfit_id"]
         wear = await client.post(

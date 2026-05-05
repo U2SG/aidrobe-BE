@@ -100,3 +100,29 @@ async def test_feedback_accepts_only_like_dislike(db_session: AsyncSession) -> N
     assert response.status_code == 200
     assert invalid.status_code == 422
     assert count == 1
+
+
+async def test_feedback_updates_existing_row(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    await seed_ready_recommendation(db_session, user_id)
+    app = build_outfit_app(db_session)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        outfit_id = await get_first_outfit_id(client, user_id)
+        first = await client.post(
+            f"/v1/recommendations/outfits/{outfit_id}/feedback",
+            headers={"X-User-Id": str(user_id)},
+            json={"feedback_type": "like"},
+        )
+        second = await client.post(
+            f"/v1/recommendations/outfits/{outfit_id}/feedback",
+            headers={"X-User-Id": str(user_id)},
+            json={"feedback_type": "dislike"},
+        )
+
+    rows = list(await db_session.scalars(select(OutfitFeedback)))
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert len(rows) == 1
+    assert rows[0].feedback_type == "dislike"

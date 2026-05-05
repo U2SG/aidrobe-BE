@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 from fastapi import FastAPI
@@ -37,6 +38,15 @@ async def create_item(
         json={"input_type": "image", "source_type": "camera", "image_url": image_url},
     )
     task = create_response.json()["data"]
+    for _ in range(5):
+        poll = await client.get(
+            f"/v1/import-tasks/{task['task_id']}",
+            headers={"X-User-Id": str(user_id)},
+        )
+        task = poll.json()["data"]
+        if task["status"] == "waiting_confirm":
+            break
+        await asyncio.sleep(0)
     candidate = task["candidate_item"]
     confirm_response = await client.post(
         f"/v1/import-tasks/{task['task_id']}/confirm",
