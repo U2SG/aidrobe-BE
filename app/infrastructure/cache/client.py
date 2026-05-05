@@ -1,7 +1,6 @@
 import uuid
 from datetime import UTC, datetime
 from functools import lru_cache
-from typing import cast
 
 import structlog
 from redis.asyncio import Redis
@@ -14,12 +13,12 @@ logger = structlog.get_logger(__name__)
 
 
 @lru_cache
-def _redis_client() -> Redis:  # type: ignore[type-arg]
+def _redis_client() -> Redis:
     settings = get_settings()
-    return cast(Redis, Redis.from_url(settings.REDIS_URL, decode_responses=True))  # type: ignore[type-arg]
+    return Redis.from_url(settings.REDIS_URL, decode_responses=True)
 
 
-def get_redis_client() -> Redis:  # type: ignore[type-arg]
+def get_redis_client() -> Redis:
     return _redis_client()
 
 
@@ -29,7 +28,7 @@ async def close_redis_client() -> None:
     _redis_client.cache_clear()
 
 
-async def invalidate_daily_recommendation_cache(redis_client: Redis, user_id: uuid.UUID) -> None:  # type: ignore[type-arg]
+async def invalidate_daily_recommendation_cache(redis_client: Redis, user_id: uuid.UUID) -> None:
     today = datetime.now(UTC).date()
     pattern = build_daily_recommendation_cache_pattern(user_id, today)
     try:

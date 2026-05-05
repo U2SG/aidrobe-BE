@@ -12,10 +12,12 @@ from app.infrastructure.persistence.session import AsyncSessionLocal
 from app.jobs.scheduler import create_scheduler
 from app.presentation.api.v1.routers import (
     auth,
+    fit,
     health,
     import_tasks,
     recommendations,
     settings,
+    style,
     uploads,
     wardrobe,
 )
@@ -56,7 +58,9 @@ def create_app() -> FastAPI:
     app.include_router(uploads.router)
     app.include_router(import_tasks.router)
     app.include_router(wardrobe.router)
+    app.include_router(fit.router)
     app.include_router(recommendations.router)
+    app.include_router(style.router)
     return app
 
 
