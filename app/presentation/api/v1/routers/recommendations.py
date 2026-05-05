@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.outfits.feedback import FeedbackOutfit
 from app.application.outfits.wear import WearOutfit
 from app.application.recommendations.get_today import GetTodayRecommendation
+from app.application.recommendations.style_context import build_style_context
 from app.common import error_codes
 from app.common.enums import RecommendationStatus, TimeSensitivity
 from app.common.exceptions import FriendlyException
@@ -35,6 +36,7 @@ from app.presentation.api.v1.schemas.recommendations import (
     OutfitHistoryResponse,
     OutfitResponse,
     RecommendationItemResponse,
+    StyleContextResponse,
     TodayRecommendationResponse,
     WearOutfitRequest,
     WearOutfitResponse,
@@ -156,9 +158,11 @@ async def get_today_recommendation(
         "app_open",
         {"hour_of_day": datetime.now(UTC).hour, "had_cache": had_cache, "scene": scene},
     )
-    response: ResponseModel[TodayRecommendationResponse] = ResponseModel(
-        data=today_response(daily, settings.departure_time, scene)
-    )
+    style_ctx_data = await build_style_context(current_user.id, session)
+    style_ctx = StyleContextResponse(**style_ctx_data)
+    today_data = today_response(daily, settings.departure_time, scene)
+    today_data.style_context = style_ctx
+    response: ResponseModel[TodayRecommendationResponse] = ResponseModel(data=today_data)
     try:
         await redis_client.set(
             cache_key,

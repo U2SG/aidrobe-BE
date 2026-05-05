@@ -1,5 +1,6 @@
 from app.infrastructure.persistence.models.base import Base
 from app.infrastructure.persistence.models.embedding import ItemEmbedding
+from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
 from app.infrastructure.persistence.models.fit import FitFeedback
 from app.infrastructure.persistence.models.image_job import ImageProcessingJob
 from app.infrastructure.persistence.models.import_task import ImportTask
@@ -17,6 +18,7 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem, Wardrob
 
 __all__ = [
     "Base",
+    "OutfitVisualAsset",
     "DailyRecommendation",
     "FitFeedback",
     "ImageProcessingJob",

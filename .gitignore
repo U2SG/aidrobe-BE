@@ -19,3 +19,10 @@ local_uploads/
 uploads/
 
 *.log
+
+# DeepSeek / planning temp files
+.deepseek/
+findings.md
+progress.md
+task_plan.md
+tmp-chat-share.html

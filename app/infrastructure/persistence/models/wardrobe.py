@@ -1,11 +1,13 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, SmallInteger, String
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, SmallInteger, String
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.common.enums import ImageType, ItemStatus
-from app.infrastructure.persistence.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+from app.infrastructure.persistence.models.base import Base, JsonDict, TimestampMixin, UUIDPrimaryKeyMixin
 
 
 class WardrobeItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -29,6 +31,17 @@ class WardrobeItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     fit_status: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
     comfort_score: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # V3 M14 extended fields
+    sub_category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    color_secondary: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    material: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    season_tags: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    style_tags: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    formality_score: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    time_cost_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # V3 M12 insights fields
+    purchase_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    wear_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     images: Mapped[list["WardrobeItemImage"]] = relationship(
         back_populates="item", cascade="all, delete-orphan"

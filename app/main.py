@@ -15,6 +15,9 @@ from app.presentation.api.v1.routers import (
     fit,
     health,
     import_tasks,
+    insights,
+    outfit_history,
+    outfit_visual,
     recommendations,
     settings,
     style,
@@ -61,6 +64,9 @@ def create_app() -> FastAPI:
     app.include_router(fit.router)
     app.include_router(recommendations.router)
     app.include_router(style.router)
+    app.include_router(insights.router)
+    app.include_router(outfit_history.router)
+    app.include_router(outfit_visual.router)
     return app
 
 

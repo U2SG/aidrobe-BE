@@ -105,3 +105,4 @@ class WearHistory(UUIDPrimaryKeyMixin, Base):
     selected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     worn_date: Mapped[date] = mapped_column(Date, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ootd_image_url: Mapped[str | None] = mapped_column(nullable=True)

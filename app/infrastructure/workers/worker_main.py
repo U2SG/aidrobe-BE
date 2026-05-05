@@ -12,6 +12,7 @@ from app.config.settings import get_settings
 from app.infrastructure.persistence.session import AsyncSessionLocal
 from app.infrastructure.workers.image_worker import process_image_job
 from app.infrastructure.workers.import_worker import process_import_task
+from app.infrastructure.workers.outfit_board_worker import generate_outfit_board
 from app.infrastructure.workers.style_learn_worker import learn_style_source
 
 
@@ -42,6 +43,7 @@ class WorkerSettings:
     functions = [
         process_import_task,
         process_image_job,
+        generate_outfit_board,
         learn_style_source,
         build_fit_profiles,
     ]

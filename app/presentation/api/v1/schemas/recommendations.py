@@ -19,11 +19,18 @@ class OutfitResponse(BaseModel):
     items: list[RecommendationItemResponse]
 
 
+class StyleContextResponse(BaseModel):
+    template_id: str
+    active_tags: list[str] = []
+    confidence: float = 0.0
+
+
 class TodayRecommendationResponse(BaseModel):
     recommendation_date: date
     status: str
     guidance_text: str | None = None
     outfits: list[OutfitResponse] = []
+    style_context: StyleContextResponse | None = None  # V3 M13
 
 
 class WearOutfitRequest(BaseModel):

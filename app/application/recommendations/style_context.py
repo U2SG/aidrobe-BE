@@ -1,0 +1,63 @@
+"""Style context builder for M13 — style-aware recommendation display."""
+
+import uuid
+from collections import Counter
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.infrastructure.persistence.models.style import UserStyleProfile
+
+# Template mapping: dominant tag sets → template_id
+_TEMPLATE_RULES: list[tuple[set[str], str]] = [
+    ({"black", "white", "gray", "grey", "minimal", "clean"}, "minimal_commute_v1"),
+    ({"pink", "soft", "feminine", "floral", "pastel"}, "soft_feminine_v1"),
+    ({"formal", "suit", "professional", "office"}, "formal_office_v1"),
+    ({"casual", "street", "sporty", "denim"}, "casual_street_v1"),
+]
+_DEFAULT_TEMPLATE = "general_v1"
+
+
+async def build_style_context(
+    user_id: uuid.UUID, session: AsyncSession
+) -> dict:
+    result = await session.execute(
+        select(UserStyleProfile).where(
+            UserStyleProfile.user_id == user_id,
+            UserStyleProfile.learn_status == "learned",
+        )
+    )
+    profiles = list(result.scalars().all())
+
+    tag_counter: Counter = Counter()
+    for p in profiles:
+        tags = p.style_tags or []
+        if isinstance(tags, list):
+            tag_counter.update(tags)
+
+    if not tag_counter:
+        return {
+            "template_id": _DEFAULT_TEMPLATE,
+            "active_tags": [],
+            "confidence": 0.0,
+        }
+
+    top_tags = [t for t, _ in tag_counter.most_common(10)]
+    tag_set = set(top_tags)
+    total_signals = sum(tag_counter.values())
+
+    template_id = _DEFAULT_TEMPLATE
+    best_overlap = 0
+    for rule_tags, tmpl in _TEMPLATE_RULES:
+        overlap = len(tag_set & rule_tags)
+        if overlap > best_overlap:
+            best_overlap = overlap
+            template_id = tmpl
+
+    confidence = min(1.0, round(best_overlap / max(len(tag_set), 1) * min(total_signals / 10, 1), 3))
+
+    return {
+        "template_id": template_id,
+        "active_tags": top_tags[:5],
+        "confidence": confidence,
+    }
