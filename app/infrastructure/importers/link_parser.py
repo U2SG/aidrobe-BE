@@ -17,7 +17,7 @@ IMG_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
 _ALLOWED_SCHEMES = {"http", "https"}
 
 
-def _is_safe_url(url: str) -> bool:
+def is_safe_url(url: str) -> bool:
     parsed = urlparse(url)
     if parsed.scheme not in _ALLOWED_SCHEMES:
         return False
@@ -36,12 +36,15 @@ def _is_safe_url(url: str) -> bool:
     return True
 
 
+_is_safe_url = is_safe_url
+
+
 class HtmlLinkParser:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
     async def extract_image_url(self, source_url: str) -> str | None:
-        if not _is_safe_url(source_url):
+        if not is_safe_url(source_url):
             return None
         async with httpx.AsyncClient(
             timeout=self.settings.LINK_PARSE_TIMEOUT_SECONDS,
@@ -52,7 +55,7 @@ class HtmlLinkParser:
             hops = 0
             while response.is_redirect and hops < 5:
                 redirect_url = response.headers.get("location", "")
-                if not _is_safe_url(redirect_url):
+                if not is_safe_url(redirect_url):
                     return None
                 response = await client.get(redirect_url)
                 hops += 1
