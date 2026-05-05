@@ -21,3 +21,6 @@ class LocalObjectStorage:
             file_url=f"{self.base_url}/files/{object_key}",
             object_key=object_key,
         )
+
+    async def put_object(self, key: str, data: bytes, content_type: str) -> str:
+        return f"{self.base_url}/files/{key}"

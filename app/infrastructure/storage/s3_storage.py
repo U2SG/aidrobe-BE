@@ -47,6 +47,15 @@ class S3ObjectStorage:
             fields=presigned["fields"],
         )
 
+    async def put_object(self, key: str, data: bytes, content_type: str) -> str:
+        self.client.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=data,
+            ContentType=content_type,
+        )
+        return self._file_url(key)
+
     def _file_url(self, object_key: str) -> str:
         if self.settings.S3_PUBLIC_BASE_URL:
             return f"{self.settings.S3_PUBLIC_BASE_URL.rstrip('/')}/{object_key}"

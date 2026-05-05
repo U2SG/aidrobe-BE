@@ -9,8 +9,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.models.recommendation import Outfit, OutfitFeedback, WearHistory
-from app.presentation.api.v1.deps import get_current_user
 from app.infrastructure.persistence.session import get_db_session as get_db
+from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.schemas.outfit_history import (
     OotdUploadRequest,
     OotdUploadResponse,
@@ -33,7 +33,7 @@ async def list_outfit_history(
     offset = (page - 1) * page_size
 
     count_result = await db.execute(
-        select(func.count()).where(WearHistory.user_id == current_user.id)
+        select(func.count()).select_from(WearHistory).where(WearHistory.user_id == current_user.id)
     )
     total = count_result.scalar_one()
 
@@ -46,14 +46,27 @@ async def list_outfit_history(
     )
     histories = list(result.scalars().all())
 
+    if not histories:
+        return OutfitHistoryListResponse(items=[], page=page, page_size=page_size, total=total)
+
+    # Batch-load outfits and feedbacks to avoid N+1
+    outfit_ids = [h.outfit_id for h in histories]
+
+    outfit_result = await db.execute(select(Outfit).where(Outfit.id.in_(outfit_ids)))
+    outfits_by_id = {o.id: o for o in outfit_result.scalars().all()}
+
+    fb_result = await db.execute(
+        select(OutfitFeedback).where(
+            OutfitFeedback.outfit_id.in_(outfit_ids),
+            OutfitFeedback.user_id == current_user.id,
+        )
+    )
+    feedbacks_by_outfit = {fb.outfit_id: fb for fb in fb_result.scalars().all()}
+
     entries = []
     for h in histories:
+        outfit = outfits_by_id.get(h.outfit_id)
         outfit_summary = None
-        feedback_type = None
-        reason_tags: list[str] = []
-
-        outfit_result = await db.execute(select(Outfit).where(Outfit.id == h.outfit_id))
-        outfit = outfit_result.scalar_one_or_none()
         if outfit:
             outfit_summary = OutfitSummary(
                 outfit_id=outfit.id,
@@ -62,25 +75,15 @@ async def list_outfit_history(
                 reason_text=outfit.reason_text,
             )
 
-        fb_result = await db.execute(
-            select(OutfitFeedback).where(
-                OutfitFeedback.outfit_id == h.outfit_id,
-                OutfitFeedback.user_id == current_user.id,
-            )
-        )
-        fb = fb_result.scalar_one_or_none()
-        if fb:
-            feedback_type = fb.feedback_type
-            reason_tags = list(fb.reason_tags or [])
-
+        fb = feedbacks_by_outfit.get(h.outfit_id)
         entries.append(
             OutfitHistoryEntry(
                 wear_history_id=h.id,
                 worn_date=h.worn_date,
                 outfit=outfit_summary,
-                feedback_type=feedback_type,
-                reason_tags=reason_tags,
-                ootd_image_url=getattr(h, "ootd_image_url", None),
+                feedback_type=fb.feedback_type if fb else None,
+                reason_tags=list(fb.reason_tags or []) if fb else [],
+                ootd_image_url=h.ootd_image_url,
                 selected_at=h.selected_at,
             )
         )
@@ -88,6 +91,7 @@ async def list_outfit_history(
     return OutfitHistoryListResponse(items=entries, page=page, page_size=page_size, total=total)
 
 
+# /calendar must be registered before /{worn_date} to avoid path parameter shadowing
 @router.get("/calendar", response_model=OutfitCalendarResponse)
 async def get_outfit_calendar(
     year: int | None = Query(None),
@@ -138,7 +142,7 @@ async def get_outfit_history_by_date(
         wear_history_id=h.id,
         worn_date=h.worn_date,
         outfit=outfit_summary,
-        ootd_image_url=getattr(h, "ootd_image_url", None),
+        ootd_image_url=h.ootd_image_url,
         selected_at=h.selected_at,
     )
 
@@ -160,6 +164,6 @@ async def upload_ootd(
     if h is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record not found")
 
-    h.ootd_image_url = body.ootd_image_url  # type: ignore[attr-defined]
+    h.ootd_image_url = body.ootd_image_url
     await db.flush()
     return OotdUploadResponse(wear_history_id=h.id, ootd_image_url=body.ootd_image_url)

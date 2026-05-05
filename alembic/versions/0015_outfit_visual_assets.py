@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import JSONB
 
 revision: str = "0015_outfit_visual_assets"
 down_revision: str | None = "0014_user_fit_profiles"
@@ -26,7 +27,7 @@ def upgrade() -> None:
         sa.Column("image_url", sa.Text(), nullable=True),
         sa.Column("template_id", sa.String(64), nullable=True),
         sa.Column("generation_status", sa.String(32), nullable=False, server_default="queued"),
-        sa.Column("input_snapshot", sa.dialects.postgresql.JSONB(), nullable=True),
+        sa.Column("input_snapshot", JSONB(), nullable=True),
         sa.Column("error_code", sa.String(64), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column(

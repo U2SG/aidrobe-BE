@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import JSONB
 
 revision: str = "0013_wardrobe_extended_fields"
 down_revision: str | None = "0012_enable_pgvector"
@@ -22,11 +23,11 @@ def upgrade() -> None:
     op.add_column("wardrobe_items", sa.Column("material", sa.String(64), nullable=True))
     op.add_column(
         "wardrobe_items",
-        sa.Column("season_tags", sa.dialects.postgresql.JSONB(), nullable=True),
+        sa.Column("season_tags", JSONB(), nullable=True),
     )
     op.add_column(
         "wardrobe_items",
-        sa.Column("style_tags", sa.dialects.postgresql.JSONB(), nullable=True),
+        sa.Column("style_tags", JSONB(), nullable=True),
     )
     op.add_column(
         "wardrobe_items", sa.Column("formality_score", sa.SmallInteger(), nullable=True)

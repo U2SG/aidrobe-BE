@@ -19,3 +19,12 @@ class ObjectStoragePort(Protocol):
         content_type: str,
         max_bytes: int,
     ) -> PresignResult: ...
+
+    async def put_object(
+        self,
+        key: str,
+        data: bytes,
+        content_type: str,
+    ) -> str:
+        """Upload bytes directly and return the public file URL."""
+        ...

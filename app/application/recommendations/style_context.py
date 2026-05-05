@@ -54,7 +54,11 @@ async def build_style_context(
             best_overlap = overlap
             template_id = tmpl
 
-    confidence = min(1.0, round(best_overlap / max(len(tag_set), 1) * min(total_signals / 10, 1), 3))
+    # tag hit rate (0–1): how many top tags matched the winning template
+    hit_rate = best_overlap / len(_TEMPLATE_RULES[[t for _, t in _TEMPLATE_RULES].index(template_id)][0]) if best_overlap > 0 else 0.0
+    # data confidence (0–1): saturates at 10 learned signals
+    data_confidence = min(1.0, total_signals / 10)
+    confidence = round(hit_rate * data_confidence, 3)
 
     return {
         "template_id": template_id,
