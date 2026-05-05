@@ -15,6 +15,7 @@ class OutfitResponse(BaseModel):
     type: str
     title: str
     reason: str
+    time_sensitivity: str = "standard"
     items: list[RecommendationItemResponse]
 
 
@@ -35,7 +36,23 @@ class WearOutfitResponse(BaseModel):
 
 class FeedbackRequest(BaseModel):
     feedback_type: str = Field(pattern="^(like|dislike)$")
+    reason_tags: list[str] = []
 
 
 class FeedbackResponse(BaseModel):
     success: bool
+
+
+class OutfitHistoryItemResponse(BaseModel):
+    outfit_id: UUID
+    worn_date: date
+    outfit_type: str
+    title: str
+    feedback_type: str | None = None
+    reason_tags: list[str] = []
+
+
+class OutfitHistoryResponse(BaseModel):
+    items: list[OutfitHistoryItemResponse]
+    limit: int
+    offset: int

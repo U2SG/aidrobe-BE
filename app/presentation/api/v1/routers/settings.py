@@ -20,8 +20,8 @@ router = APIRouter(prefix="/v1/user", tags=["settings"])
 def settings_response(settings: UserSettings) -> UserSettingsResponse:
     return UserSettingsResponse(
         departure_time=settings.departure_time,
-        device_token=settings.device_token,
         push_enabled=settings.push_enabled,
+        device_token=settings.device_token,
         location=settings.location,
     )
 

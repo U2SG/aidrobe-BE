@@ -12,4 +12,3 @@ class PresignUploadResponse(BaseModel):
     upload_url: str
     file_url: str
     object_key: str
-    fields: dict[str, str] = {}

@@ -22,6 +22,7 @@ from app.infrastructure.persistence.repositories.operation_log_repo import (
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
+from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
@@ -46,6 +47,11 @@ def item_response(item: WardrobeItem) -> WardrobeItemResponse:
         cover_image_url=item.cover_image_url,
         original_image_url=item.original_image_url,
         location=item.location,
+        size_label=item.size_label,
+        size_region=item.size_region,
+        fit_intent=item.fit_intent,
+        fit_status=item.fit_status,
+        comfort_score=item.comfort_score,
     )
 
 
@@ -90,7 +96,9 @@ async def update_wardrobe_item(
     redis_client: Annotated[Redis, Depends(get_redis_client)],
 ) -> ResponseModel[WardrobeItemResponse]:
     use_case = UpdateWardrobeItem(
-        SqlAlchemyWardrobeRepository(session), SqlAlchemyRecommendationRepository(session)
+        SqlAlchemyWardrobeRepository(session),
+        SqlAlchemyRecommendationRepository(session),
+        SqlAlchemyStyleRepository(session),
     )
     item = await use_case.execute(
         item_id,
@@ -113,7 +121,9 @@ async def delete_wardrobe_item(
     redis_client: Annotated[Redis, Depends(get_redis_client)],
 ) -> ResponseModel[DeleteWardrobeItemResponse]:
     use_case = DeleteWardrobeItem(
-        SqlAlchemyWardrobeRepository(session), SqlAlchemyRecommendationRepository(session)
+        SqlAlchemyWardrobeRepository(session),
+        SqlAlchemyRecommendationRepository(session),
+        SqlAlchemyStyleRepository(session),
     )
     deleted = await use_case.execute(item_id, current_user.id)
     await SqlAlchemyOperationLogRepository(session).add(

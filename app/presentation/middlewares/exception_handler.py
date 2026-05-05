@@ -27,13 +27,22 @@ def setup_exception_handlers(app: FastAPI) -> None:
     async def validation_exception_handler(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
-        logger.warning("request_validation_error", path=request.url.path, errors=exc.errors())
+        # Pydantic v2 may embed non-serialisable exception objects in 'ctx';
+        # stringify them so the response is always JSON-safe.
+        safe_errors = [
+            {
+                **{k: v for k, v in e.items() if k != "ctx"},
+                **({"ctx": {ck: str(cv) for ck, cv in e["ctx"].items()}} if "ctx" in e else {}),
+            }
+            for e in exc.errors()
+        ]
+        logger.warning("request_validation_error", path=request.url.path, errors=safe_errors)
         return JSONResponse(
             status_code=422,
             content={
                 "code": error_codes.VALIDATION_ERROR,
                 "message": "Validation error",
-                "data": {"errors": exc.errors()},
+                "data": {"errors": safe_errors},
             },
         )
 

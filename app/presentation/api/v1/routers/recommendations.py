@@ -156,7 +156,9 @@ async def get_today_recommendation(
         "app_open",
         {"hour_of_day": datetime.now(UTC).hour, "had_cache": had_cache, "scene": scene},
     )
-    response = ResponseModel(data=today_response(daily, settings.departure_time, scene))
+    response: ResponseModel[TodayRecommendationResponse] = ResponseModel(
+        data=today_response(daily, settings.departure_time, scene)
+    )
     try:
         await redis_client.set(
             cache_key,
