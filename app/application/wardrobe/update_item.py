@@ -5,12 +5,23 @@ from app.common import error_codes
 from app.common.enums import ItemStatus
 from app.common.exceptions import FriendlyException
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.repositories.recommendation_repo import (
+    SqlAlchemyRecommendationRepository,
+)
+from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 
 
 class UpdateWardrobeItem:
-    def __init__(self, repository: SqlAlchemyWardrobeRepository) -> None:
+    def __init__(
+        self,
+        repository: SqlAlchemyWardrobeRepository,
+        recommendation_repository: SqlAlchemyRecommendationRepository | None = None,
+        style_repository: SqlAlchemyStyleRepository | None = None,
+    ) -> None:
         self.repository = repository
+        self.recommendation_repository = recommendation_repository
+        self.style_repository = style_repository
 
     async def execute(
         self,
@@ -20,6 +31,7 @@ class UpdateWardrobeItem:
         category: str | None = None,
         color_main: str | None = None,
         status: str | None = None,
+        location: str | None = None,
     ) -> WardrobeItem:
         item = await self.repository.get_for_user(item_id, user_id)
         if item is None:
@@ -42,6 +54,8 @@ class UpdateWardrobeItem:
             item.color_main = color_main
         if status is not None:
             item.status = status
+        if location is not None:
+            item.location = location
         await self.repository.flush()
-        await schedule_today_recompute(user_id)
+        await schedule_today_recompute(user_id, self.recommendation_repository, self.style_repository)
         return item

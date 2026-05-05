@@ -9,6 +9,10 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem, Wardrob
 from app.infrastructure.persistence.repositories.import_task_repo import (
     SqlAlchemyImportTaskRepository,
 )
+from app.infrastructure.persistence.repositories.recommendation_repo import (
+    SqlAlchemyRecommendationRepository,
+)
+from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 
 
@@ -17,9 +21,13 @@ class ConfirmImageImportTask:
         self,
         import_task_repository: SqlAlchemyImportTaskRepository,
         wardrobe_repository: SqlAlchemyWardrobeRepository,
+        recommendation_repository: SqlAlchemyRecommendationRepository | None = None,
+        style_repository: SqlAlchemyStyleRepository | None = None,
     ) -> None:
         self.import_task_repository = import_task_repository
         self.wardrobe_repository = wardrobe_repository
+        self.recommendation_repository = recommendation_repository
+        self.style_repository = style_repository
 
     async def execute(
         self,
@@ -28,6 +36,9 @@ class ConfirmImageImportTask:
         title: str,
         category: str,
         color_main: str,
+        location: str | None = None,
+        size_label: str | None = None,
+        fit_status: str | None = None,
     ) -> WardrobeItem:
         task = await self.import_task_repository.get_for_user(task_id, user_id)
         if task is None:
@@ -53,6 +64,9 @@ class ConfirmImageImportTask:
             status=ItemStatus.WEARABLE.value,
             cover_image_url=original_image_url,
             original_image_url=original_image_url,
+            location=location,
+            size_label=size_label,
+            fit_status=fit_status or "unknown",
         )
         await self.wardrobe_repository.add(item)
 
@@ -77,5 +91,5 @@ class ConfirmImageImportTask:
 
         task.task_status = ImportStatus.COMPLETED.value
         await self.import_task_repository.flush()
-        await schedule_today_recompute(user_id)
+        await schedule_today_recompute(user_id, self.recommendation_repository, self.style_repository)
         return item

@@ -1,11 +1,14 @@
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 
 import structlog
 
+from app.application.ports.weather import WeatherInfo, WeatherPort
 from app.application.recommendations.engine import EngineItem, RecommendationEngine
-from app.common.enums import RecommendationStatus
+from app.application.style.build_style_profile import build_style_profile
+from app.common.enums import OutfitType, RecommendationStatus, TimeSensitivity
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
@@ -14,6 +17,7 @@ from app.infrastructure.persistence.models.recommendation import (
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
+from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 
 logger = structlog.get_logger(__name__)
 
@@ -22,16 +26,36 @@ class RecommendationGenerator:
     def __init__(
         self,
         repository: SqlAlchemyRecommendationRepository,
+        style_repository: SqlAlchemyStyleRepository | None = None,
         engine: RecommendationEngine | None = None,
+        weather_service: WeatherPort | None = None,
     ) -> None:
         self.repository = repository
+        self.style_repository = style_repository
         self.engine = engine or RecommendationEngine()
+        self.weather_service = weather_service
 
     async def generate_for_user(
         self, user_id: uuid.UUID, target_date: date, generation_source: str
     ) -> DailyRecommendation:
+        existing = await self.repository.get_daily(user_id, target_date)
+        if existing and await self.repository.daily_has_engagement(existing.id):
+            logger.info(
+                "recommendation_generation_skipped",
+                user_id=str(user_id),
+                target_date=str(target_date),
+                reason="daily_has_engagement",
+            )
+            return existing
+
         items = await self.repository.get_wearable_items(user_id)
         recent = await self.repository.recent_worn_main_item_ids(user_id, target_date)
+        recent_outfits = await self.repository.get_recent_worn_outfit_item_ids(
+            user_id, target_date, days=7
+        )
+        style_profile = await self._load_style_profile(user_id)
+        weather = await self._load_weather(user_id)
+
         result = self.engine.generate(
             [
                 EngineItem(
@@ -39,11 +63,16 @@ class RecommendationGenerator:
                     title=item.title,
                     category=item.category,
                     color_main=item.color_main,
+                    location=item.location,
+                    fit_status=item.fit_status,
                 )
                 for item in items
             ],
             recent_worn_main_item_ids=recent,
             target_date=target_date,
+            style_profile=style_profile,
+            weather=weather,
+            recent_worn_outfit_item_ids=recent_outfits,
         )
 
         daily = DailyRecommendation(
@@ -71,6 +100,9 @@ class RecommendationGenerator:
                         reason_text=engine_outfit.reason_text,
                         score_total=Decimal(str(engine_outfit.score_total)),
                         rank_order=rank,
+                        time_sensitivity=_time_sensitivity_for_outfit_type(
+                            engine_outfit.outfit_type
+                        ),
                         created_at=now,
                     )
                 )
@@ -92,5 +124,44 @@ class RecommendationGenerator:
             user_id=str(user_id),
             target_date=str(target_date),
             status=result.status,
+            has_style_profile=bool(style_profile),
         )
         return daily
+
+    async def _load_style_profile(self, user_id: uuid.UUID) -> dict[str, Any]:
+        if self.style_repository is None:
+            return {}
+        try:
+            profiles = await self.style_repository.list_by_user(user_id)
+            wear_history = await self.repository.get_recent_wear_history(user_id, days=30)
+            feedback = await self.repository.get_recent_feedback(user_id, days=30)
+            wardrobe_items = await self.repository.get_wearable_items(user_id)
+            outfit_main_item_ids = await self.repository.get_outfit_main_item_ids(
+                [wh.outfit_id for wh in wear_history]
+            )
+            return build_style_profile(
+                profiles, wear_history, feedback, wardrobe_items, outfit_main_item_ids
+            )
+        except Exception as exc:
+            logger.warning("style_profile_load_failed", user_id=str(user_id), error=str(exc))
+            return {}
+
+    async def _load_weather(self, user_id: uuid.UUID) -> WeatherInfo | None:
+        if self.weather_service is None:
+            return None
+        location = await self.repository.get_user_location(user_id)
+        if not location:
+            return None
+        try:
+            return await self.weather_service.get_weather(location)
+        except Exception as exc:
+            logger.warning("weather_load_failed", user_id=str(user_id), error=str(exc))
+            return None
+
+
+def _time_sensitivity_for_outfit_type(outfit_type: str) -> str:
+    if outfit_type == OutfitType.FAST.value:
+        return TimeSensitivity.RUSHED.value
+    if outfit_type == OutfitType.STYLISH.value:
+        return TimeSensitivity.RELAXED.value
+    return TimeSensitivity.STANDARD.value

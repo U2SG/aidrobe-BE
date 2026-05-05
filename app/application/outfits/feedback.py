@@ -15,7 +15,11 @@ class FeedbackOutfit:
         self.repository = repository
 
     async def execute(
-        self, outfit_id: uuid.UUID, user_id: uuid.UUID, feedback_type: str
+        self,
+        outfit_id: uuid.UUID,
+        user_id: uuid.UUID,
+        feedback_type: str,
+        reason_tags: list[str] | None = None,
     ) -> OutfitFeedback:
         if feedback_type not in {FeedbackType.LIKE.value, FeedbackType.DISLIKE.value}:
             raise FriendlyException(
@@ -24,11 +28,17 @@ class FeedbackOutfit:
         outfit = await self.repository.get_outfit_for_user(outfit_id, user_id)
         if outfit is None:
             raise FriendlyException(error_codes.NOT_FOUND, "Outfit not found", status_code=404)
+        existing = await self.repository.get_feedback_for_user(outfit_id, user_id)
+        if existing is not None:
+            existing.feedback_type = feedback_type
+            existing.reason_tags = {"tags": reason_tags or []}
+            return existing
         return await self.repository.add_feedback(
             OutfitFeedback(
                 user_id=user_id,
                 outfit_id=outfit_id,
                 feedback_type=feedback_type,
+                reason_tags={"tags": reason_tags or []},
                 created_at=datetime.now(UTC),
             )
         )
