@@ -1,0 +1,256 @@
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--font-sans); }
+  .lp { max-width: 680px; }
+
+  /* Hero */
+  .hero { text-align: center; padding: 56px 32px 48px; }
+  .badge { display: inline-block; font-size: 12px; font-weight: 500; padding: 4px 12px; border-radius: 20px; background: var(--color-background-info); color: var(--color-text-info); margin-bottom: 20px; letter-spacing: 0.02em; }
+  .hero h1 { font-size: 34px; font-weight: 500; line-height: 1.25; color: var(--color-text-primary); margin-bottom: 16px; }
+  .hero h1 span { color: var(--color-text-info); }
+  .hero p { font-size: 16px; color: var(--color-text-secondary); line-height: 1.7; max-width: 440px; margin: 0 auto 32px; }
+  .cta-primary { display: inline-flex; align-items: center; gap: 8px; background: var(--color-text-primary); color: var(--color-background-primary); font-size: 15px; font-weight: 500; padding: 12px 28px; border-radius: var(--border-radius-lg); border: none; cursor: pointer; text-decoration: none; }
+  .cta-secondary { display: inline-flex; align-items: center; gap: 6px; margin-left: 16px; font-size: 14px; color: var(--color-text-secondary); cursor: pointer; text-decoration: none; border: none; background: none; }
+
+  /* Phone mockup */
+  .phone-wrap { display: flex; justify-content: center; gap: 20px; padding: 8px 16px 48px; }
+  .phone { width: 160px; background: var(--color-background-primary); border: 1.5px solid var(--color-border-secondary); border-radius: 24px; overflow: hidden; flex-shrink: 0; }
+  .phone-screen { padding: 12px 10px; min-height: 300px; }
+  .phone-label { font-size: 10px; color: var(--color-text-tertiary); text-align: center; padding: 4px 0 10px; letter-spacing: 0.03em; }
+
+  /* Screen: Today */
+  .s-date { font-size: 10px; color: var(--color-text-secondary); margin-bottom: 2px; }
+  .s-title { font-size: 13px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 10px; }
+  .s-chip { display: inline-block; font-size: 9px; padding: 2px 7px; border-radius: 10px; background: var(--color-background-info); color: var(--color-text-info); margin-bottom: 6px; }
+  .outfit-card { background: var(--color-background-secondary); border-radius: 10px; padding: 8px; margin-bottom: 6px; border: 0.5px solid var(--color-border-tertiary); }
+  .outfit-row { display: flex; gap: 4px; margin-bottom: 6px; }
+  .outfit-swatch { width: 28px; height: 36px; border-radius: 5px; }
+  .outfit-name { font-size: 10px; font-weight: 500; color: var(--color-text-primary); }
+  .outfit-sub { font-size: 9px; color: var(--color-text-secondary); margin-top: 1px; }
+  .wear-btn { width: 100%; font-size: 9px; padding: 4px 0; border-radius: 6px; background: var(--color-text-primary); color: var(--color-background-primary); border: none; cursor: pointer; font-weight: 500; }
+
+  /* Screen: Wardrobe */
+  .wardrobe-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 8px; }
+  .item-card { background: var(--color-background-secondary); border-radius: 8px; overflow: hidden; border: 0.5px solid var(--color-border-tertiary); }
+  .item-img { width: 100%; height: 50px; display: flex; align-items: center; justify-content: center; }
+  .item-info { padding: 4px 5px 5px; }
+  .item-name { font-size: 9px; font-weight: 500; color: var(--color-text-primary); }
+  .item-meta { font-size: 8px; color: var(--color-text-secondary); }
+  .add-btn-sm { width: 100%; margin-top: 6px; font-size: 9px; padding: 4px 0; border-radius: 6px; border: 0.5px dashed var(--color-border-secondary); background: none; color: var(--color-text-secondary); cursor: pointer; }
+
+  /* Screen: Import */
+  .import-img { width: 100%; height: 80px; background: var(--color-background-secondary); border-radius: 8px; margin-bottom: 8px; display: flex; align-items: center; justify-content: center; border: 0.5px solid var(--color-border-tertiary); }
+  .field-row { margin-bottom: 6px; }
+  .field-label { font-size: 9px; color: var(--color-text-secondary); margin-bottom: 2px; }
+  .field-val { font-size: 10px; font-weight: 500; color: var(--color-text-primary); background: var(--color-background-secondary); border: 0.5px solid var(--color-border-tertiary); border-radius: 5px; padding: 4px 6px; }
+  .save-btn { width: 100%; font-size: 9px; padding: 5px 0; border-radius: 6px; background: var(--color-text-primary); color: var(--color-background-primary); border: none; font-weight: 500; cursor: pointer; margin-top: 4px; }
+
+  /* Features */
+  .features { padding: 0 24px 48px; }
+  .section-label { font-size: 12px; font-weight: 500; color: var(--color-text-tertiary); text-align: center; letter-spacing: 0.06em; margin-bottom: 24px; text-transform: uppercase; }
+  .feature-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .feature-card { background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 16px; border: 0.5px solid var(--color-border-tertiary); }
+  .feature-icon { width: 32px; height: 32px; border-radius: var(--border-radius-md); display: flex; align-items: center; justify-content: center; margin-bottom: 10px; font-size: 16px; }
+  .feature-h { font-size: 13px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 4px; }
+  .feature-p { font-size: 12px; color: var(--color-text-secondary); line-height: 1.5; }
+
+  /* How */
+  .how { padding: 0 24px 48px; }
+  .steps { display: flex; flex-direction: column; gap: 0; }
+  .step { display: flex; gap: 16px; align-items: flex-start; padding: 16px 0; border-bottom: 0.5px solid var(--color-border-tertiary); }
+  .step:last-child { border-bottom: none; }
+  .step-num { width: 28px; height: 28px; border-radius: 50%; background: var(--color-background-info); color: var(--color-text-info); font-size: 13px; font-weight: 500; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 2px; }
+  .step-h { font-size: 14px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 3px; }
+  .step-p { font-size: 13px; color: var(--color-text-secondary); line-height: 1.5; }
+
+  /* Privacy */
+  .privacy { margin: 0 24px 48px; background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 20px 24px; border: 0.5px solid var(--color-border-tertiary); }
+  .privacy h3 { font-size: 14px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 8px; }
+  .privacy p { font-size: 13px; color: var(--color-text-secondary); line-height: 1.6; }
+
+  /* Footer CTA */
+  .footer-cta { text-align: center; padding: 32px 24px 48px; border-top: 0.5px solid var(--color-border-tertiary); }
+  .footer-cta h2 { font-size: 22px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 8px; }
+  .footer-cta p { font-size: 14px; color: var(--color-text-secondary); margin-bottom: 24px; }
+  .footer-note { font-size: 12px; color: var(--color-text-tertiary); margin-top: 12px; }
+  .divider { height: 0.5px; background: var(--color-border-tertiary); margin: 0 24px; }
+</style>
+
+<div class="lp">
+
+  <!-- Hero -->
+  <div class="hero">
+    <div class="badge">现已开放内测</div>
+    <h1>每天早晨，<span>直接看到</span><br>今天穿什么</h1>
+    <p>Aidrobe 根据你衣橱里的真实衣物，每天推荐 3 套搭配。省去早晨纠结，出门更从容。</p>
+    <a class="cta-primary" href="#">加入 TestFlight 内测</a>
+    <a class="cta-secondary" href="#">了解更多 →</a>
+  </div>
+
+  <!-- Phone mockups -->
+  <div class="phone-wrap">
+    <!-- Today screen -->
+    <div>
+      <div class="phone">
+        <div class="phone-screen">
+          <div class="s-date">周五 · 距离出门 42 分钟</div>
+          <div class="s-title">今日推荐</div>
+          <div class="outfit-card">
+            <div class="s-chip">稳妥</div>
+            <div class="outfit-row">
+              <div class="outfit-swatch" style="background:#3a3a3a;"></div>
+              <div class="outfit-swatch" style="background:#c8b9a0;"></div>
+              <div class="outfit-swatch" style="background:#7a6e62;"></div>
+            </div>
+            <div class="outfit-name">深色系通勤</div>
+            <div class="outfit-sub">黑色西装 + 驼色裤 + 棕靴</div>
+            <button class="wear-btn" style="margin-top:6px;">今天穿这套</button>
+          </div>
+          <div class="outfit-card">
+            <div class="s-chip" style="background:var(--color-background-success);color:var(--color-text-success);">快速</div>
+            <div class="outfit-row">
+              <div class="outfit-swatch" style="background:#e8e0d8;"></div>
+              <div class="outfit-swatch" style="background:#4a5568;"></div>
+              <div class="outfit-swatch" style="background:#2d3748;"></div>
+            </div>
+            <div class="outfit-name">简洁日常</div>
+            <div class="outfit-sub">白T + 深蓝牛仔 + 运动鞋</div>
+            <button class="wear-btn" style="margin-top:6px;">今天穿这套</button>
+          </div>
+        </div>
+      </div>
+      <div class="phone-label">今日推荐</div>
+    </div>
+
+    <!-- Wardrobe screen -->
+    <div>
+      <div class="phone">
+        <div class="phone-screen">
+          <div class="s-title">我的衣橱</div>
+          <div style="display:flex;gap:4px;margin-bottom:8px;overflow:hidden;">
+            <span style="font-size:9px;padding:2px 7px;border-radius:10px;background:var(--color-text-primary);color:var(--color-background-primary);">全部</span>
+            <span style="font-size:9px;padding:2px 7px;border-radius:10px;border:0.5px solid var(--color-border-secondary);color:var(--color-text-secondary);">上衣</span>
+            <span style="font-size:9px;padding:2px 7px;border-radius:10px;border:0.5px solid var(--color-border-secondary);color:var(--color-text-secondary);">下装</span>
+            <span style="font-size:9px;padding:2px 7px;border-radius:10px;border:0.5px solid var(--color-border-secondary);color:var(--color-text-secondary);">鞋</span>
+          </div>
+          <div class="wardrobe-grid">
+            <div class="item-card">
+              <div class="item-img" style="background:#3a3a3a;"></div>
+              <div class="item-info"><div class="item-name">黑色西装</div><div class="item-meta">外套 · 黑色</div></div>
+            </div>
+            <div class="item-card">
+              <div class="item-img" style="background:#c8b9a0;"></div>
+              <div class="item-info"><div class="item-name">驼色休闲裤</div><div class="item-meta">下装 · 驼色</div></div>
+            </div>
+            <div class="item-card">
+              <div class="item-img" style="background:#e8e0d8;"></div>
+              <div class="item-info"><div class="item-name">白色T恤</div><div class="item-meta">上衣 · 白色</div></div>
+            </div>
+            <div class="item-card">
+              <div class="item-img" style="background:#4a5568;"></div>
+              <div class="item-info"><div class="item-name">深蓝牛仔裤</div><div class="item-meta">下装 · 深蓝</div></div>
+            </div>
+          </div>
+          <button class="add-btn-sm">+ 添加衣物</button>
+        </div>
+      </div>
+      <div class="phone-label">我的衣橱</div>
+    </div>
+
+    <!-- Import screen -->
+    <div>
+      <div class="phone">
+        <div class="phone-screen">
+          <div class="s-title">确认识别结果</div>
+          <div class="import-img">
+            <div style="width:60px;height:70px;background:#7a6e62;border-radius:6px;"></div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">名称</div>
+            <div class="field-val">棕色皮靴</div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">品类</div>
+            <div class="field-val">鞋履</div>
+          </div>
+          <div class="field-row">
+            <div class="field-label">颜色</div>
+            <div class="field-val">棕色</div>
+          </div>
+          <button class="save-btn">保存到衣橱</button>
+          <button style="width:100%;font-size:9px;padding:4px;border:none;background:none;color:var(--color-text-secondary);cursor:pointer;margin-top:4px;">放弃</button>
+        </div>
+      </div>
+      <div class="phone-label">拍照导入</div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Features -->
+  <div class="features" style="padding-top:40px;">
+    <div class="section-label">为什么选择 Aidrobe</div>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon" style="background:var(--color-background-info);">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="var(--color-text-info)" stroke-width="1.5"/><path d="M8 5v3.5l2 1.5" stroke="var(--color-text-info)" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </div>
+        <div class="feature-h">节省早晨时间</div>
+        <div class="feature-p">前一晚预生成推荐，打开即看，不等待。</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background:var(--color-background-success);">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8l3.5 3.5L13 4.5" stroke="var(--color-text-success)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="feature-h">基于真实衣物</div>
+        <div class="feature-p">推荐来自你实际拥有的衣物，不是假设。</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background:var(--color-background-warning);">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2l1.5 3.5H14l-3.5 2.5 1.5 3.5L8 9.5 4 11.5l1.5-3.5L2 5.5h4.5z" stroke="var(--color-text-warning)" stroke-width="1.3" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="feature-h">越用越懂你</div>
+        <div class="feature-p">喜欢或不喜欢，简单反馈，推荐越来越准。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- How it works -->
+  <div class="how" style="padding-top:40px;">
+    <div class="section-label">使用流程</div>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div><div class="step-h">拍照或从相册导入衣物</div><div class="step-p">AI 自动识别品类和颜色，确认即保存，一件衣物不到 30 秒。</div></div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div><div class="step-h">设置出门时间</div><div class="step-p">Aidrobe 提前预生成推荐，确保你打开时已有结果可看。</div></div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div><div class="step-h">每天早晨打开，看推荐</div><div class="step-p">3 套搭配，点一下「今天穿这套」，出门前决策完成。</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Privacy -->
+  <div class="privacy" style="margin-top:40px;">
+    <h3>隐私说明</h3>
+    <p>你的衣物图片仅用于识别品类、颜色和生成穿搭推荐，不会公开展示，不会用于训练第三方模型，不会出售给任何广告商。</p>
+  </div>
+
+  <!-- Footer CTA -->
+  <div class="footer-cta">
+    <h2>加入内测，今天开始</h2>
+    <p>目前面向通勤人群开放 TestFlight 内测，支持拍照和相册导入。</p>
+    <a class="cta-primary" href="#">加入 TestFlight 内测</a>
+    <div class="footer-note">仅限 iOS · 免费 · 随时可退出</div>
+  </div>
+
+</div>
