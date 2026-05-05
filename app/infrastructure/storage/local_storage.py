@@ -1,12 +1,18 @@
 import re
 import uuid
+from pathlib import Path
 
 from app.application.ports.storage import PresignResult
 
 
 class LocalObjectStorage:
-    def __init__(self, base_url: str = "http://localhost:9000/local") -> None:
+    def __init__(
+        self,
+        base_url: str = "http://localhost:9000/local",
+        storage_root: str = "/tmp/aidrobe_local_storage",
+    ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.storage_root = Path(storage_root)
 
     async def create_presigned_upload(
         self,
@@ -23,4 +29,7 @@ class LocalObjectStorage:
         )
 
     async def put_object(self, key: str, data: bytes, content_type: str) -> str:
+        dest = self.storage_root / key
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
         return f"{self.base_url}/files/{key}"

@@ -3,12 +3,14 @@
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.presentation.api.v1.deps import get_current_user
+from app.common import error_codes
+from app.common.exceptions import FriendlyException
 from app.infrastructure.persistence.session import get_db_session as get_db
+from app.presentation.api.v1.deps import get_current_user
 
 router = APIRouter(prefix="/v1", tags=["outfit-visual"])
 
@@ -45,7 +47,7 @@ async def get_outfit_visual_asset(
     repo = SqlAlchemyOutfitVisualRepository(db)
     asset = await repo.get_by_id(asset_id)
     if asset is None or asset.user_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+        raise FriendlyException(error_codes.NOT_FOUND, "Asset not found", status_code=404)
 
     return OutfitVisualAssetResponse(
         asset_id=asset.id,
@@ -79,7 +81,7 @@ async def get_item_images(
     )
     item = result.scalar_one_or_none()
     if item is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+        raise FriendlyException(error_codes.NOT_FOUND, "Item not found", status_code=404)
 
     img_result = await db.execute(
         select(WardrobeItemImage).where(WardrobeItemImage.item_id == item_id)

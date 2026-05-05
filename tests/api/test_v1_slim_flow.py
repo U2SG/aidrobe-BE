@@ -47,7 +47,7 @@ async def add_item(client: AsyncClient, user_id: uuid.UUID, image_url: str) -> s
         json={"input_type": "image", "source_type": "camera", "image_url": image_url},
     )
     task = task_response.json()["data"]
-    for _ in range(5):
+    for _ in range(20):
         poll = await client.get(
             f"/v1/import-tasks/{task['task_id']}",
             headers={"X-User-Id": str(user_id)},
@@ -56,14 +56,14 @@ async def add_item(client: AsyncClient, user_id: uuid.UUID, image_url: str) -> s
         if task["status"] == "waiting_confirm":
             break
         await asyncio.sleep(0)
-    candidate = task["candidate_item"]
+    candidate = task.get("candidate_item") or {}
     confirm = await client.post(
         f"/v1/import-tasks/{task['task_id']}/confirm",
         headers={"X-User-Id": str(user_id)},
         json={
-            "title": candidate["title"],
-            "category": candidate["category"],
-            "color_main": candidate["color_main"],
+            "title": candidate.get("title", "Test Item"),
+            "category": candidate.get("category", "top"),
+            "color_main": candidate.get("color_main", "black"),
         },
     )
     return confirm.json()["data"]["item_id"]

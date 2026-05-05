@@ -4,8 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import case, cast, func, select
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.models.recommendation import WearHistory
@@ -127,50 +126,33 @@ async def get_color_palette(user_id: uuid.UUID, session: AsyncSession) -> dict[s
 
 
 async def get_style_trend(user_id: uuid.UUID, session: AsyncSession) -> list:
-    # Aggregate by wear month using wear_history.worn_date (not item creation date)
+    """Aggregate style_tags by wear month via WearHistory → OutfitItem → WardrobeItem."""
+    from collections import Counter
+
+    from app.infrastructure.persistence.models.recommendation import OutfitItem
+
     result = await session.execute(
         select(
             func.to_char(WearHistory.worn_date, "YYYY-MM").label("year_month"),
-            func.jsonb_agg(
-                cast(WardrobeItem.style_tags, JSONB)
-            ).label("tags_agg"),
+            WardrobeItem.style_tags,
         )
-        .join(WardrobeItem, WardrobeItem.id == WearHistory.outfit_id, isouter=True)
+        .join(OutfitItem, OutfitItem.outfit_id == WearHistory.outfit_id)
+        .join(WardrobeItem, WardrobeItem.id == OutfitItem.item_id)
         .where(
             WearHistory.user_id == user_id,
             WardrobeItem.style_tags.isnot(None),
         )
-        .group_by(func.to_char(WearHistory.worn_date, "YYYY-MM"))
         .order_by(func.to_char(WearHistory.worn_date, "YYYY-MM"))
     )
-    # Fallback: simple Python aggregation if the join approach is too complex
-    # (outfit_id → outfit → outfit_items → wardrobe_items requires deeper join)
-    # For now return month → tag counts from item style_tags grouped by item created_at
-    # TODO: wire through outfit_items join for accurate wear-time trend
     rows = result.all()
-    if not rows:
-        return _style_trend_fallback(user_id, session)
-    return [{"year_month": r.year_month, "tags": {}} for r in rows]
 
-
-async def _style_trend_fallback(user_id: uuid.UUID, session: AsyncSession) -> list:
-    from collections import Counter
-    result = await session.execute(
-        select(WardrobeItem).where(
-            WardrobeItem.user_id == user_id,
-            WardrobeItem.deleted_at.is_(None),
-            WardrobeItem.style_tags.isnot(None),
-        )
-    )
-    items = list(result.scalars().all())
     monthly: dict[str, Counter] = {}
-    for item in items:
-        ym = item.created_at.strftime("%Y-%m")
-        tags = item.style_tags or []
-        if isinstance(tags, list):
-            if ym not in monthly:
-                monthly[ym] = Counter()
-            monthly[ym].update(tags)
+    for year_month, style_tags in rows:
+        tags = style_tags if isinstance(style_tags, list) else []
+        if year_month not in monthly:
+            monthly[year_month] = Counter()
+        monthly[year_month].update(tags)
+
     return [
         {"year_month": ym, "tags": dict(counter)}
         for ym, counter in sorted(monthly.items())

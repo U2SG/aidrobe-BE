@@ -34,7 +34,10 @@ def user_repository(session: AsyncSession) -> SqlAlchemyUserRepository:
 def object_storage() -> LocalObjectStorage | S3ObjectStorage:
     settings = get_settings()
     if settings.STORAGE_PROVIDER == "local":
-        return LocalObjectStorage()
+        return LocalObjectStorage(
+            base_url=settings.LOCAL_STORAGE_BASE_URL,
+            storage_root=settings.LOCAL_STORAGE_ROOT,
+        )
     if settings.STORAGE_PROVIDER == "s3":
         return S3ObjectStorage(settings)
     raise ValueError(f"Unsupported storage provider: {settings.STORAGE_PROVIDER}")

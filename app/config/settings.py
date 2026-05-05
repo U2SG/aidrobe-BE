@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     ENABLE_SCHEDULER: bool = False
     VISION_PROVIDER: str = "fake"
     STORAGE_PROVIDER: str = "local"
+    LOCAL_STORAGE_ROOT: str = "/tmp/aidrobe_local_storage"
+    LOCAL_STORAGE_BASE_URL: str = "http://localhost:9000/local"
     API_RATE_LIMIT_PER_USER_MINUTE: int = 100
     AUTH_RATE_LIMIT_PER_IP_MINUTE: int = 10
     VISION_MAX_CALLS_PER_USER_HOUR: int = 60

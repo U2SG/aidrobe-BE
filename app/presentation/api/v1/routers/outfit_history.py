@@ -4,10 +4,12 @@ import uuid
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common import error_codes
+from app.common.exceptions import FriendlyException
 from app.infrastructure.persistence.models.recommendation import Outfit, OutfitFeedback, WearHistory
 from app.infrastructure.persistence.session import get_db_session as get_db
 from app.presentation.api.v1.deps import get_current_user
@@ -125,7 +127,7 @@ async def get_outfit_history_by_date(
     )
     h = result.scalar_one_or_none()
     if h is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No record for that date")
+        raise FriendlyException(error_codes.NOT_FOUND, "No record for that date", status_code=404)
 
     outfit_summary = None
     outfit_result = await db.execute(select(Outfit).where(Outfit.id == h.outfit_id))
@@ -162,7 +164,7 @@ async def upload_ootd(
     )
     h = result.scalar_one_or_none()
     if h is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record not found")
+        raise FriendlyException(error_codes.NOT_FOUND, "Record not found", status_code=404)
 
     h.ootd_image_url = body.ootd_image_url
     await db.flush()
