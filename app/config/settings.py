@@ -81,6 +81,12 @@ class Settings(BaseSettings):
     # direct table row) so we can compare outcomes and roll back on divergence.
     ASYNC_JOBS_DUAL_WRITE: bool = True
 
+    # Phase D — gated independently from Phase B explainability so context
+    # can be rolled out (e.g. weather provider down → just disable, no need
+    # to roll back scoring).
+    ENABLE_TODAY_CONTEXT: bool = False
+    ENABLE_TODAY_REFRESH: bool = False
+
     # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
     # every authenticated user is admin (DX); empty in prod means the admin
     # surface is locked off. This is intentional so a misconfigured prod

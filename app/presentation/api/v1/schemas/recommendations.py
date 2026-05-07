@@ -66,12 +66,30 @@ class StyleContextResponse(BaseModel):
     confidence: float = 0.0
 
 
+class WeatherContextResponse(BaseModel):
+    temperature_c: float
+    feels_like_c: float
+    rain_probability: float
+    condition: str
+
+
+class TodayContextResponse(BaseModel):
+    """Phase D — context snapshot the engine saw at generation time. Surfaced
+    only when ENABLE_TODAY_CONTEXT=true; absent on rows generated before
+    Phase D landed."""
+
+    weather: WeatherContextResponse | None = None
+    scene: str | None = None
+    fetched_at: str | None = None
+
+
 class TodayRecommendationResponse(BaseModel):
     recommendation_date: date
     status: str
     guidance_text: str | None = None
     outfits: list[OutfitResponse] = []
     style_context: StyleContextResponse | None = None  # V3 M13
+    context: TodayContextResponse | None = None  # Phase D — gated by ENABLE_TODAY_CONTEXT
 
 
 class WearOutfitRequest(BaseModel):

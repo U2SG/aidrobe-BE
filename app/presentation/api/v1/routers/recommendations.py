@@ -55,9 +55,11 @@ from app.presentation.api.v1.schemas.recommendations import (
     OutfitScoresResponse,
     RecommendationItemResponse,
     StyleContextResponse,
+    TodayContextResponse,
     TodayRecommendationResponse,
     WearOutfitRequest,
     WearOutfitResponse,
+    WeatherContextResponse,
 )
 
 router = APIRouter(prefix="/v1/recommendations", tags=["recommendations"])
@@ -190,6 +192,35 @@ async def today_response(
         status=daily.status,
         guidance_text=guidance,
         outfits=enriched,
+        context=_build_context_response(daily.context_json),
+    )
+
+
+def _build_context_response(raw: object) -> TodayContextResponse | None:
+    """Read context_json from the daily row and surface it only when
+    ENABLE_TODAY_CONTEXT is on. The row itself may be persisted regardless
+    of the flag — this is a presentation-layer gate so we can roll the
+    feature back without losing the data the engine saw."""
+    if not get_settings().ENABLE_TODAY_CONTEXT:
+        return None
+    if not isinstance(raw, dict) or not raw:
+        return None
+    weather_raw = raw.get("weather")
+    weather: WeatherContextResponse | None = None
+    if isinstance(weather_raw, dict):
+        try:
+            weather = WeatherContextResponse(**weather_raw)
+        except Exception:
+            # Persisted snapshot pre-dates the current schema. Don't 500 the
+            # request — drop the malformed weather chunk and keep the rest.
+            logger.warning("today_context.weather_decode_failed")
+            weather = None
+    scene_raw = raw.get("scene")
+    fetched_at_raw = raw.get("fetched_at")
+    return TodayContextResponse(
+        weather=weather,
+        scene=scene_raw if isinstance(scene_raw, str) else None,
+        fetched_at=fetched_at_raw if isinstance(fetched_at_raw, str) else None,
     )
 
 

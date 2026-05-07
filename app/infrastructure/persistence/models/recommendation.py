@@ -59,6 +59,10 @@ class DailyRecommendation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_current: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )
+    # Phase D — context snapshot taken at generation time.
+    # Shape: {"weather": {...}, "scene": "...", "fetched_at": "ISO-8601"}.
+    # Nullable so legacy rows + weather-port-down generations remain valid.
+    context_json: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
 
     outfits: Mapped[list["Outfit"]] = relationship(
         back_populates="daily_recommendation", cascade="all, delete-orphan"

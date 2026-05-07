@@ -43,7 +43,11 @@ class RecommendationGenerator:
         self.weather_service = weather_service
 
     async def generate_for_user(
-        self, user_id: uuid.UUID, target_date: date, generation_source: str
+        self,
+        user_id: uuid.UUID,
+        target_date: date,
+        generation_source: str,
+        scene: str | None = None,
     ) -> DailyRecommendation:
         existing = await self.repository.get_daily(user_id, target_date)
         if existing and await self.repository.daily_has_engagement(existing.id):
@@ -95,6 +99,7 @@ class RecommendationGenerator:
             }
             if result.outfits
             else None,
+            context_json=_build_context_snapshot(weather, scene),
         )
         daily = await self.repository.replace_daily(daily)
 
@@ -213,6 +218,28 @@ class RecommendationGenerator:
         except Exception as exc:
             logger.warning("weather_load_failed", user_id=str(user_id), error=str(exc))
             return None
+
+
+def _build_context_snapshot(
+    weather: WeatherInfo | None, scene: str | None
+) -> dict[str, Any] | None:
+    """Snapshot the inputs that drove this generation. Stored on the daily
+    row so future explainability ("why did we suggest this?") can ground in
+    the same weather/scene the engine actually saw, not whatever the user
+    sees right now."""
+    if weather is None and scene is None:
+        return None
+    snapshot: dict[str, Any] = {"fetched_at": datetime.now(UTC).isoformat()}
+    if weather is not None:
+        snapshot["weather"] = {
+            "temperature_c": weather.temperature_c,
+            "feels_like_c": weather.feels_like_c,
+            "rain_probability": weather.rain_probability,
+            "condition": weather.condition,
+        }
+    if scene is not None:
+        snapshot["scene"] = scene
+    return snapshot
 
 
 def _time_sensitivity_for_outfit_type(outfit_type: str) -> str:
