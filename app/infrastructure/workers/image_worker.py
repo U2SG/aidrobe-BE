@@ -46,12 +46,14 @@ async def process_image_job(ctx: object, job_id: str) -> None:
                     ("thumbnail", result.thumbnail_url),
                     ("cutout", result.cutout_url),
                 ):
-                    session.add(WardrobeItemImage(
-                        item_id=job.item_id,
-                        image_type=image_type,
-                        image_url=url,
-                        created_at=now,
-                    ))
+                    session.add(
+                        WardrobeItemImage(
+                            item_id=job.item_id,
+                            image_type=image_type,
+                            image_url=url,
+                            created_at=now,
+                        )
+                    )
 
             await repo.update_status(
                 job,
@@ -64,6 +66,48 @@ async def process_image_job(ctx: object, job_id: str) -> None:
                     "quality_flags": result.quality_flags,
                 },
             )
+
+            # Embedding enqueue runs in a SAVEPOINT inside this same session.
+            # Three reasons this is the right shape:
+            # 1) An enqueue DB error rolls back ONLY the savepoint, leaving the
+            #    image-job transaction healthy so the outer commit succeeds.
+            # 2) Both writes still commit atomically with the image-job row, so
+            #    we never end up with a "completed image, no embedding job"
+            #    orphan that would require a reconciler to clean up.
+            # 3) On retry of this arq job (status='processing' → still inside
+            #    the early-return guard above), the embedding enqueue is
+            #    idempotent on (item_id, model_version), so a previous-attempt
+            #    enqueue followed by a transient failure is recovered cleanly.
+            if job.item_id:
+                embed_url = result.cutout_url or result.normalized_url
+                if embed_url:
+                    try:
+                        from app.bootstrap.container import embedding_service
+                        from app.infrastructure.workers.embedding_worker import (
+                            enqueue_embedding,
+                        )
+
+                        embedder = embedding_service()
+                        async with session.begin_nested():
+                            await enqueue_embedding(
+                                session,
+                                item_id=job.item_id,
+                                image_url=embed_url,
+                                model_version=embedder.model_version,
+                                user_id=job.user_id,
+                                correlation_id=str(job.id),
+                            )
+                    except Exception as exc:
+                        # Savepoint already rolled back; image transaction is
+                        # still alive. Embedding pipeline intentionally
+                        # tolerates this — image processing's own contract is
+                        # intact, and a follow-up image-replace will retry.
+                        logger.warning(
+                            "embedding_enqueue_failed",
+                            item_id=str(job.item_id),
+                            error=str(exc),
+                        )
+
             await session.commit()
             logger.info("image_job_completed", job_id=job_id)
 

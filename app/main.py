@@ -11,6 +11,7 @@ from app.infrastructure.logging.setup import setup_logging
 from app.infrastructure.persistence.session import AsyncSessionLocal
 from app.jobs.scheduler import create_scheduler
 from app.presentation.api.v1.routers import (
+    admin,
     auth,
     fit,
     health,
@@ -24,8 +25,10 @@ from app.presentation.api.v1.routers import (
     uploads,
     wardrobe,
 )
+from app.presentation.middlewares.correlation import CorrelationIdMiddleware
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
 from app.presentation.middlewares.rate_limit import InMemoryRateLimitMiddleware
+from app.presentation.middlewares.timing import TimingMiddleware
 
 
 @asynccontextmanager
@@ -54,6 +57,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(title="Aidrobe API", lifespan=lifespan)
     app.add_middleware(InMemoryRateLimitMiddleware, settings=get_settings())
+    app.add_middleware(TimingMiddleware)
+    app.add_middleware(CorrelationIdMiddleware)
     setup_exception_handlers(app)
     app.include_router(auth.router)
     app.include_router(health.router)
@@ -67,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(insights.router)
     app.include_router(outfit_history.router)
     app.include_router(outfit_visual.router)
+    app.include_router(admin.router)
     return app
 
 

@@ -78,3 +78,44 @@ async def get_current_user(
     user = await repository.get_or_create(user_id)
     sentry_sdk.set_user({"id": str(user.id)})
     return user
+
+
+def _parse_admin_ids(raw: str) -> set[uuid.UUID]:
+    out: set[uuid.UUID] = set()
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            out.add(uuid.UUID(chunk))
+        except ValueError:
+            # Misconfigured entries are ignored rather than crashing every
+            # admin request — the missing entry just means that user isn't
+            # admin, which is the safer failure mode.
+            continue
+    return out
+
+
+async def require_admin_user(
+    current_user: Annotated[User, Depends(get_current_user)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> User:
+    """Admin-gated dependency. Dev fail-open is deliberate: empty ADMIN_USER_IDS
+    in dev means every authenticated user is admin. Empty in prod fails
+    closed — the surface is locked off until the operator opts in."""
+    admin_ids = _parse_admin_ids(settings.ADMIN_USER_IDS)
+    if not admin_ids:
+        if settings.APP_ENV == "prod":
+            raise FriendlyException(
+                error_codes.FORBIDDEN,
+                "Admin surface disabled",
+                status_code=403,
+            )
+        return current_user
+    if current_user.id not in admin_ids:
+        raise FriendlyException(
+            error_codes.FORBIDDEN,
+            "Admin only",
+            status_code=403,
+        )
+    return current_user

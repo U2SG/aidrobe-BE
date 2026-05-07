@@ -10,6 +10,7 @@ class FakeEmbedding:
     """
 
     DIM = 512
+    model_version = "fake:512"
 
     async def embed_image(self, image_url: str) -> list[float]:
         digest = hashlib.sha256(image_url.encode()).digest()

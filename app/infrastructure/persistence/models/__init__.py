@@ -1,3 +1,4 @@
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.base import Base
 from app.infrastructure.persistence.models.embedding import ItemEmbedding
 from app.infrastructure.persistence.models.fit import FitFeedback
@@ -17,6 +18,7 @@ from app.infrastructure.persistence.models.user import User, UserSession, UserSe
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 
 __all__ = [
+    "AsyncJob",
     "Base",
     "OutfitVisualAsset",
     "DailyRecommendation",

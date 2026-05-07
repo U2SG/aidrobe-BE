@@ -13,6 +13,7 @@ class ClipEmbedder:
     DIM = 512
     MODEL_NAME = "ViT-B-32"
     PRETRAINED = "openai"
+    model_version = "clip:ViT-B-32:openai"
 
     def __init__(self, settings: Settings) -> None:
         self.timeout_seconds = settings.CLIP_EMBEDDING_TIMEOUT_SECONDS

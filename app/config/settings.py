@@ -76,6 +76,17 @@ class Settings(BaseSettings):
     ENABLE_OBSTACLES: bool = False
     ENABLE_PREP_STEPS: bool = False
 
+    # Phase C async-jobs framework. While dual-write is on, code paths that
+    # adopt the framework should ALSO write the legacy artifact (arq job /
+    # direct table row) so we can compare outcomes and roll back on divergence.
+    ASYNC_JOBS_DUAL_WRITE: bool = True
+
+    # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
+    # every authenticated user is admin (DX); empty in prod means the admin
+    # surface is locked off. This is intentional so a misconfigured prod
+    # deployment fails closed rather than open.
+    ADMIN_USER_IDS: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

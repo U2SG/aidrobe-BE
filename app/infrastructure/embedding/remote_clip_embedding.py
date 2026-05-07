@@ -15,6 +15,7 @@ class RemoteClipEmbedding:
     """
 
     DIM = 512
+    model_version = "remote_clip:512"
 
     def __init__(self, settings: Settings) -> None:
         if not settings.CLIP_EMBEDDING_API_KEY:

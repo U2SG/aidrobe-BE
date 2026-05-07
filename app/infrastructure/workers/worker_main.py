@@ -10,9 +10,14 @@ except ImportError:
 from app.application.fit_profile.build_fit_profile import build_all_fit_profiles
 from app.config.settings import get_settings
 from app.infrastructure.persistence.session import AsyncSessionLocal
+from app.infrastructure.workers.embedding_worker import drain_embedding_jobs
 from app.infrastructure.workers.image_worker import process_image_job
 from app.infrastructure.workers.import_worker import process_import_task
-from app.infrastructure.workers.outfit_board_worker import generate_outfit_board
+from app.infrastructure.workers.job_runtime import recover_expired_leases
+from app.infrastructure.workers.outfit_board_worker import (
+    drain_outfit_board_jobs,
+    reconcile_dead_outfit_board_assets,
+)
 from app.infrastructure.workers.style_learn_worker import learn_style_source
 
 
@@ -21,6 +26,17 @@ async def build_fit_profiles(ctx: object) -> int:
         count = await build_all_fit_profiles(session)
         await session.commit()
         return count
+
+
+async def recover_async_job_leases(ctx: object) -> int:
+    """Sweep all expired-lease `running` rows back to `queued` so subsequent
+    drains re-claim them. Single shared sweep across all job_types — the
+    `lease_expires_at` partial index makes this cheap regardless of how many
+    queues we add later."""
+    async with AsyncSessionLocal() as session:
+        recovered = await recover_expired_leases(session)
+        await session.commit()
+    return recovered
 
 
 def _redis_settings_from_url(url: str):  # type: ignore[no-untyped-def]
@@ -43,12 +59,34 @@ class WorkerSettings:
     functions = [
         process_import_task,
         process_image_job,
-        generate_outfit_board,
         learn_style_source,
         build_fit_profiles,
+        drain_embedding_jobs,
+        drain_outfit_board_jobs,
+        recover_async_job_leases,
+        reconcile_dead_outfit_board_assets,
     ]
+    # async_jobs queues drain on a fixed cadence rather than via arq enqueue —
+    # producers only write the row, so cron is the trigger. Keep drain ticks
+    # short for low latency, but lease recovery only every 15 min (the lease
+    # default is 10 min, so 15 min recovery + 10 min lease bounds a stuck job
+    # to ~25 min worst case before it re-enters the queue).
     cron_jobs = (
-        [cron(build_fit_profiles, hour=3, minute=30, name="fit_profile_aggregation")]
+        [
+            cron(build_fit_profiles, hour=3, minute=30, name="fit_profile_aggregation"),
+            cron(drain_embedding_jobs, second={0, 30}, name="embedding_drain"),
+            cron(drain_outfit_board_jobs, second={0, 30}, name="outfit_board_drain"),
+            cron(
+                recover_async_job_leases,
+                minute={0, 15, 30, 45},
+                name="async_jobs_lease_recovery",
+            ),
+            cron(
+                reconcile_dead_outfit_board_assets,
+                minute={5, 20, 35, 50},
+                name="outfit_board_reconcile_dead_assets",
+            ),
+        ]
         if cron is not None
         else []
     )
