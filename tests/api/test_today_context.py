@@ -177,6 +177,33 @@ async def test_today_response_handles_legacy_rows_without_context(
     assert resp.json()["data"]["context"] is None
 
 
+async def test_generator_persists_null_context_when_weather_provider_raises(
+    db_session: AsyncSession,
+) -> None:
+    """Weather provider failure must NOT abort the generation. The daily
+    row still lands; context_json stays None (caller can retry on next
+    refresh). This is the fail-soft contract /today depends on — a flaky
+    weather API doesn't take recommendations down."""
+
+    class _ExplodingWeather:
+        async def get_weather(self, city: str) -> Any:
+            raise RuntimeError("upstream 503")
+
+        async def get_today(self, location: str) -> Any:
+            raise RuntimeError("upstream 503")
+
+    user_id = await _seed_user_and_items(db_session)
+    repo = SqlAlchemyRecommendationRepository(db_session)
+    daily = await RecommendationGenerator(
+        repo, weather_service=_ExplodingWeather()
+    ).generate_for_user(user_id, date.today(), "manual")
+    assert daily is not None
+    assert daily.context_json is None  # provider exception swallowed
+    # And the row IS persisted — not aborted.
+    fresh = await repo.get_daily(user_id, date.today())
+    assert fresh is not None
+
+
 async def test_today_response_drops_malformed_weather_chunk(
     db_session: AsyncSession,
 ) -> None:
