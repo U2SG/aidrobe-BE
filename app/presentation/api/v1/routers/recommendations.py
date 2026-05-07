@@ -10,7 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.outfits.feedback import FeedbackOutfit
-from app.application.outfits.obstacles import detect_obstacles, has_dirty
+from app.application.outfits.obstacles import (
+    attach_replacement_candidates,
+    detect_obstacles,
+    detect_weather_mismatch,
+    has_dirty,
+)
 from app.application.outfits.prep import compute_prep
 from app.application.outfits.scoring.dynamic import compute_dynamic_scores
 from app.application.outfits.wear import WearOutfit
@@ -91,7 +96,10 @@ def outfit_response(outfit: Outfit) -> OutfitResponse:
 
 
 async def _enrich_outfits(
-    session: AsyncSession, outfits: list[Outfit], today: date
+    session: AsyncSession,
+    outfits: list[Outfit],
+    today: date,
+    context_json: dict[str, Any] | None = None,
 ) -> list[OutfitResponse]:
     """Batch-fetch WardrobeItem rows for all outfits, compute dynamic scores /
     obstacles / prep per outfit. Each pipeline gated by its own feature flag —
@@ -143,6 +151,16 @@ async def _enrich_outfits(
                 obstacles_payload = detect_obstacles(
                     ordered_items, today=today, current_season=season
                 )
+                # Phase D — weather_mismatch + per-obstacle replacement IDs.
+                # Both are flag-gated through ENABLE_OBSTACLES; Phase D
+                # treats them as "obstacle quality" rather than independent
+                # toggles to avoid flag combinatorics.
+                obstacles_payload.extend(
+                    detect_weather_mismatch(ordered_items, context_json)
+                )
+                obstacles_payload = await attach_replacement_candidates(
+                    session, obstacles_payload, ordered_items
+                )
                 base_resp.obstacles = [ObstacleResponse(**o) for o in obstacles_payload]
             if settings.ENABLE_OUTFIT_SCORES:
                 scores = compute_dynamic_scores(
@@ -184,7 +202,12 @@ async def today_response(
     selected_outfits = _select_outfits_for_remaining_time(outfits, departure_time)
     selected_outfits = _select_outfits_for_scene(selected_outfits, scene)
     enriched = (
-        await _enrich_outfits(session, selected_outfits, today)
+        await _enrich_outfits(
+            session,
+            selected_outfits,
+            today,
+            context_json=daily.context_json if isinstance(daily.context_json, dict) else None,
+        )
         if daily.id is not None
         else []
     )

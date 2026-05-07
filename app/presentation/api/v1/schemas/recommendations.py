@@ -25,12 +25,16 @@ class OutfitScoresResponse(BaseModel):
 
 
 class ObstacleResponse(BaseModel):
-    kind: Literal["laundry", "lost", "seasonal", "stale"]
-    item_id: UUID
+    kind: Literal["laundry", "lost", "seasonal", "stale", "weather_mismatch"]
+    # weather_mismatch targets the whole outfit rather than a single item;
+    # in that case `item_id` is the empty string. Clients should treat an
+    # empty UUID-like string as "applies to the look."
+    item_id: UUID | str
     severity: Literal["blocking", "warning", "info"]
     title: I18nMessage
-    # Phase D will add `replacement_candidate_ids`; left out here on purpose so
-    # absence is meaningful rather than always-empty.
+    # Phase D — top-3 replacement IDs after wearable filter; absent on
+    # stale / weather_mismatch where suggesting a single item is meaningless.
+    replacement_candidate_ids: list[UUID] | None = None
 
     # Allow construction from raw dicts persisted in JSONB.
     model_config = {"extra": "ignore"}

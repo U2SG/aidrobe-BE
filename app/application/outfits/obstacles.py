@@ -1,22 +1,31 @@
-"""Lightweight obstacle detection: dirty, lost, seasonal, stale.
+"""Obstacle detection: dirty, lost, seasonal, stale, weather_mismatch.
 
-Phase B is intentionally limited:
-- weather_mismatch lands in Phase D (needs context wiring)
-- replacement candidate ranking lands in Phase D (needs embedding)
-"""
+Phase B added the lightweight kinds (dirty/lost/seasonal/stale).
+Phase D added weather_mismatch (driven by `context_json` from D1) and
+replacement-candidate ranking (driven by `find_replacements` cascade)."""
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import structlog
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.outfits.replacements import find_replacements
 from app.application.outfits.scoring.rules import get_freshness_rules
 from app.common.i18n import I18nMessage, make_message
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 logger = structlog.get_logger(__name__)
+
+# How fresh `context_json.fetched_at` must be before we'll use it for the
+# weather_mismatch check. Older snapshots emit `context.weather_stale` and
+# the check is skipped (better silent than wrong on a 6h-old forecast).
+_WEATHER_FRESHNESS_HOURS = 6
+# Rain-probability threshold above which a top-only / no-outerwear outfit
+# triggers `weather_mismatch`. Conservative — we'd rather miss than nag.
+_RAIN_FLAG_THRESHOLD = 0.6
 
 
 class Obstacle(BaseModel):
@@ -129,3 +138,92 @@ def has_blocking(obstacles: Sequence[dict[str, Any]]) -> bool:
 
 def has_dirty(obstacles: Sequence[dict[str, Any]]) -> bool:
     return any(o.get("kind") == "laundry" for o in obstacles)
+
+
+def detect_weather_mismatch(
+    items: Sequence[WardrobeItem],
+    context_json: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Phase D — flag the outfit when current weather context disagrees with
+    what the items can tolerate. Conservative for now: rain probability over
+    the threshold and no outerwear in the outfit ⇒ flag.
+
+    Returns dicts shaped like other obstacles (kind/severity/title) but
+    targets the OUTFIT, not a single item. Currently uses `item_id=""` as a
+    sentinel for outfit-level — clients should treat empty item_id as
+    "applies to the whole look"."""
+    if not context_json:
+        return []
+    fetched_at = context_json.get("fetched_at")
+    if isinstance(fetched_at, str):
+        try:
+            fetched_dt = datetime.fromisoformat(fetched_at)
+            if fetched_dt.tzinfo is None:
+                fetched_dt = fetched_dt.replace(tzinfo=UTC)
+            if datetime.now(UTC) - fetched_dt > timedelta(hours=_WEATHER_FRESHNESS_HOURS):
+                logger.info("context.weather_stale", fetched_at=fetched_at)
+                return []
+        except ValueError:
+            return []
+
+    weather = context_json.get("weather")
+    if not isinstance(weather, dict):
+        return []
+
+    rain_p = weather.get("rain_probability")
+    if not isinstance(rain_p, int | float):
+        return []
+    if rain_p < _RAIN_FLAG_THRESHOLD:
+        return []
+
+    has_outerwear = any(getattr(i, "category", None) == "outerwear" for i in items)
+    if has_outerwear:
+        return []
+
+    rules = get_freshness_rules()
+    rule_version = str(rules.get("version", "0"))
+    msg = make_message(
+        "obstacle.weather_mismatch",
+        f"今天大概率有雨（{int(rain_p * 100)}%），加件外套吧",
+        {"rain_probability": rain_p},
+        rule_version=rule_version,
+    )
+    return [
+        {
+            "kind": "weather_mismatch",
+            "item_id": "",
+            "severity": "warning",
+            "title": msg.model_dump(mode="json"),
+        }
+    ]
+
+
+async def attach_replacement_candidates(
+    session: AsyncSession,
+    obstacles: list[dict[str, Any]],
+    items: Sequence[WardrobeItem],
+    *,
+    k: int = 3,
+) -> list[dict[str, Any]]:
+    """Augment item-targeted obstacles with `replacement_candidate_ids`.
+    Stale obstacles are skipped (suggesting a freshly-worn item to replace
+    a freshly-worn item is unhelpful), as are weather_mismatch entries
+    (no single item is the problem)."""
+    items_by_id = {str(i.id): i for i in items}
+    other_outfit_item_ids = {i.id for i in items}
+    for o in obstacles:
+        if o.get("kind") in {"stale", "weather_mismatch"}:
+            continue
+        item_id = o.get("item_id")
+        if not item_id:
+            continue
+        item = items_by_id.get(item_id)
+        if item is None:
+            continue
+        candidates = await find_replacements(
+            session, item, exclude_ids=other_outfit_item_ids, k=k
+        )
+        # Always set the field (even when empty) so the client schema can
+        # reason about presence/absence consistently.
+        o["replacement_candidate_ids"] = [str(c) for c in candidates]
+    return obstacles
