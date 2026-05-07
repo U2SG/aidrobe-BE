@@ -28,7 +28,33 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+_PREPARE_VERSION_TABLE_SQL = """
+-- Pre-create the version table with a wide column on fresh DBs so the
+-- subsequent ALTER works for both fresh-and-legacy paths.
+CREATE TABLE IF NOT EXISTS alembic_version (
+    version_num VARCHAR(128) NOT NULL,
+    CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
+);
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'alembic_version'
+          AND column_name = 'version_num'
+          AND character_maximum_length < 128
+    ) THEN
+        EXECUTE 'ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(128)';
+    END IF;
+END $$;
+"""
+
+
 def do_run_migrations(connection: Connection) -> None:
+    # Default alembic_version.version_num is VARCHAR(32); revision IDs in this
+    # project (e.g. "0018_add_daily_recommendation_versioning") exceed that.
+    # Pre-create with the wider column on fresh DBs and widen defensively on
+    # legacy DBs so both paths work.
+    connection.exec_driver_sql(_PREPARE_VERSION_TABLE_SQL)
     context.configure(connection=connection, target_metadata=target_metadata)
 
     with context.begin_transaction():

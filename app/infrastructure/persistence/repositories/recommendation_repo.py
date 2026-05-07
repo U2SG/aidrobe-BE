@@ -131,6 +131,43 @@ class SqlAlchemyRecommendationRepository:
         await self.session.flush()
         return wear_history
 
+    async def insert_wear_history_idempotent(
+        self, wear_history: WearHistory
+    ) -> tuple[WearHistory, bool]:
+        """Insert wear_history with ON CONFLICT DO NOTHING on (user_id, outfit_id, worn_date).
+
+        Returns (row, inserted) — when conflict, returns the existing row and inserted=False.
+        """
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        stmt = (
+            pg_insert(WearHistory)
+            .values(
+                user_id=wear_history.user_id,
+                outfit_id=wear_history.outfit_id,
+                selected_at=wear_history.selected_at,
+                worn_date=wear_history.worn_date,
+                created_at=wear_history.created_at,
+                ootd_image_url=wear_history.ootd_image_url,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["user_id", "outfit_id", "worn_date"]
+            )
+            .returning(WearHistory.id)
+        )
+        result = await self.session.execute(stmt)
+        new_id = result.scalar_one_or_none()
+        if new_id is not None:
+            await self.session.flush()
+            row = await self.session.get(WearHistory, new_id)
+            assert row is not None
+            return row, True
+        existing = await self.get_wear_history(
+            wear_history.outfit_id, wear_history.user_id, wear_history.worn_date
+        )
+        assert existing is not None, "ON CONFLICT path but no existing row found"
+        return existing, False
+
     async def daily_has_engagement(self, daily_recommendation_id: uuid.UUID) -> bool:
         feedback_id = await self.session.scalar(
             select(OutfitFeedback.id)

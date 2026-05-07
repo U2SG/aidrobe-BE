@@ -1,9 +1,75 @@
 """Tests for RecommendationEngine — updated for async LLM + fit_profile integration."""
 
+import uuid
+from datetime import UTC, date, datetime
+
 import pytest
 
 from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.engine import EngineItem, RecommendationEngine
+from app.application.style.build_style_profile import build_style_profile
+from app.infrastructure.persistence.models.recommendation import OutfitFeedback, WearHistory
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+
+
+def _profile_color_weight_for_feedback(feedback_type: str) -> float:
+    user_id = uuid.uuid4()
+    outfit_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    now = datetime.now(UTC)
+
+    profile = build_style_profile(
+        style_profiles=[],
+        wear_history=[
+            WearHistory(
+                user_id=user_id,
+                outfit_id=outfit_id,
+                selected_at=now,
+                worn_date=date(2026, 5, 1),
+                created_at=now,
+            )
+        ],
+        feedback=[
+            OutfitFeedback(
+                user_id=user_id,
+                outfit_id=outfit_id,
+                feedback_type=feedback_type,
+                reason_tags=None,
+                created_at=now,
+            )
+        ],
+        wardrobe_items=[
+            WardrobeItem(
+                id=item_id,
+                user_id=user_id,
+                title="Black shirt",
+                category="top",
+                color_main="black",
+            )
+        ],
+        outfit_main_item_ids={str(outfit_id): str(item_id)},
+    )
+    return profile["color_weights"]["black"]
+
+
+def test_build_style_profile_weights_all_feedback_values_distinctly() -> None:
+    weights = {
+        feedback_type: _profile_color_weight_for_feedback(feedback_type)
+        for feedback_type in ["love", "like", "neutral", "dislike"]
+    }
+
+    assert weights == {
+        "love": 1.5,
+        "like": 1.0,
+        "neutral": 0.0,
+        "dislike": -1.0,
+    }
+    assert len(set(weights.values())) == 4
+
+
+def test_build_style_profile_rejects_unknown_feedback_type() -> None:
+    with pytest.raises(ValueError, match="Unknown feedback_type: hate"):
+        _profile_color_weight_for_feedback("hate")
 
 
 @pytest.mark.asyncio

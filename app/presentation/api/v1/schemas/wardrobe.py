@@ -1,6 +1,9 @@
+from datetime import date
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+from app.common.enums import WardrobeItemStatus
 
 
 class ConfirmImportRequest(BaseModel):
@@ -21,7 +24,8 @@ class WardrobeItemResponse(BaseModel):
     title: str
     category: str
     color_main: str
-    status: str
+    # A-4: tightened from str to WardrobeItemStatus enum (wearable/unavailable/dirty/lost/donated)
+    status: WardrobeItemStatus
     cover_image_url: str | None = None
     original_image_url: str | None = None
     location: str | None = None
@@ -41,6 +45,9 @@ class WardrobeItemResponse(BaseModel):
     # V3 M12 insights
     purchase_price: float | None = None
     wear_count: int = 0
+    # A-4: last_worn is read-only here (write path deferred to A-5); purchase_date is writeable
+    last_worn: date | None = None
+    purchase_date: date | None = None
 
 
 class WardrobeListResponse(BaseModel):
@@ -54,7 +61,9 @@ class UpdateWardrobeItemRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=120)
     category: str | None = Field(default=None, min_length=1, max_length=32)
     color_main: str | None = Field(default=None, min_length=1, max_length=32)
-    status: str | None = None
+    # A-4: tightened from str | None to WardrobeItemStatus | None.
+    # NOTE: transition matrix enforcement is deferred; only enum validation at API boundary.
+    status: WardrobeItemStatus | None = None
     location: str | None = Field(default=None, max_length=120)
     # V3 M14 extended fields
     sub_category: str | None = Field(default=None, max_length=32)
@@ -65,7 +74,22 @@ class UpdateWardrobeItemRequest(BaseModel):
     formality_score: int | None = Field(default=None, ge=1, le=5)
     time_cost_level: str | None = Field(default=None, max_length=16)
     purchase_price: float | None = Field(default=None, ge=0)
+    # A-4: purchase_date writeable; last_worn_at write path is A-5
+    purchase_date: date | None = None
 
 
 class DeleteWardrobeItemResponse(BaseModel):
     deleted: bool
+
+
+class WearHistoryEntry(BaseModel):
+    worn_date: date
+    outfit_id: UUID
+    outfit_type: str | None = None
+
+
+class ItemWearHistoryResponse(BaseModel):
+    item_id: UUID
+    days: int
+    daily_counts: dict[str, int]  # 'YYYY-MM-DD' -> count
+    entries: list[WearHistoryEntry]

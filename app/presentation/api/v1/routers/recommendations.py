@@ -1,24 +1,35 @@
 import uuid
 from datetime import UTC, date, datetime, time
-from typing import Annotated
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, Query
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.outfits.feedback import FeedbackOutfit
+from app.application.outfits.obstacles import detect_obstacles, has_dirty
+from app.application.outfits.prep import compute_prep
+from app.application.outfits.scoring.dynamic import compute_dynamic_scores
 from app.application.outfits.wear import WearOutfit
+from app.application.recommendations.feedback_tags import get_tags_for_scene
 from app.application.recommendations.get_today import GetTodayRecommendation
 from app.application.recommendations.style_context import build_style_context
+from app.application.wardrobe.submit_fit_feedback import SubmitFitFeedback
 from app.common import error_codes
+from app.common.category_to_role import map_category_to_role
 from app.common.enums import RecommendationStatus, TimeSensitivity
 from app.common.exceptions import FriendlyException
+from app.common.i18n import I18nMessage
+from app.common.season import current_season
+from app.config.settings import get_settings
 from app.infrastructure.cache.client import get_redis_client
 from app.infrastructure.cache.keys import build_daily_recommendation_cache_key
 from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit
 from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.operation_log_repo import (
     SqlAlchemyOperationLogRepository,
 )
@@ -26,15 +37,22 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
 from app.infrastructure.persistence.repositories.user_repo import SqlAlchemyUserRepository
+from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.recommendations import (
+    FeedbackBundleRequest,
+    FeedbackBundleResponse,
     FeedbackRequest,
     FeedbackResponse,
+    FeedbackTagResponse,
+    FeedbackTagsResponse,
+    ObstacleResponse,
     OutfitHistoryItemResponse,
     OutfitHistoryResponse,
     OutfitResponse,
+    OutfitScoresResponse,
     RecommendationItemResponse,
     StyleContextResponse,
     TodayRecommendationResponse,
@@ -46,7 +64,7 @@ router = APIRouter(prefix="/v1/recommendations", tags=["recommendations"])
 logger = structlog.get_logger(__name__)
 
 
-def outfit_response(outfit: Outfit) -> OutfitResponse:
+def _build_base_outfit_response(outfit: Outfit) -> OutfitResponse:
     return OutfitResponse(
         outfit_id=outfit.id,
         type=outfit.outfit_type,
@@ -54,14 +72,105 @@ def outfit_response(outfit: Outfit) -> OutfitResponse:
         reason=outfit.reason_text,
         time_sensitivity=outfit.time_sensitivity,
         items=[
-            RecommendationItemResponse(item_id=item.item_id, category=item.role)
+            RecommendationItemResponse(
+                item_id=item.item_id,
+                category=item.role,
+                display_role=map_category_to_role(item.role),
+            )
             for item in sorted(outfit.items, key=lambda i: i.display_order)
         ],
     )
 
 
-def today_response(
+# Backwards-compatible alias for callers that don't need explainability.
+def outfit_response(outfit: Outfit) -> OutfitResponse:
+    return _build_base_outfit_response(outfit)
+
+
+async def _enrich_outfits(
+    session: AsyncSession, outfits: list[Outfit], today: date
+) -> list[OutfitResponse]:
+    """Batch-fetch WardrobeItem rows for all outfits, compute dynamic scores /
+    obstacles / prep per outfit. Each pipeline gated by its own feature flag —
+    when all three flags are off, we don't even hit the DB."""
+    settings = get_settings()
+    base = [_build_base_outfit_response(o) for o in outfits]
+    if not (settings.ENABLE_OUTFIT_SCORES or settings.ENABLE_OBSTACLES or settings.ENABLE_PREP_STEPS):
+        return base
+
+    # Single batch query for all wardrobe items referenced across outfits.
+    item_ids = {oi.item_id for o in outfits for oi in o.items}
+    if not item_ids:
+        return base
+    rows = (
+        await session.execute(select(WardrobeItem).where(WardrobeItem.id.in_(item_ids)))
+    ).scalars().all()
+    items_by_id: dict[uuid.UUID, WardrobeItem] = {it.id: it for it in rows}
+    season = current_season(today)
+
+    enriched: list[OutfitResponse] = []
+    for outfit, base_resp in zip(outfits, base, strict=True):
+        ordered_outfit_items = sorted(outfit.items, key=lambda i: i.display_order)
+        missing_ids = [oi.item_id for oi in ordered_outfit_items if oi.item_id not in items_by_id]
+        if missing_ids:
+            # Silent drops mask data integrity issues — log but don't fail.
+            logger.warning(
+                "enrich_outfits.missing_items",
+                outfit_id=str(outfit.id),
+                missing_ids=[str(mid) for mid in missing_ids],
+            )
+        ordered_items = [
+            items_by_id[oi.item_id]
+            for oi in ordered_outfit_items
+            if oi.item_id in items_by_id
+        ]
+        if not ordered_items:
+            # All items gone (deleted / orphaned). Return base response without
+            # enrichment rather than running helpers on empty input.
+            logger.warning("enrich_outfits.empty_after_lookup", outfit_id=str(outfit.id))
+            enriched.append(base_resp)
+            continue
+
+        # Per-outfit error boundary: one bad outfit must NOT 5xx the whole
+        # /today response. On failure we keep the base outfit, drop only the
+        # explainability bits.
+        try:
+            obstacles_payload: list[dict[str, Any]] = []
+            if settings.ENABLE_OBSTACLES:
+                obstacles_payload = detect_obstacles(
+                    ordered_items, today=today, current_season=season
+                )
+                base_resp.obstacles = [ObstacleResponse(**o) for o in obstacles_payload]
+            if settings.ENABLE_OUTFIT_SCORES:
+                scores = compute_dynamic_scores(
+                    ordered_items,
+                    outfit.score_breakdown_json,
+                    has_dirty_obstacle=has_dirty(obstacles_payload),
+                )
+                base_resp.scores = OutfitScoresResponse(**scores.model_dump())
+            if settings.ENABLE_PREP_STEPS:
+                prep = compute_prep(ordered_items)
+                base_resp.prep_steps = [I18nMessage(**m) for m in prep["steps"]]
+                base_resp.prep_notes = [I18nMessage(**m) for m in prep["notes"]]
+        except Exception:
+            logger.exception(
+                "enrich_outfits.failed",
+                outfit_id=str(outfit.id),
+                items_count=len(ordered_items),
+            )
+            # Reset partial enrichment so client sees a consistent base shape.
+            base_resp.obstacles = None
+            base_resp.scores = None
+            base_resp.prep_steps = None
+            base_resp.prep_notes = None
+        enriched.append(base_resp)
+    return enriched
+
+
+async def today_response(
     daily: DailyRecommendation,
+    session: AsyncSession,
+    today: date,
     departure_time: time | None = None,
     scene: str | None = None,
 ) -> TodayRecommendationResponse:
@@ -71,11 +180,16 @@ def today_response(
     outfits = sorted(daily.outfits, key=lambda o: o.rank_order)
     selected_outfits = _select_outfits_for_remaining_time(outfits, departure_time)
     selected_outfits = _select_outfits_for_scene(selected_outfits, scene)
+    enriched = (
+        await _enrich_outfits(session, selected_outfits, today)
+        if daily.id is not None
+        else []
+    )
     return TodayRecommendationResponse(
         recommendation_date=daily.recommendation_date,
         status=daily.status,
         guidance_text=guidance,
-        outfits=[outfit_response(outfit) for outfit in selected_outfits] if daily.id is not None else [],
+        outfits=enriched,
     )
 
 
@@ -160,7 +274,7 @@ async def get_today_recommendation(
     )
     style_ctx_data = await build_style_context(current_user.id, session)
     style_ctx = StyleContextResponse(**style_ctx_data)
-    today_data = today_response(daily, settings.departure_time, scene)
+    today_data = await today_response(daily, session, today, settings.departure_time, scene)
     today_data.style_context = style_ctx
     response: ResponseModel[TodayRecommendationResponse] = ResponseModel(data=today_data)
     try:
@@ -189,7 +303,8 @@ async def get_outfit_detail(
         "recommendation_viewed",
         {"outfit_type": outfit.outfit_type},
     )
-    return ResponseModel(data=outfit_response(outfit))
+    enriched = await _enrich_outfits(session, [outfit], datetime.now(UTC).date())
+    return ResponseModel(data=enriched[0])
 
 
 @router.post("/outfits/{outfit_id}/wear", response_model=ResponseModel[WearOutfitResponse])
@@ -208,6 +323,47 @@ async def wear_outfit(
         {"outfit_id": str(outfit_id), "worn_date": worn_date.isoformat()},
     )
     return ResponseModel(data=WearOutfitResponse(success=True))
+
+
+@router.post("/outfits/{outfit_id}/feedback/bundle", response_model=ResponseModel[FeedbackBundleResponse])
+async def feedback_outfit_bundle(
+    outfit_id: uuid.UUID,
+    payload: FeedbackBundleRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[FeedbackBundleResponse]:
+    # Validate ownership + item-to-outfit scope BEFORE any write so we never
+    # contaminate fit_feedback with cross-outfit item_ids.
+    rec_repo = SqlAlchemyRecommendationRepository(session)
+    outfit = await rec_repo.get_outfit_for_user(outfit_id, current_user.id)
+    if outfit is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Outfit not found", status_code=404)
+    outfit_item_ids = {oi.item_id for oi in outfit.items}
+    for fit_item in payload.items:
+        if fit_item.item_id not in outfit_item_ids:
+            raise FriendlyException(
+                error_codes.VALIDATION_ERROR,
+                "Item does not belong to this outfit",
+                status_code=422,
+            )
+
+    async with session.begin_nested():
+        feedback_uc = FeedbackOutfit(rec_repo)
+        await feedback_uc.execute(
+            outfit_id, current_user.id, payload.overall.feedback_type, payload.overall.reason_tags
+        )
+        wardrobe_repo = SqlAlchemyWardrobeRepository(session)
+        fit_uc = SubmitFitFeedback(wardrobe_repo, session)
+        for fit_item in payload.items:
+            scene_val = fit_item.scene.value if fit_item.scene is not None else "casual"
+            await fit_uc.execute(current_user.id, fit_item.item_id, outfit_id, fit_item.feedback_type.value, scene_val)
+    written = 1 + len(payload.items)
+    await SqlAlchemyOperationLogRepository(session).add(
+        current_user.id,
+        "feedback_bundle_given",
+        {"outfit_id": str(outfit_id), "feedback_type": payload.overall.feedback_type, "item_count": len(payload.items)},
+    )
+    return ResponseModel(data=FeedbackBundleResponse(written=written))
 
 
 @router.post("/outfits/{outfit_id}/feedback", response_model=ResponseModel[FeedbackResponse])
@@ -229,6 +385,25 @@ async def feedback_outfit(
         },
     )
     return ResponseModel(data=FeedbackResponse(success=True))
+
+
+@router.get("/feedback-tags", response_model=ResponseModel[FeedbackTagsResponse])
+async def get_feedback_tags(
+    current_user: Annotated[User, Depends(get_current_user)],
+    scene: str | None = Query(default=None, max_length=32),
+) -> ResponseModel[FeedbackTagsResponse]:
+    tags = get_tags_for_scene(scene)
+    return ResponseModel(
+        data=FeedbackTagsResponse(
+            scene=scene,
+            tags=[
+                FeedbackTagResponse(
+                    key=t.key, label_zh_cn=t.label_zh_cn, applies_to=t.applies_to
+                )
+                for t in tags
+            ],
+        )
+    )
 
 
 @router.get("/outfit-history", response_model=ResponseModel[OutfitHistoryResponse])

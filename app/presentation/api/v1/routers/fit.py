@@ -38,6 +38,9 @@ def item_response(item: WardrobeItem) -> WardrobeItemResponse:
         fit_intent=item.fit_intent,
         fit_status=item.fit_status,
         comfort_score=item.comfort_score,
+        # A-4: new fields
+        last_worn=item.last_worn_at,
+        purchase_date=item.purchase_date,
     )
 
 

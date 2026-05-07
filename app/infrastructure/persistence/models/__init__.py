@@ -1,10 +1,10 @@
 from app.infrastructure.persistence.models.base import Base
 from app.infrastructure.persistence.models.embedding import ItemEmbedding
-from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
 from app.infrastructure.persistence.models.fit import FitFeedback
 from app.infrastructure.persistence.models.image_job import ImageProcessingJob
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.operation_log import OperationLog
+from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,

@@ -6,6 +6,14 @@ class ItemStatus(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+class WardrobeItemStatus(StrEnum):
+    WEARABLE = "wearable"
+    UNAVAILABLE = "unavailable"
+    DIRTY = "dirty"
+    LOST = "lost"
+    DONATED = "donated"
+
+
 class ImportStatus(StrEnum):
     QUEUED = "queued"
     PROCESSING = "processing"
@@ -48,7 +56,9 @@ class TimeSensitivity(StrEnum):
 
 
 class FeedbackType(StrEnum):
+    LOVE = "love"
     LIKE = "like"
+    NEUTRAL = "neutral"
     DISLIKE = "dislike"
 
 

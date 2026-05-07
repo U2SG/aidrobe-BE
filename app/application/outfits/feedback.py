@@ -21,7 +21,7 @@ class FeedbackOutfit:
         feedback_type: str,
         reason_tags: list[str] | None = None,
     ) -> OutfitFeedback:
-        if feedback_type not in {FeedbackType.LIKE.value, FeedbackType.DISLIKE.value}:
+        if feedback_type not in {feedback.value for feedback in FeedbackType}:
             raise FriendlyException(
                 error_codes.VALIDATION_ERROR, "Invalid feedback type", status_code=422
             )

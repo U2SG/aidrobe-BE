@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -152,3 +153,83 @@ async def test_delete_wardrobe_item_soft_deletes(db_session: AsyncSession) -> No
     assert delete_response.status_code == 200
     assert delete_response.json()["data"] == {"deleted": True}
     assert list_response.json()["data"]["total"] == 0
+
+
+
+@pytest.mark.parametrize("status", ["wearable", "unavailable", "dirty", "lost", "donated"])
+async def test_patch_wardrobe_item_accepts_all_valid_statuses(db_session: AsyncSession, status: str) -> None:
+    user_id = uuid.uuid4()
+    app = build_wardrobe_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        item_id = await create_item(client, user_id)
+        response = await client.patch(
+            f"/v1/wardrobe-items/{item_id}",
+            headers={"X-User-Id": str(user_id)},
+            json={"status": status},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == status
+
+
+async def test_patch_wardrobe_item_rejects_garbage_status(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    app = build_wardrobe_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        item_id = await create_item(client, user_id)
+        response = await client.patch(
+            f"/v1/wardrobe-items/{item_id}",
+            headers={"X-User-Id": str(user_id)},
+            json={"status": "garbage"},
+        )
+
+    assert response.status_code == 422
+
+
+async def test_patch_wardrobe_item_purchase_date_round_trip(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    app = build_wardrobe_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        item_id = await create_item(client, user_id)
+        patch_resp = await client.patch(
+            f"/v1/wardrobe-items/{item_id}",
+            headers={"X-User-Id": str(user_id)},
+            json={"purchase_date": "2026-04-01"},
+        )
+        get_resp = await client.get(
+            f"/v1/wardrobe-items/{item_id}",
+            headers={"X-User-Id": str(user_id)},
+        )
+
+    assert patch_resp.status_code == 200
+    assert patch_resp.json()["data"]["purchase_date"] == "2026-04-01"
+    assert get_resp.status_code == 200
+    assert get_resp.json()["data"]["purchase_date"] == "2026-04-01"
+
+
+async def test_last_worn_surfaces_from_db(db_session: AsyncSession) -> None:
+    from datetime import date
+
+    from sqlalchemy import select
+
+    from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+
+    user_id = uuid.uuid4()
+    app = build_wardrobe_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        item_id = await create_item(client, user_id)
+
+    stmt = select(WardrobeItem).where(WardrobeItem.id == uuid.UUID(item_id))
+    result = await db_session.execute(stmt)
+    item = result.scalar_one()
+    item.last_worn_at = date(2026, 4, 15)
+    await db_session.flush()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        get_resp = await client.get(
+            f"/v1/wardrobe-items/{item_id}",
+            headers={"X-User-Id": str(user_id)},
+        )
+
+    assert get_resp.status_code == 200
+    assert get_resp.json()["data"]["last_worn"] == "2026-04-15"

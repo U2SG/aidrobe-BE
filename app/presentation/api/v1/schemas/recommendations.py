@@ -1,13 +1,39 @@
 from datetime import date
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+from app.common.enums import FitFeedbackType, FitScene
+from app.common.i18n import I18nMessage
 
 
 class RecommendationItemResponse(BaseModel):
     item_id: UUID
     title: str | None = None
     category: str | None = None
+    display_role: Literal["top", "outer", "bottom", "shoes", "accessory"] = "accessory"
+
+
+class OutfitScoresResponse(BaseModel):
+    aesthetic: float
+    feasibility: float
+    fit: float
+    total: float
+    prep_minutes: int
+    rules_version: str
+
+
+class ObstacleResponse(BaseModel):
+    kind: Literal["laundry", "lost", "seasonal", "stale"]
+    item_id: UUID
+    severity: Literal["blocking", "warning", "info"]
+    title: I18nMessage
+    # Phase D will add `replacement_candidate_ids`; left out here on purpose so
+    # absence is meaningful rather than always-empty.
+
+    # Allow construction from raw dicts persisted in JSONB.
+    model_config = {"extra": "ignore"}
 
 
 class OutfitResponse(BaseModel):
@@ -17,6 +43,21 @@ class OutfitResponse(BaseModel):
     reason: str
     time_sensitivity: str = "standard"
     items: list[RecommendationItemResponse]
+    # Phase B explainability — all None when their feature flag is off.
+    scores: OutfitScoresResponse | None = None
+    obstacles: list[ObstacleResponse] | None = None
+    prep_steps: list[I18nMessage] | None = None
+    prep_notes: list[I18nMessage] | None = None
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    @staticmethod
+    def _coerce_msg_list(raw: Any) -> list[I18nMessage] | None:
+        if raw is None:
+            return None
+        if not isinstance(raw, list):
+            return None
+        return [I18nMessage(**m) if isinstance(m, dict) else m for m in raw]
 
 
 class StyleContextResponse(BaseModel):
@@ -42,7 +83,7 @@ class WearOutfitResponse(BaseModel):
 
 
 class FeedbackRequest(BaseModel):
-    feedback_type: str = Field(pattern="^(like|dislike)$")
+    feedback_type: str = Field(pattern="^(love|like|neutral|dislike)$")
     reason_tags: list[str] = []
 
 
@@ -63,3 +104,30 @@ class OutfitHistoryResponse(BaseModel):
     items: list[OutfitHistoryItemResponse]
     limit: int
     offset: int
+
+
+class FitFeedbackBundleItem(BaseModel):
+    item_id: UUID
+    feedback_type: FitFeedbackType
+    scene: FitScene | None = None
+    comfort_score: int | None = Field(default=None, ge=1, le=5)
+
+
+class FeedbackBundleRequest(BaseModel):
+    overall: FeedbackRequest
+    items: list[FitFeedbackBundleItem] = Field(default_factory=list)
+
+
+class FeedbackBundleResponse(BaseModel):
+    written: int  # total rows written (1 outfit feedback + N fit feedbacks)
+
+
+class FeedbackTagResponse(BaseModel):
+    key: str
+    label_zh_cn: str
+    applies_to: list[Literal["overall", "item"]]
+
+
+class FeedbackTagsResponse(BaseModel):
+    scene: str | None = None
+    tags: list[FeedbackTagResponse]

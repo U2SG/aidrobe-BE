@@ -6,12 +6,14 @@ from typing import Any
 import structlog
 from sqlalchemy import select
 
+from app.application.outfits.scoring.static import compute_static_breakdown, get_rules_version
 from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo, WeatherPort
 from app.application.recommendations.engine import EngineItem, RecommendationEngine
 from app.application.recommendations.fit_profile import build_fit_profile
 from app.application.style.build_style_profile import build_style_profile
 from app.common.enums import OutfitType, RecommendationStatus, TimeSensitivity
+from app.common.season import current_season
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
@@ -98,7 +100,35 @@ class RecommendationGenerator:
 
         if result.status == RecommendationStatus.READY.value:
             now = datetime.now(UTC)
+            season = current_season(target_date)
+            rules_version = get_rules_version()
+            item_by_id = {str(item.id): item for item in items}
             for rank, engine_outfit in enumerate(result.outfits, start=1):
+                outfit_items = [
+                    item_by_id[item_id]
+                    for item_id in engine_outfit.item_ids
+                    if item_id in item_by_id
+                ]
+                # Fail-soft: a config typo or surprise item state in scoring
+                # must NOT abort the whole daily generation. Persist None →
+                # dynamic layer at GET time has its own fallback.
+                static_breakdown: dict[str, Any] | None
+                try:
+                    static_breakdown = compute_static_breakdown(
+                        outfit_items,
+                        outfit_type=engine_outfit.outfit_type,
+                        current_season=season,
+                    )
+                    persisted_rules_version = rules_version
+                except Exception:
+                    logger.exception(
+                        "scoring.static_failed",
+                        user_id=str(user_id),
+                        outfit_type=engine_outfit.outfit_type,
+                        rank=rank,
+                    )
+                    static_breakdown = None
+                    persisted_rules_version = None
                 outfit = await self.repository.add_outfit(
                     Outfit(
                         daily_recommendation_id=daily.id,
@@ -111,10 +141,11 @@ class RecommendationGenerator:
                         time_sensitivity=_time_sensitivity_for_outfit_type(
                             engine_outfit.outfit_type
                         ),
+                        score_breakdown_json=static_breakdown,
+                        score_rules_version=persisted_rules_version,
                         created_at=now,
                     )
                 )
-                item_by_id = {str(item.id): item for item in items}
                 for order, item_id in enumerate(engine_outfit.item_ids, start=1):
                     item = item_by_id[item_id]
                     await self.repository.add_outfit_item(

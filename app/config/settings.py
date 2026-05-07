@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     WEATHER_CACHE_TTL_SECONDS: int = 3600
     WEATHER_TIMEOUT_SECONDS: float = 5.0
 
+    # Phase B explainability runtime — independent flags so each pipeline
+    # (scoring / obstacles / prep) can be rolled out and rolled back alone.
+    ENABLE_OUTFIT_SCORES: bool = False
+    ENABLE_OBSTACLES: bool = False
+    ENABLE_PREP_STEPS: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

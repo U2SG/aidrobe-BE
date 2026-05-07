@@ -2,7 +2,18 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, SmallInteger, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Numeric,
+    SmallInteger,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,7 +30,17 @@ class DailyRecommendation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "daily_recommendations"
     __table_args__ = (
         UniqueConstraint(
-            "user_id", "recommendation_date", name="uq_daily_recommendations_user_id"
+            "user_id",
+            "recommendation_date",
+            "revision",
+            name="uq_daily_recommendations_user_date_rev",
+        ),
+        Index(
+            "uq_daily_recommendations_current",
+            "user_id",
+            "recommendation_date",
+            unique=True,
+            postgresql_where=text("is_current"),
         ),
     )
 
@@ -32,6 +53,12 @@ class DailyRecommendation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     generation_source: Mapped[str] = mapped_column(String(32), nullable=False)
     score_breakdown: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    revision: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=1, server_default="1"
+    )
+    is_current: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
 
     outfits: Mapped[list["Outfit"]] = relationship(
         back_populates="daily_recommendation", cascade="all, delete-orphan"
@@ -53,6 +80,10 @@ class Outfit(UUIDPrimaryKeyMixin, Base):
     score_total: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
     rank_order: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     time_sensitivity: Mapped[str] = mapped_column(String(32), default="standard", nullable=False)
+    score_breakdown_json: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    score_rules_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    obstacles_json: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    prep_json: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     daily_recommendation: Mapped[DailyRecommendation] = relationship(back_populates="outfits")

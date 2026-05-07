@@ -1,8 +1,9 @@
 import uuid
+from datetime import date as DateType
 
 from app.application.recommendations.background import schedule_today_recompute
 from app.common import error_codes
-from app.common.enums import ItemStatus
+from app.common.enums import WardrobeItemStatus
 from app.common.exceptions import FriendlyException
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.recommendation_repo import (
@@ -30,20 +31,16 @@ class UpdateWardrobeItem:
         title: str | None = None,
         category: str | None = None,
         color_main: str | None = None,
-        status: str | None = None,
+        # A-4: accepts WardrobeItemStatus enum; writes .value to String(32) DB column
+        status: WardrobeItemStatus | None = None,
         location: str | None = None,
+        # A-4: purchase_date is now persisted; last_worn_at write path is A-5
+        purchase_date: DateType | None = None,
     ) -> WardrobeItem:
         item = await self.repository.get_for_user(item_id, user_id)
         if item is None:
             raise FriendlyException(
                 error_codes.NOT_FOUND, "Wardrobe item not found", status_code=404
-            )
-        if status is not None and status not in {
-            ItemStatus.WEARABLE.value,
-            ItemStatus.UNAVAILABLE.value,
-        }:
-            raise FriendlyException(
-                error_codes.VALIDATION_ERROR, "Invalid item status", status_code=422
             )
 
         if title is not None:
@@ -52,10 +49,13 @@ class UpdateWardrobeItem:
             item.category = category
         if color_main is not None:
             item.color_main = color_main
+        # Write string value to DB (column is String(32))
         if status is not None:
-            item.status = status
+            item.status = status.value
         if location is not None:
             item.location = location
+        if purchase_date is not None:
+            item.purchase_date = purchase_date
         await self.repository.flush()
         await schedule_today_recompute(user_id, self.recommendation_repository, self.style_repository)
         return item

@@ -1,0 +1,47 @@
+# Reason tag catalog for feedback collection.
+# Each tag: key (stable identifier), label_zh_cn (display text), applies_to (overall|item).
+default:
+  - key: complimented
+    label_zh_cn: 被夸利落
+    applies_to: [overall]
+  - key: comfortable
+    label_zh_cn: 穿着舒适
+    applies_to: [overall, item]
+  - key: confident
+    label_zh_cn: 自信
+    applies_to: [overall]
+  - key: too_warm
+    label_zh_cn: 偏热
+    applies_to: [overall, item]
+  - key: too_cold
+    label_zh_cn: 偏冷
+    applies_to: [overall, item]
+  - key: itchy
+    label_zh_cn: 扎人不舒服
+    applies_to: [item]
+commute:
+  - key: easy_to_move
+    label_zh_cn: 通勤方便
+    applies_to: [overall, item]
+  - key: presentable
+    label_zh_cn: 见客户得体
+    applies_to: [overall]
+formal:
+  - key: refined
+    label_zh_cn: 精致
+    applies_to: [overall]
+  - key: structured_fit
+    label_zh_cn: 廓形挺括
+    applies_to: [item]
+casual:
+  - key: relaxed
+    label_zh_cn: 放松自在
+    applies_to: [overall]
+date:
+  - key: flattering
+    label_zh_cn: 显气质
+    applies_to: [overall, item]
+travel:
+  - key: easy_pack
+    label_zh_cn: 好打理
+    applies_to: [item]

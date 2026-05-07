@@ -9,9 +9,22 @@ these sparse feature dicts.
 from collections import defaultdict
 from typing import Any
 
+from app.common.enums import FeedbackType
 from app.infrastructure.persistence.models.recommendation import OutfitFeedback, WearHistory
 from app.infrastructure.persistence.models.style import UserStyleProfile
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+
+
+def _feedback_weight(feedback_type: str) -> float:
+    if feedback_type == FeedbackType.LOVE.value:
+        return 1.5
+    elif feedback_type == FeedbackType.LIKE.value:
+        return 1.0
+    elif feedback_type == FeedbackType.NEUTRAL.value:
+        return 0.0
+    elif feedback_type == FeedbackType.DISLIKE.value:
+        return -1.0
+    raise ValueError(f"Unknown feedback_type: {feedback_type}")
 
 
 def build_style_profile(
@@ -39,8 +52,8 @@ def build_style_profile(
     color_counter: defaultdict[str, float] = defaultdict(float)
     category_counter: defaultdict[str, float] = defaultdict(float)
 
-    disliked_outfit_ids = {
-        str(fb.outfit_id) for fb in feedback if fb.feedback_type == "dislike"
+    feedback_weights_by_outfit_id = {
+        str(fb.outfit_id): _feedback_weight(fb.feedback_type) for fb in feedback
     }
 
     for wh in wear_history:
@@ -51,7 +64,7 @@ def build_style_profile(
         item = item_by_id.get(item_id_str)
         if item is None:
             continue
-        weight = 0.5 if outfit_id_str in disliked_outfit_ids else 0.8
+        weight = feedback_weights_by_outfit_id.get(outfit_id_str, 0.8)
         color_counter[item.color_main] += weight
         category_counter[item.category] += weight
 

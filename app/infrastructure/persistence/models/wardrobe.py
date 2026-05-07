@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, SmallInteger, String
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -42,6 +42,9 @@ class WardrobeItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # V3 M12 insights fields
     purchase_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     wear_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # A-1: last worn / purchase date
+    last_worn_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    purchase_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     images: Mapped[list["WardrobeItemImage"]] = relationship(
         back_populates="item", cascade="all, delete-orphan"

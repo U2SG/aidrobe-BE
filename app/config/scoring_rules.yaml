@@ -1,0 +1,46 @@
+# Outfit scoring rules — referenced by score_rules_version on each outfit row.
+# Bump `version` when changing weights so historical outfits keep their original
+# explanation; do NOT mutate weights of an existing version.
+version: "1.0"
+
+# Static layer — computed at outfit generation time, persisted in
+# outfits.score_breakdown_json. Independent of current item.status / fit_profile.
+static:
+  aesthetic:
+    # Aggregate of color harmony, formality match, season fit. Score in [0,1].
+    weight: 0.5
+    components:
+      color_harmony: 0.5     # palette adjacency / contrast
+      formality_match: 0.3   # outfit_type vs item formality_tag
+      season_fit: 0.2        # season_tags vs current season
+  prep_minutes_base:
+    # Base prep time in minutes — sum of per-item base values; modified at
+    # request time by location grouping + material notes.
+    per_item_base: 1
+    cap_minutes: 15
+
+# Dynamic layer — computed at GET time, NOT persisted. Reflects current
+# wardrobe state (status, fit, freshness).
+dynamic:
+  feasibility:
+    # 1.0 if all items wearable; 0.0 if any item dirty/lost/donated/unavailable.
+    weight: 0.3
+    blocking_statuses: [dirty, lost, donated, unavailable]
+  fit:
+    # Average of per-item fit_status mapped through this table. Items missing
+    # a fit_status fall back to 0.5 (neutral) — explicit, no silent dropout.
+    weight: 0.2
+    fit_score_map:
+      fits_well: 1.0
+      tight: 0.4
+      loose: 0.5
+      unknown: 0.5
+    fallback_when_no_profile: 0.5
+  prep_minutes_modifiers:
+    # Multiplicative on top of static base.
+    different_locations_per_extra: 0.5     # +0.5min per storage_location beyond the first
+    has_delicate_material: 1.5             # iron / steam needed
+    has_dirty_obstacle: 2.0                # lookup replacement candidate adds time
+
+# Final score = static.aesthetic * w + feasibility * w + fit * w. Clamped to [0,1].
+# Sum of dynamic weights + static.aesthetic.weight should equal 1.0.

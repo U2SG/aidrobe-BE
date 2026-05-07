@@ -1,0 +1,38 @@
+# Per-category days-until-stale. Used by obstacles.kind=stale and freshness
+# derivation. NOT a hard "wash this now" — it triggers a soft obstacle banner
+# only. Conservative defaults; may be overridden per-user later.
+version: "1.0"
+
+# Days since last_worn_at after which we consider the item "fresh enough" to
+# wear again without an obstacle. Smaller = wash more often.
+rest_days:
+  underwear: 0       # always rotate
+  socks: 0
+  t_shirt: 1
+  shirt: 2
+  blouse: 2
+  sweater: 3
+  hoodie: 3
+  pants: 2
+  jeans: 4
+  shorts: 1
+  skirt: 2
+  dress: 2
+  jacket: 5
+  coat: 7
+  outerwear: 5
+  shoes: 1
+  sneakers: 1
+  boots: 2
+  accessory: 7
+  hat: 5
+  scarf: 5
+  bag: 14
+
+# Default if category not listed.
+default_rest_days: 2
+
+# How many days since last_worn_at before we surface obstacles.kind=stale.
+# Distinct from rest_days (which is "wear-it-again-soon OK"); stale means
+# "you haven't worn this in a while, maybe air it out".
+stale_threshold_days: 90

@@ -1,0 +1,3556 @@
+openapi: 3.1.0
+info:
+  title: Aidrobe API
+  version: 0.1.0
+paths:
+  /v1/auth/login/apple:
+    post:
+      tags:
+      - auth
+      summary: Login With Apple
+      operationId: login_with_apple_v1_auth_login_apple_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppleLoginRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_AuthTokenResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/auth/refresh:
+    post:
+      tags:
+      - auth
+      summary: Refresh Token
+      operationId: refresh_token_v1_auth_refresh_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_AuthTokenResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /healthz:
+    get:
+      summary: Health
+      operationId: health_healthz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+                title: Response Health Healthz Get
+  /v1/user/settings:
+    get:
+      tags:
+      - settings
+      summary: Get User Settings
+      operationId: get_user_settings_v1_user_settings_get
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_UserSettingsResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      tags:
+      - settings
+      summary: Update User Settings
+      operationId: update_user_settings_v1_user_settings_patch
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserSettingsRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_UserSettingsResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/uploads/presign:
+    post:
+      tags:
+      - uploads
+      summary: Create Presigned Upload
+      operationId: create_presigned_upload_v1_uploads_presign_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PresignUploadRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_PresignUploadResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/import-tasks:
+    post:
+      tags:
+      - import-tasks
+      summary: Create Import Task
+      operationId: create_import_task_v1_import_tasks_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateImportTaskRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_ImportTaskResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/import-tasks/{task_id}/confirm:
+    post:
+      tags:
+      - import-tasks
+      summary: Confirm Import Task
+      operationId: confirm_import_task_v1_import_tasks__task_id__confirm_post
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Task Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmImportRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_ConfirmImportResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/import-tasks/{task_id}:
+    get:
+      tags:
+      - import-tasks
+      summary: Get Import Task
+      operationId: get_import_task_v1_import_tasks__task_id__get
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Task Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_ImportTaskResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/wardrobe-items:
+    get:
+      tags:
+      - wardrobe
+      summary: List Wardrobe Items
+      operationId: list_wardrobe_items_v1_wardrobe_items_get
+      parameters:
+      - name: category
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Category
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_WardrobeListResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/wardrobe-items/{item_id}:
+    get:
+      tags:
+      - wardrobe
+      summary: Get Wardrobe Item
+      operationId: get_wardrobe_item_v1_wardrobe_items__item_id__get
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_WardrobeItemResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      tags:
+      - wardrobe
+      summary: Update Wardrobe Item
+      operationId: update_wardrobe_item_v1_wardrobe_items__item_id__patch
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWardrobeItemRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_WardrobeItemResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - wardrobe
+      summary: Delete Wardrobe Item
+      operationId: delete_wardrobe_item_v1_wardrobe_items__item_id__delete
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_DeleteWardrobeItemResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/wardrobe-items/{item_id}/wear-history:
+    get:
+      tags:
+      - wardrobe
+      summary: Get Item Wear History
+      operationId: get_item_wear_history_v1_wardrobe_items__item_id__wear_history_get
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      - name: days
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 365
+          minimum: 1
+          default: 60
+          title: Days
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_ItemWearHistoryResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/wardrobe-items/{item_id}/fit:
+    patch:
+      tags:
+      - fit
+      summary: Update Fit
+      operationId: update_fit_v1_wardrobe_items__item_id__fit_patch
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateFitRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_WardrobeItemResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/fit-feedback:
+    post:
+      tags:
+      - fit
+      summary: Submit Fit Feedback
+      operationId: submit_fit_feedback_v1_fit_feedback_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FitFeedbackRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_FitFeedbackResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/recommendations/today:
+    get:
+      tags:
+      - recommendations
+      summary: Get Today Recommendation
+      operationId: get_today_recommendation_v1_recommendations_today_get
+      parameters:
+      - name: scene
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^(commute|formal|casual)$
+          - type: 'null'
+          title: Scene
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_TodayRecommendationResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/recommendations/outfits/{outfit_id}:
+    get:
+      tags:
+      - recommendations
+      summary: Get Outfit Detail
+      operationId: get_outfit_detail_v1_recommendations_outfits__outfit_id__get
+      parameters:
+      - name: outfit_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Outfit Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_OutfitResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/recommendations/outfits/{outfit_id}/wear:
+    post:
+      tags:
+      - recommendations
+      summary: Wear Outfit
+      operationId: wear_outfit_v1_recommendations_outfits__outfit_id__wear_post
+      parameters:
+      - name: outfit_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Outfit Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WearOutfitRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_WearOutfitResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/recommendations/outfits/{outfit_id}/feedback/bundle:
+    post:
+      tags:
+      - recommendations
+      summary: Feedback Outfit Bundle
+      operationId: feedback_outfit_bundle_v1_recommendations_outfits__outfit_id__feedback_bundle_post
+      parameters:
+      - name: outfit_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Outfit Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeedbackBundleRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_FeedbackBundleResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/recommendations/outfits/{outfit_id}/feedback:
+    post:
+      tags:
+      - recommendations
+      summary: Feedback Outfit
+      operationId: feedback_outfit_v1_recommendations_outfits__outfit_id__feedback_post
+      parameters:
+      - name: outfit_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Outfit Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeedbackRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_FeedbackResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/recommendations/feedback-tags:
+    get:
+      tags:
+      - recommendations
+      summary: Get Feedback Tags
+      operationId: get_feedback_tags_v1_recommendations_feedback_tags_get
+      parameters:
+      - name: scene
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 32
+          - type: 'null'
+          title: Scene
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_FeedbackTagsResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/recommendations/outfit-history:
+    get:
+      tags:
+      - recommendations
+      summary: Get Outfit History
+      operationId: get_outfit_history_v1_recommendations_outfit_history_get
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: End Date
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_OutfitHistoryResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/style/inspirations:
+    post:
+      tags:
+      - style
+      summary: Add Inspiration
+      operationId: add_inspiration_v1_style_inspirations_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddInspirationRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_InspirationResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - style
+      summary: List Inspirations
+      operationId: list_inspirations_v1_style_inspirations_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_InspirationListResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/style/sources/batch:
+    post:
+      tags:
+      - style
+      summary: Batch Add Inspirations
+      operationId: batch_add_inspirations_v1_style_sources_batch_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchAddInspirationRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_BatchInspirationResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/style/inspirations/{inspiration_id}:
+    delete:
+      tags:
+      - style
+      summary: Delete Inspiration
+      operationId: delete_inspiration_v1_style_inspirations__inspiration_id__delete
+      parameters:
+      - name: inspiration_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Inspiration Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_NoneType_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/style/tags:
+    patch:
+      tags:
+      - style
+      summary: Update Style Tags
+      operationId: update_style_tags_v1_style_tags_patch
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStyleTagsRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_NoneType_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/insights/summary:
+    get:
+      tags:
+      - insights
+      summary: Insights Summary
+      operationId: insights_summary_v1_insights_summary_get
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsightsSummaryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/insights/top-items:
+    get:
+      tags:
+      - insights
+      summary: Top Items
+      operationId: top_items_v1_insights_top_items_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 50
+          minimum: 1
+          default: 10
+          title: Limit
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TopItemResponse'
+                title: Response Top Items V1 Insights Top Items Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/insights/idle-items:
+    get:
+      tags:
+      - insights
+      summary: Idle Items
+      operationId: idle_items_v1_insights_idle_items_get
+      parameters:
+      - name: threshold_days
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 60
+          title: Threshold Days
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/IdleItemResponse'
+                title: Response Idle Items V1 Insights Idle Items Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/insights/color-palette:
+    get:
+      tags:
+      - insights
+      summary: Color Palette
+      operationId: color_palette_v1_insights_color_palette_get
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ColorPaletteResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/insights/style-trend:
+    get:
+      tags:
+      - insights
+      summary: Style Trend
+      operationId: style_trend_v1_insights_style_trend_get
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StyleTrendResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/insights/cost-per-wear:
+    get:
+      tags:
+      - insights
+      summary: Cost Per Wear
+      operationId: cost_per_wear_v1_insights_cost_per_wear_get
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CostPerWearItem'
+                title: Response Cost Per Wear V1 Insights Cost Per Wear Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-history:
+    get:
+      tags:
+      - outfit-history
+      summary: List Outfit History
+      operationId: list_outfit_history_v1_outfit_history_get
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Page Size
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutfitHistoryListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-history/calendar:
+    get:
+      tags:
+      - outfit-history
+      summary: Get Outfit Calendar
+      operationId: get_outfit_calendar_v1_outfit_history_calendar_get
+      parameters:
+      - name: year
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Year
+      - name: month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Month
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutfitCalendarResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-history/{worn_date}:
+    get:
+      tags:
+      - outfit-history
+      summary: Get Outfit History By Date
+      operationId: get_outfit_history_by_date_v1_outfit_history__worn_date__get
+      parameters:
+      - name: worn_date
+        in: path
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Worn Date
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutfitHistoryEntry'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-history/{wear_history_id}/ootd:
+    post:
+      tags:
+      - outfit-history
+      summary: Upload Ootd
+      operationId: upload_ootd_v1_outfit_history__wear_history_id__ootd_post
+      parameters:
+      - name: wear_history_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Wear History Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OotdUploadRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OotdUploadResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-visual-assets/{asset_id}:
+    get:
+      tags:
+      - outfit-visual
+      summary: Get Outfit Visual Asset
+      operationId: get_outfit_visual_asset_v1_outfit_visual_assets__asset_id__get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutfitVisualAssetResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/wardrobe-items/{item_id}/images:
+    get:
+      tags:
+      - outfit-visual
+      summary: Get Item Images
+      operationId: get_item_images_v1_wardrobe_items__item_id__images_get
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WardrobeItemImagesResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+components:
+  schemas:
+    AddInspirationRequest:
+      properties:
+        image_url:
+          anyOf:
+          - type: string
+            maxLength: 1024
+            minLength: 1
+          - type: 'null'
+          title: Image Url
+        source_url:
+          anyOf:
+          - type: string
+            maxLength: 1024
+            minLength: 1
+          - type: 'null'
+          title: Source Url
+      type: object
+      title: AddInspirationRequest
+    AppleLoginRequest:
+      properties:
+        id_token:
+          type: string
+          minLength: 1
+          title: Id Token
+      type: object
+      required:
+      - id_token
+      title: AppleLoginRequest
+    AuthTokenResponse:
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          title: User Id
+        access_token:
+          type: string
+          title: Access Token
+        refresh_token:
+          type: string
+          title: Refresh Token
+        token_type:
+          type: string
+          title: Token Type
+        expires_in:
+          type: integer
+          title: Expires In
+      type: object
+      required:
+      - user_id
+      - access_token
+      - refresh_token
+      - token_type
+      - expires_in
+      title: AuthTokenResponse
+    BatchAddInspirationRequest:
+      properties:
+        urls:
+          items:
+            type: string
+            maxLength: 1024
+            minLength: 1
+          type: array
+          maxItems: 20
+          minItems: 1
+          title: Urls
+      type: object
+      required:
+      - urls
+      title: BatchAddInspirationRequest
+    BatchInspirationResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/InspirationResponse'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: BatchInspirationResponse
+    CandidateItem:
+      properties:
+        title:
+          type: string
+          title: Title
+        category:
+          type: string
+          title: Category
+        color_main:
+          type: string
+          title: Color Main
+        confidence_score:
+          type: number
+          title: Confidence Score
+        original_image_url:
+          type: string
+          title: Original Image Url
+      type: object
+      required:
+      - title
+      - category
+      - color_main
+      - confidence_score
+      - original_image_url
+      title: CandidateItem
+    ColorPaletteResponse:
+      properties:
+        palette:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Palette
+      type: object
+      required:
+      - palette
+      title: ColorPaletteResponse
+    ConfirmImportRequest:
+      properties:
+        title:
+          type: string
+          maxLength: 120
+          minLength: 1
+          title: Title
+        category:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Category
+        color_main:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Color Main
+        location:
+          anyOf:
+          - type: string
+            maxLength: 120
+          - type: 'null'
+          title: Location
+        size_label:
+          anyOf:
+          - type: string
+            maxLength: 32
+          - type: 'null'
+          title: Size Label
+        fit_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fit Status
+      type: object
+      required:
+      - title
+      - category
+      - color_main
+      title: ConfirmImportRequest
+    ConfirmImportResponse:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+      type: object
+      required:
+      - item_id
+      title: ConfirmImportResponse
+    CostPerWearItem:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          type: string
+          title: Title
+        purchase_price:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Purchase Price
+        wear_count:
+          type: integer
+          title: Wear Count
+        cost_per_wear:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Cost Per Wear
+      type: object
+      required:
+      - item_id
+      - title
+      - wear_count
+      title: CostPerWearItem
+    CreateImportTaskRequest:
+      properties:
+        input_type:
+          type: string
+          pattern: ^(image|link|screenshot|image_batch|shared_content)$
+          title: Input Type
+        source_type:
+          type: string
+          pattern: ^(camera|album|taobao|jd|xhs|douyin|web|share|screenshot)$
+          title: Source Type
+        image_url:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Image Url
+        source_url:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Source Url
+      type: object
+      required:
+      - input_type
+      - source_type
+      title: CreateImportTaskRequest
+    DeleteWardrobeItemResponse:
+      properties:
+        deleted:
+          type: boolean
+          title: Deleted
+      type: object
+      required:
+      - deleted
+      title: DeleteWardrobeItemResponse
+    FeedbackBundleRequest:
+      properties:
+        overall:
+          $ref: '#/components/schemas/FeedbackRequest'
+        items:
+          items:
+            $ref: '#/components/schemas/FitFeedbackBundleItem'
+          type: array
+          title: Items
+      type: object
+      required:
+      - overall
+      title: FeedbackBundleRequest
+    FeedbackBundleResponse:
+      properties:
+        written:
+          type: integer
+          title: Written
+      type: object
+      required:
+      - written
+      title: FeedbackBundleResponse
+    FeedbackRequest:
+      properties:
+        feedback_type:
+          type: string
+          pattern: ^(love|like|neutral|dislike)$
+          title: Feedback Type
+        reason_tags:
+          items:
+            type: string
+          type: array
+          title: Reason Tags
+          default: []
+      type: object
+      required:
+      - feedback_type
+      title: FeedbackRequest
+    FeedbackResponse:
+      properties:
+        success:
+          type: boolean
+          title: Success
+      type: object
+      required:
+      - success
+      title: FeedbackResponse
+    FeedbackTagResponse:
+      properties:
+        key:
+          type: string
+          title: Key
+        label_zh_cn:
+          type: string
+          title: Label Zh Cn
+        applies_to:
+          items:
+            type: string
+            enum:
+            - overall
+            - item
+          type: array
+          title: Applies To
+      type: object
+      required:
+      - key
+      - label_zh_cn
+      - applies_to
+      title: FeedbackTagResponse
+    FeedbackTagsResponse:
+      properties:
+        scene:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Scene
+        tags:
+          items:
+            $ref: '#/components/schemas/FeedbackTagResponse'
+          type: array
+          title: Tags
+      type: object
+      required:
+      - tags
+      title: FeedbackTagsResponse
+    FitFeedbackBundleItem:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        feedback_type:
+          $ref: '#/components/schemas/FitFeedbackType'
+        scene:
+          anyOf:
+          - $ref: '#/components/schemas/FitScene'
+          - type: 'null'
+        comfort_score:
+          anyOf:
+          - type: integer
+            maximum: 5.0
+            minimum: 1.0
+          - type: 'null'
+          title: Comfort Score
+      type: object
+      required:
+      - item_id
+      - feedback_type
+      title: FitFeedbackBundleItem
+    FitFeedbackRequest:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        outfit_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Outfit Id
+        feedback_type:
+          $ref: '#/components/schemas/FitFeedbackType'
+        scene:
+          $ref: '#/components/schemas/FitScene'
+      type: object
+      required:
+      - item_id
+      - feedback_type
+      - scene
+      title: FitFeedbackRequest
+    FitFeedbackResponse:
+      properties:
+        feedback_id:
+          type: string
+          format: uuid
+          title: Feedback Id
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        outfit_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Outfit Id
+        feedback_type:
+          $ref: '#/components/schemas/FitFeedbackType'
+        scene:
+          $ref: '#/components/schemas/FitScene'
+        fit_status:
+          $ref: '#/components/schemas/FitStatus'
+      type: object
+      required:
+      - feedback_id
+      - item_id
+      - feedback_type
+      - scene
+      - fit_status
+      title: FitFeedbackResponse
+    FitFeedbackType:
+      type: string
+      enum:
+      - fits_well
+      - tight
+      - loose
+      - uncomfortable
+      - easy_to_move
+      - not_flattering
+      title: FitFeedbackType
+    FitIntent:
+      type: string
+      enum:
+      - regular
+      - fitted
+      - relaxed
+      - oversized
+      - cropped
+      - longline
+      - wide_leg
+      - straight
+      - slim
+      title: FitIntent
+    FitScene:
+      type: string
+      enum:
+      - commute
+      - formal
+      - casual
+      - date
+      - travel
+      title: FitScene
+    FitStatus:
+      type: string
+      enum:
+      - unknown
+      - fits_well
+      - loose
+      - tight
+      - oversized_ok
+      - needs_alteration
+      - no_longer_fits
+      title: FitStatus
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    IdleItemResponse:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          type: string
+          title: Title
+        category:
+          type: string
+          title: Category
+        cover_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cover Image Url
+        wear_count:
+          type: integer
+          title: Wear Count
+        last_worn:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Worn
+      type: object
+      required:
+      - item_id
+      - title
+      - category
+      - wear_count
+      title: IdleItemResponse
+    ImportTaskResponse:
+      properties:
+        task_id:
+          type: string
+          format: uuid
+          title: Task Id
+        status:
+          type: string
+          title: Status
+        candidate_item:
+          anyOf:
+          - $ref: '#/components/schemas/CandidateItem'
+          - type: 'null'
+        error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Code
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+      type: object
+      required:
+      - task_id
+      - status
+      title: ImportTaskResponse
+    InsightsSummaryResponse:
+      properties:
+        total_items:
+          type: integer
+          title: Total Items
+        active_rate:
+          type: number
+          title: Active Rate
+        idle_count:
+          type: integer
+          title: Idle Count
+        idle_threshold_days:
+          type: integer
+          title: Idle Threshold Days
+        most_worn_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Most Worn Category
+        favorite_color:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Favorite Color
+      type: object
+      required:
+      - total_items
+      - active_rate
+      - idle_count
+      - idle_threshold_days
+      title: InsightsSummaryResponse
+    InspirationListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/InspirationResponse'
+          type: array
+          title: Items
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+      type: object
+      required:
+      - items
+      - limit
+      - offset
+      title: InspirationListResponse
+    InspirationResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Url
+        source_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Url
+        source_type:
+          type: string
+          title: Source Type
+        learn_status:
+          type: string
+          title: Learn Status
+          default: learned
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - image_url
+      - source_type
+      - created_at
+      title: InspirationResponse
+    ItemWearHistoryResponse:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        days:
+          type: integer
+          title: Days
+        daily_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Daily Counts
+        entries:
+          items:
+            $ref: '#/components/schemas/WearHistoryEntry'
+          type: array
+          title: Entries
+      type: object
+      required:
+      - item_id
+      - days
+      - daily_counts
+      - entries
+      title: ItemWearHistoryResponse
+    OotdUploadRequest:
+      properties:
+        ootd_image_url:
+          type: string
+          title: Ootd Image Url
+      type: object
+      required:
+      - ootd_image_url
+      title: OotdUploadRequest
+    OotdUploadResponse:
+      properties:
+        wear_history_id:
+          type: string
+          format: uuid
+          title: Wear History Id
+        ootd_image_url:
+          type: string
+          title: Ootd Image Url
+      type: object
+      required:
+      - wear_history_id
+      - ootd_image_url
+      title: OotdUploadResponse
+    OutfitCalendarResponse:
+      properties:
+        dates:
+          items:
+            type: string
+            format: date
+          type: array
+          title: Dates
+      type: object
+      required:
+      - dates
+      title: OutfitCalendarResponse
+    OutfitHistoryEntry:
+      properties:
+        wear_history_id:
+          type: string
+          format: uuid
+          title: Wear History Id
+        worn_date:
+          type: string
+          format: date
+          title: Worn Date
+        outfit:
+          anyOf:
+          - $ref: '#/components/schemas/OutfitSummary'
+          - type: 'null'
+        feedback_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Feedback Type
+        reason_tags:
+          items:
+            type: string
+          type: array
+          title: Reason Tags
+          default: []
+        ootd_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ootd Image Url
+        selected_at:
+          type: string
+          format: date-time
+          title: Selected At
+      type: object
+      required:
+      - wear_history_id
+      - worn_date
+      - selected_at
+      title: OutfitHistoryEntry
+    OutfitHistoryItemResponse:
+      properties:
+        outfit_id:
+          type: string
+          format: uuid
+          title: Outfit Id
+        worn_date:
+          type: string
+          format: date
+          title: Worn Date
+        outfit_type:
+          type: string
+          title: Outfit Type
+        title:
+          type: string
+          title: Title
+        feedback_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Feedback Type
+        reason_tags:
+          items:
+            type: string
+          type: array
+          title: Reason Tags
+          default: []
+      type: object
+      required:
+      - outfit_id
+      - worn_date
+      - outfit_type
+      - title
+      title: OutfitHistoryItemResponse
+    OutfitHistoryListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/OutfitHistoryEntry'
+          type: array
+          title: Items
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+        total:
+          type: integer
+          title: Total
+      type: object
+      required:
+      - items
+      - page
+      - page_size
+      - total
+      title: OutfitHistoryListResponse
+    OutfitHistoryResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/OutfitHistoryItemResponse'
+          type: array
+          title: Items
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+      type: object
+      required:
+      - items
+      - limit
+      - offset
+      title: OutfitHistoryResponse
+    OutfitResponse:
+      properties:
+        outfit_id:
+          type: string
+          format: uuid
+          title: Outfit Id
+        type:
+          type: string
+          title: Type
+        title:
+          type: string
+          title: Title
+        reason:
+          type: string
+          title: Reason
+        time_sensitivity:
+          type: string
+          title: Time Sensitivity
+          default: standard
+        items:
+          items:
+            $ref: '#/components/schemas/RecommendationItemResponse'
+          type: array
+          title: Items
+      type: object
+      required:
+      - outfit_id
+      - type
+      - title
+      - reason
+      - items
+      title: OutfitResponse
+    OutfitSummary:
+      properties:
+        outfit_id:
+          type: string
+          format: uuid
+          title: Outfit Id
+        outfit_type:
+          type: string
+          title: Outfit Type
+        title:
+          type: string
+          title: Title
+        reason_text:
+          type: string
+          title: Reason Text
+        outfit_board_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Outfit Board Url
+        items:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Items
+          default: []
+      type: object
+      required:
+      - outfit_id
+      - outfit_type
+      - title
+      - reason_text
+      title: OutfitSummary
+    OutfitVisualAssetResponse:
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          title: Asset Id
+        generation_status:
+          type: string
+          title: Generation Status
+        image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Url
+        visual_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Visual Type
+        error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Code
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+      type: object
+      required:
+      - asset_id
+      - generation_status
+      title: OutfitVisualAssetResponse
+    PresignUploadRequest:
+      properties:
+        file_name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: File Name
+        content_type:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Content Type
+        biz_type:
+          type: string
+          title: Biz Type
+          default: wardrobe_item
+        max_content_length:
+          type: integer
+          maximum: 10485760.0
+          exclusiveMinimum: 0.0
+          title: Max Content Length
+          default: 10485760
+      type: object
+      required:
+      - file_name
+      - content_type
+      title: PresignUploadRequest
+    PresignUploadResponse:
+      properties:
+        upload_url:
+          type: string
+          title: Upload Url
+        file_url:
+          type: string
+          title: File Url
+        object_key:
+          type: string
+          title: Object Key
+      type: object
+      required:
+      - upload_url
+      - file_url
+      - object_key
+      title: PresignUploadResponse
+    RecommendationItemResponse:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+        category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Category
+        display_role:
+          type: string
+          enum:
+          - top
+          - outer
+          - bottom
+          - shoes
+          - accessory
+          title: Display Role
+          default: accessory
+      type: object
+      required:
+      - item_id
+      title: RecommendationItemResponse
+    RefreshTokenRequest:
+      properties:
+        refresh_token:
+          type: string
+          minLength: 1
+          title: Refresh Token
+      type: object
+      required:
+      - refresh_token
+      title: RefreshTokenRequest
+    ResponseModel_AuthTokenResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/AuthTokenResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[AuthTokenResponse]
+    ResponseModel_BatchInspirationResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/BatchInspirationResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[BatchInspirationResponse]
+    ResponseModel_ConfirmImportResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/ConfirmImportResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[ConfirmImportResponse]
+    ResponseModel_DeleteWardrobeItemResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/DeleteWardrobeItemResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[DeleteWardrobeItemResponse]
+    ResponseModel_FeedbackBundleResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/FeedbackBundleResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[FeedbackBundleResponse]
+    ResponseModel_FeedbackResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/FeedbackResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[FeedbackResponse]
+    ResponseModel_FeedbackTagsResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/FeedbackTagsResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[FeedbackTagsResponse]
+    ResponseModel_FitFeedbackResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/FitFeedbackResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[FitFeedbackResponse]
+    ResponseModel_ImportTaskResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/ImportTaskResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[ImportTaskResponse]
+    ResponseModel_InspirationListResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/InspirationListResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[InspirationListResponse]
+    ResponseModel_InspirationResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/InspirationResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[InspirationResponse]
+    ResponseModel_ItemWearHistoryResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/ItemWearHistoryResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[ItemWearHistoryResponse]
+    ResponseModel_NoneType_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          type: 'null'
+          title: Data
+      type: object
+      title: ResponseModel[NoneType]
+    ResponseModel_OutfitHistoryResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/OutfitHistoryResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[OutfitHistoryResponse]
+    ResponseModel_OutfitResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/OutfitResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[OutfitResponse]
+    ResponseModel_PresignUploadResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/PresignUploadResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[PresignUploadResponse]
+    ResponseModel_TodayRecommendationResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/TodayRecommendationResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[TodayRecommendationResponse]
+    ResponseModel_UserSettingsResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/UserSettingsResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[UserSettingsResponse]
+    ResponseModel_WardrobeItemResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/WardrobeItemResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[WardrobeItemResponse]
+    ResponseModel_WardrobeListResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/WardrobeListResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[WardrobeListResponse]
+    ResponseModel_WearOutfitResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/WearOutfitResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[WearOutfitResponse]
+    StyleContextResponse:
+      properties:
+        template_id:
+          type: string
+          title: Template Id
+        active_tags:
+          items:
+            type: string
+          type: array
+          title: Active Tags
+          default: []
+        confidence:
+          type: number
+          title: Confidence
+          default: 0.0
+      type: object
+      required:
+      - template_id
+      title: StyleContextResponse
+    StyleTrendEntry:
+      properties:
+        year_month:
+          type: string
+          title: Year Month
+        tags:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Tags
+      type: object
+      required:
+      - year_month
+      - tags
+      title: StyleTrendEntry
+    StyleTrendResponse:
+      properties:
+        trend:
+          items:
+            $ref: '#/components/schemas/StyleTrendEntry'
+          type: array
+          title: Trend
+      type: object
+      required:
+      - trend
+      title: StyleTrendResponse
+    TodayRecommendationResponse:
+      properties:
+        recommendation_date:
+          type: string
+          format: date
+          title: Recommendation Date
+        status:
+          type: string
+          title: Status
+        guidance_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Guidance Text
+        outfits:
+          items:
+            $ref: '#/components/schemas/OutfitResponse'
+          type: array
+          title: Outfits
+          default: []
+        style_context:
+          anyOf:
+          - $ref: '#/components/schemas/StyleContextResponse'
+          - type: 'null'
+      type: object
+      required:
+      - recommendation_date
+      - status
+      title: TodayRecommendationResponse
+    TopItemResponse:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          type: string
+          title: Title
+        category:
+          type: string
+          title: Category
+        cover_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cover Image Url
+        wear_count:
+          type: integer
+          title: Wear Count
+      type: object
+      required:
+      - item_id
+      - title
+      - category
+      - wear_count
+      title: TopItemResponse
+    UpdateFitRequest:
+      properties:
+        size_label:
+          anyOf:
+          - type: string
+            maxLength: 32
+          - type: 'null'
+          title: Size Label
+        size_region:
+          anyOf:
+          - type: string
+            maxLength: 32
+          - type: 'null'
+          title: Size Region
+        fit_intent:
+          anyOf:
+          - $ref: '#/components/schemas/FitIntent'
+          - type: 'null'
+        fit_status:
+          anyOf:
+          - $ref: '#/components/schemas/FitStatus'
+          - type: 'null'
+        comfort_score:
+          anyOf:
+          - type: integer
+            maximum: 5.0
+            minimum: 1.0
+          - type: 'null'
+          title: Comfort Score
+      type: object
+      title: UpdateFitRequest
+    UpdateStyleTagsRequest:
+      properties:
+        tags:
+          items:
+            type: string
+            maxLength: 50
+            minLength: 1
+          type: array
+          maxItems: 20
+          minItems: 1
+          title: Tags
+      type: object
+      required:
+      - tags
+      title: UpdateStyleTagsRequest
+    UpdateUserSettingsRequest:
+      properties:
+        departure_time:
+          anyOf:
+          - type: string
+            format: time
+          - type: 'null'
+          title: Departure Time
+        push_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Push Enabled
+        device_token:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Device Token
+        location:
+          anyOf:
+          - type: string
+            maxLength: 120
+          - type: 'null'
+          title: Location
+      type: object
+      title: UpdateUserSettingsRequest
+    UpdateWardrobeItemRequest:
+      properties:
+        title:
+          anyOf:
+          - type: string
+            maxLength: 120
+            minLength: 1
+          - type: 'null'
+          title: Title
+        category:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Category
+        color_main:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Color Main
+        status:
+          anyOf:
+          - $ref: '#/components/schemas/WardrobeItemStatus'
+          - type: 'null'
+        location:
+          anyOf:
+          - type: string
+            maxLength: 120
+          - type: 'null'
+          title: Location
+        sub_category:
+          anyOf:
+          - type: string
+            maxLength: 32
+          - type: 'null'
+          title: Sub Category
+        color_secondary:
+          anyOf:
+          - type: string
+            maxLength: 32
+          - type: 'null'
+          title: Color Secondary
+        material:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Material
+        season_tags:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Season Tags
+        style_tags:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Style Tags
+        formality_score:
+          anyOf:
+          - type: integer
+            maximum: 5.0
+            minimum: 1.0
+          - type: 'null'
+          title: Formality Score
+        time_cost_level:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Time Cost Level
+        purchase_price:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Purchase Price
+        purchase_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Purchase Date
+      type: object
+      title: UpdateWardrobeItemRequest
+    UserSettingsResponse:
+      properties:
+        departure_time:
+          anyOf:
+          - type: string
+            format: time
+          - type: 'null'
+          title: Departure Time
+        push_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Push Enabled
+        device_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Device Token
+        location:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Location
+      type: object
+      title: UserSettingsResponse
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+    WardrobeItemImagesResponse:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        images:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Images
+      type: object
+      required:
+      - item_id
+      - images
+      title: WardrobeItemImagesResponse
+    WardrobeItemResponse:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          type: string
+          title: Title
+        category:
+          type: string
+          title: Category
+        color_main:
+          type: string
+          title: Color Main
+        status:
+          $ref: '#/components/schemas/WardrobeItemStatus'
+        cover_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cover Image Url
+        original_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Original Image Url
+        location:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Location
+        size_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Size Label
+        size_region:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Size Region
+        fit_intent:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fit Intent
+        fit_status:
+          type: string
+          title: Fit Status
+        comfort_score:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Comfort Score
+        sub_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sub Category
+        color_secondary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Color Secondary
+        material:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Material
+        season_tags:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Season Tags
+        style_tags:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Style Tags
+        formality_score:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Formality Score
+        time_cost_level:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Time Cost Level
+        purchase_price:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Purchase Price
+        wear_count:
+          type: integer
+          title: Wear Count
+          default: 0
+        last_worn:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Worn
+        purchase_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Purchase Date
+      type: object
+      required:
+      - item_id
+      - title
+      - category
+      - color_main
+      - status
+      - fit_status
+      title: WardrobeItemResponse
+    WardrobeItemStatus:
+      type: string
+      enum:
+      - wearable
+      - unavailable
+      - dirty
+      - lost
+      - donated
+      title: WardrobeItemStatus
+    WardrobeListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/WardrobeItemResponse'
+          type: array
+          title: Items
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        total:
+          type: integer
+          title: Total
+      type: object
+      required:
+      - items
+      - limit
+      - offset
+      - total
+      title: WardrobeListResponse
+    WearHistoryEntry:
+      properties:
+        worn_date:
+          type: string
+          format: date
+          title: Worn Date
+        outfit_id:
+          type: string
+          format: uuid
+          title: Outfit Id
+        outfit_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Outfit Type
+      type: object
+      required:
+      - worn_date
+      - outfit_id
+      title: WearHistoryEntry
+    WearOutfitRequest:
+      properties:
+        worn_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Worn Date
+      type: object
+      title: WearOutfitRequest
+    WearOutfitResponse:
+      properties:
+        success:
+          type: boolean
+          title: Success
+      type: object
+      required:
+      - success
+      title: WearOutfitResponse
