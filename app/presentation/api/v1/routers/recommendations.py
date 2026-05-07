@@ -36,6 +36,7 @@ from app.infrastructure.persistence.repositories.operation_log_repo import (
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
+from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.user_repo import SqlAlchemyUserRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
@@ -317,6 +318,44 @@ async def get_today_recommendation(
     except RedisError:
         logger.warning("daily_recommendation_cache_set_failed", user_id=str(current_user.id))
     return response
+
+
+@router.post("/today/refresh", response_model=ResponseModel[TodayRecommendationResponse])
+async def refresh_today(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[Redis, Depends(get_redis_client)],
+    scene: str | None = Query(default=None, pattern="^(commute|formal|casual)$"),
+) -> ResponseModel[TodayRecommendationResponse]:
+    """Phase D3 — user-initiated refresh. Writes a new revision; old revision
+    rows + their wear/feedback references are preserved. Rate-limited per
+    `TODAY_REFRESH_DAILY_LIMIT` (default 3/d incl. background rev-1)."""
+    from app.application.recommendations.refresh_today import refresh_today_recommendation
+
+    repository = SqlAlchemyRecommendationRepository(session)
+    style_repo = SqlAlchemyStyleRepository(session)
+    daily = await refresh_today_recommendation(
+        current_user.id, repository, style_repo, scene=scene
+    )
+    await session.commit()
+
+    # Drop any stale /today cache for this user so the next GET reads the
+    # new revision rather than serving the prior cached payload.
+    user_settings = await SqlAlchemyUserRepository(session).get_or_create_settings(
+        current_user.id
+    )
+    cache_key = build_daily_recommendation_cache_key(
+        current_user.id, daily.recommendation_date, user_settings.departure_time, scene
+    )
+    try:
+        await redis_client.delete(cache_key)
+    except RedisError:
+        logger.warning("today_refresh_cache_invalidate_failed", user_id=str(current_user.id))
+
+    today_data = await today_response(
+        daily, session, daily.recommendation_date, user_settings.departure_time, scene
+    )
+    return ResponseModel(data=today_data)
 
 
 @router.get("/outfits/{outfit_id}", response_model=ResponseModel[OutfitResponse])

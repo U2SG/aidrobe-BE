@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -46,17 +46,83 @@ class SqlAlchemyRecommendationRepository:
     async def get_daily(
         self, user_id: uuid.UUID, recommendation_date: date
     ) -> DailyRecommendation | None:
+        # Filter to is_current=True so reads always see the latest revision.
+        # Legacy single-row data already has is_current default=True so this
+        # doesn't change behavior for pre-revision rows.
         return cast(
             DailyRecommendation | None,
             await self.session.scalar(
-            select(DailyRecommendation)
-            .options(selectinload(DailyRecommendation.outfits).selectinload(Outfit.items))
-            .where(
-                DailyRecommendation.user_id == user_id,
-                DailyRecommendation.recommendation_date == recommendation_date,
-            )
+                select(DailyRecommendation)
+                .options(selectinload(DailyRecommendation.outfits).selectinload(Outfit.items))
+                .where(
+                    DailyRecommendation.user_id == user_id,
+                    DailyRecommendation.recommendation_date == recommendation_date,
+                    DailyRecommendation.is_current.is_(True),
+                )
             ),
         )
+
+    async def count_revisions_for_date(
+        self, user_id: uuid.UUID, recommendation_date: date
+    ) -> int:
+        """How many daily rows exist for this (user, date) regardless of
+        is_current. Used by the refresh rate limit so 3 refreshes ⇒ 4 rows
+        (rev 1 from background gen + 3 from refresh)."""
+        from sqlalchemy import func
+
+        return cast(
+            int,
+            await self.session.scalar(
+                select(func.count())
+                .select_from(DailyRecommendation)
+                .where(
+                    DailyRecommendation.user_id == user_id,
+                    DailyRecommendation.recommendation_date == recommendation_date,
+                )
+            )
+            or 0,
+        )
+
+    async def archive_current_and_revise(
+        self, daily: DailyRecommendation
+    ) -> DailyRecommendation:
+        """Phase D3 — refresh path. Flips the current row to is_current=False
+        (engagement, wear_history, feedback all stay attached to the OLD
+        outfit_ids — that's the whole point of versioning), then inserts a
+        new row with revision = max+1, is_current=True. The caller still
+        adds outfits to the returned new row.
+
+        Distinct from `replace_daily` (which OVERWRITES in-place when there
+        is no engagement). The two paths exist on purpose: background
+        recompute ⇒ replace; user-initiated refresh ⇒ archive+revise."""
+        from sqlalchemy import func
+
+        # 1. Mark all existing rows for this (user, date) as not-current.
+        #    If a prior bug left multiple is_current rows, this heals it.
+        await self.session.execute(
+            update(DailyRecommendation)
+            .where(
+                DailyRecommendation.user_id == daily.user_id,
+                DailyRecommendation.recommendation_date == daily.recommendation_date,
+                DailyRecommendation.is_current.is_(True),
+            )
+            .values(is_current=False)
+        )
+        # 2. Pick next revision number.
+        max_rev = (
+            await self.session.scalar(
+                select(func.coalesce(func.max(DailyRecommendation.revision), 0)).where(
+                    DailyRecommendation.user_id == daily.user_id,
+                    DailyRecommendation.recommendation_date == daily.recommendation_date,
+                )
+            )
+            or 0
+        )
+        daily.revision = max_rev + 1
+        daily.is_current = True
+        self.session.add(daily)
+        await self.session.flush()
+        return daily
 
     async def get_latest_before(
         self, user_id: uuid.UUID, target_date: date

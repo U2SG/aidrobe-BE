@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     # to roll back scoring).
     ENABLE_TODAY_CONTEXT: bool = False
     ENABLE_TODAY_REFRESH: bool = False
+    # Total daily_recommendations rows allowed per (user, date), inclusive
+    # of the original background-generated rev-1. Enforced when
+    # ENABLE_TODAY_REFRESH=True.
+    TODAY_REFRESH_DAILY_LIMIT: int = 3
 
     # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
     # every authenticated user is admin (DX); empty in prod means the admin

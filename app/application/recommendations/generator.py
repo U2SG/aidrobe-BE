@@ -48,16 +48,24 @@ class RecommendationGenerator:
         target_date: date,
         generation_source: str,
         scene: str | None = None,
+        *,
+        refresh: bool = False,
     ) -> DailyRecommendation:
-        existing = await self.repository.get_daily(user_id, target_date)
-        if existing and await self.repository.daily_has_engagement(existing.id):
-            logger.info(
-                "recommendation_generation_skipped",
-                user_id=str(user_id),
-                target_date=str(target_date),
-                reason="daily_has_engagement",
-            )
-            return existing
+        """`refresh=True` archives the current daily as `is_current=False`
+        and writes a new revision. Engagement on the old revision (wear /
+        feedback) stays attached to those outfits — that is the whole point
+        of revisioning. `refresh=False` (default) is the background-recompute
+        path: it short-circuits on engagement and overwrites in place."""
+        if not refresh:
+            existing = await self.repository.get_daily(user_id, target_date)
+            if existing and await self.repository.daily_has_engagement(existing.id):
+                logger.info(
+                    "recommendation_generation_skipped",
+                    user_id=str(user_id),
+                    target_date=str(target_date),
+                    reason="daily_has_engagement",
+                )
+                return existing
 
         items = await self.repository.get_wearable_items(user_id)
         recent = await self.repository.recent_worn_main_item_ids(user_id, target_date)
@@ -101,7 +109,10 @@ class RecommendationGenerator:
             else None,
             context_json=_build_context_snapshot(weather, scene),
         )
-        daily = await self.repository.replace_daily(daily)
+        if refresh:
+            daily = await self.repository.archive_current_and_revise(daily)
+        else:
+            daily = await self.repository.replace_daily(daily)
 
         if result.status == RecommendationStatus.READY.value:
             now = datetime.now(UTC)
