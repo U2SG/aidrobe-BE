@@ -96,5 +96,33 @@ class AliyunOssStorage:
             base = self.settings.ALIYUN_OSS_PUBLIC_BASE_URL.rstrip("/")
             return f"{base}/{key}"
         # Fallback: synthesize from endpoint + bucket. NOTE this is the OSS
-        # raw URL — for production reads route through CDN via cdn_url.py.
+        # raw URL — for private buckets use `sign_get_url` instead (or
+        # route through CDN via cdn_url.py once that is enabled).
         return f"{self.settings.ALIYUN_OSS_ENDPOINT}/{self.settings.ALIYUN_OSS_BUCKET}/{key}"
+
+    def sign_get_url(
+        self,
+        key: str,
+        *,
+        ttl_seconds: int = 1800,
+        process: str | None = None,
+    ) -> str:
+        """Return a short-lived signed GET URL for a private-bucket object.
+
+        Use this when CDN isn't yet provisioned: the backend signs each
+        render directly. Optionally bakes `?x-oss-process=...` into the
+        signature so a client can't tamper with the resize/quality params.
+
+        TTL note: 30 min default is long enough for one screen render +
+        retries; clients re-fetch the URL on cache miss rather than
+        holding a long-TTL token."""
+        params: dict[str, str] = {}
+        if process is not None:
+            params["x-oss-process"] = process
+        return self._bucket.sign_url(  # type: ignore[attr-defined]
+            "GET",
+            key,
+            ttl_seconds,
+            slash_safe=True,
+            params=params,
+        )
