@@ -91,13 +91,15 @@ async def issue_sts_token(
             f"unknown bucket alias: {payload.bucket_alias}",
             status_code=422,
         )
-    # Per-purpose bucket env var first; legacy ALIYUN_OSS_BUCKET as fallback
-    # so single-bucket dev configs keep working. Prod operators MUST set the
-    # per-purpose vars to get bucket isolation.
-    bucket = getattr(settings, bucket_field, "") or settings.ALIYUN_OSS_BUCKET
+    # Per-purpose bucket env var first. In dev fall back to the legacy
+    # ALIYUN_OSS_BUCKET so single-bucket local setups keep working; in
+    # prod refuse the fallback because it re-introduces the cross-purpose
+    # collision the per-purpose vars are meant to prevent (try-on body
+    # images would otherwise share a bucket with public items).
+    bucket = getattr(settings, bucket_field, "")
+    if not bucket and settings.APP_ENV != "prod":
+        bucket = settings.ALIYUN_OSS_BUCKET
     if not bucket:
-        # Operator hasn't configured this bucket yet — fail closed rather
-        # than issuing creds for an empty target.
         raise FriendlyException(
             error_codes.FORBIDDEN,
             "bucket not configured",

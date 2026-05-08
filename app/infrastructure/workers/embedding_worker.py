@@ -121,9 +121,12 @@ async def _process_one(job: AsyncJob) -> None:
 
         # Resolve a fresh signed URL from the object_key when present so
         # retry backoff (up to 2h) doesn't outlive the 30-min TTL of a
-        # URL stamped at enqueue time. Fall back to the persisted URL
-        # for external sources (import flow).
-        fetch_url = image_url
+        # URL stamped at enqueue time. The persisted image_url is only
+        # safe to use for EXTERNAL sources (import flow) where it points
+        # at a third-party host; for internal storage it's also a signed
+        # URL with the same TTL problem we're trying to solve, so we
+        # MUST NOT silently fall back to it on signing failure.
+        fetch_url: str | None = None
         if image_key:
             from app.bootstrap.container import object_storage
 
@@ -131,9 +134,22 @@ async def _process_one(job: AsyncJob) -> None:
                 fetch_url = object_storage().sign_render_url(image_key)
             except Exception as exc:
                 logger.warning("embedding.sign_url_failed", error=str(exc))
-                # Fall back to the original image_url if signing fails
-                # (e.g. storage misconfigured); image_url may still work
-                # in dev / public-bucket setups.
+                # mark_failed → retry; storage is presumably transient.
+                # Don't try image_url here: when image_key is set the
+                # url itself is internal-signed and equally TTL-bound.
+                async with AsyncSessionLocal() as session:
+                    await mark_failed(
+                        session,
+                        job.id,
+                        claimed_attempt=job.attempts,
+                        error=f"sign_render_url_failed: {exc}",
+                    )
+                    await session.commit()
+                return
+        else:
+            # No object_key → external URL from import flow (e.g. user
+            # pasted a third-party image link). Use it as-is.
+            fetch_url = image_url
 
         try:
             vector = await embedder.embed_image(fetch_url or "")

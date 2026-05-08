@@ -216,7 +216,10 @@ async def attach_replacement_candidates(
     rank in-memory per obstacle. Embedding-similarity tier (which is
     per-item by nature) still takes its own query when pgvector is on,
     but tier-2/tier-3 fallbacks become O(1) total queries instead of O(N)."""
-    from app.application.outfits.replacements import find_replacements_batch
+    from app.application.outfits.replacements import (
+        _pgvector_enabled,
+        find_replacements_batch,
+    )
 
     items_by_id = {str(i.id): i for i in items}
     targeted = [
@@ -234,16 +237,18 @@ async def attach_replacement_candidates(
     candidates_by_item = await find_replacements_batch(
         session, targeted_items, exclude_ids=other_outfit_item_ids, k=k
     )
+    # When pgvector is on, an empty batch result for an item still has a
+    # tier-1 (embedding similarity) chance via the per-item function. When
+    # it's off, the batch result already exhausted every tier we have, so
+    # fallback would be wasted SQL.
+    pgvector_on = _pgvector_enabled()
     for o in targeted:
         item_id = o["item_id"]
         if item_id not in items_by_id:
             continue
         item = items_by_id[item_id]
         ids = candidates_by_item.get(item.id, [])
-        if not ids:
-            # Cascade fall-through to the per-item function so embedding-
-            # tier (when enabled) still runs. The per-item path is the
-            # exception, not the rule, so we don't lose the batched win.
+        if not ids and pgvector_on:
             ids = await find_replacements(
                 session, item, exclude_ids=other_outfit_item_ids, k=k
             )
