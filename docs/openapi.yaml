@@ -169,6 +169,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/uploads/sts-token:
+    post:
+      tags:
+      - uploads
+      summary: Issue Sts Token
+      description: 'Issue narrow-scoped temporary OSS credentials.
+
+
+        The returned token can ONLY (a) hit `users/<this-user>/<action>/` prefix
+
+        of the named bucket, (b) for the requested verb, (c) for the configured
+
+        TTL. iOS uses this to upload originals directly without ever holding a
+
+        permanent AccessKey — server never sees the bytes (saves bandwidth).'
+      operationId: issue_sts_token_v1_uploads_sts_token_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StsTokenRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_StsTokenResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/import-tasks:
     post:
       tags:
@@ -646,6 +698,57 @@ paths:
       - recommendations
       summary: Get Today Recommendation
       operationId: get_today_recommendation_v1_recommendations_today_get
+      parameters:
+      - name: scene
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^(commute|formal|casual)$
+          - type: 'null'
+          title: Scene
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_TodayRecommendationResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/recommendations/today/refresh:
+    post:
+      tags:
+      - recommendations
+      summary: Refresh Today
+      description: 'Phase D3 — user-initiated refresh. Writes a new revision; old
+        revision
+
+        rows + their wear/feedback references are preserved. Rate-limited per
+
+        `TODAY_REFRESH_DAILY_LIMIT` (default 3/d incl. background rev-1).'
+      operationId: refresh_today_v1_recommendations_today_refresh_post
       parameters:
       - name: scene
         in: query
@@ -1737,6 +1840,215 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/admin/jobs:
+    get:
+      tags:
+      - admin
+      summary: List Async Jobs
+      description: 'List async jobs filtered by status (default `dead`).
+
+
+        Bounded by `limit<=200` so a single misconfigured query can''t pull the
+
+        whole table into memory.'
+      operationId: list_async_jobs_v1_admin_jobs_get
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          description: Job status filter
+          default: dead
+          title: Status
+        description: Job status filter
+      - name: job_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Filter to one job_type
+          title: Job Type
+        description: Filter to one job_type
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAsyncJobListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/user/cost-summary:
+    get:
+      tags:
+      - account
+      summary: Get Cost Summary
+      description: 'User-visible token / call usage for today. Always returns a payload
+        —
+
+        when ENABLE_COST_GUARD is off the `limit` field is the unused default
+
+        (so the client can pre-render the UI before the operator turns the
+
+        feature on).'
+      operationId: get_cost_summary_v1_user_cost_summary_get
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_CostSummaryResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/me/data-export:
+    post:
+      tags:
+      - account
+      summary: Request My Data Export
+      description: 'PIPL DSAR — kick off an asynchronous export of the user''s personal
+
+        data. Bundle path runs as a `user_export` async-job; the user receives
+
+        a download link (push / email) when ready. Idempotent per pending
+
+        request: re-calling while one is in flight returns the same job_id.'
+      operationId: request_my_data_export_v1_me_data_export_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_DataExportResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/me:
+    delete:
+      tags:
+      - account
+      summary: Deactivate Me
+      description: 'PIPL-aware account deactivation. Soft-deletes immediately; hard-purge
+
+        fires after the grace window via the user_purge async-job worker.
+
+
+        Idempotent — calling twice on an already-deactivated account is OK and
+
+        returns the same scheduled_purge_at.'
+      operationId: deactivate_me_v1_me_delete
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_DeactivateResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AddInspirationRequest:
@@ -1757,6 +2069,106 @@ components:
           title: Source Url
       type: object
       title: AddInspirationRequest
+    AdminAsyncJobItem:
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          title: Job Id
+        job_type:
+          type: string
+          title: Job Type
+        status:
+          type: string
+          title: Status
+        attempts:
+          type: integer
+          title: Attempts
+        max_attempts:
+          type: integer
+          title: Max Attempts
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+        correlation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Correlation Id
+        user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: User Id
+        target_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Target Id
+        cost_tokens:
+          type: integer
+          title: Cost Tokens
+          default: 0
+        cost_cents:
+          type: integer
+          title: Cost Cents
+          default: 0
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        next_run_at:
+          type: string
+          format: date-time
+          title: Next Run At
+        lease_expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Lease Expires At
+      type: object
+      required:
+      - job_id
+      - job_type
+      - status
+      - attempts
+      - max_attempts
+      - created_at
+      - updated_at
+      - next_run_at
+      title: AdminAsyncJobItem
+    AdminAsyncJobListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/AdminAsyncJobItem'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+      type: object
+      required:
+      - items
+      - total
+      - limit
+      - offset
+      title: AdminAsyncJobListResponse
     AppleLoginRequest:
       properties:
         id_token:
@@ -1935,6 +2347,37 @@ components:
       - title
       - wear_count
       title: CostPerWearItem
+    CostSummaryItem:
+      properties:
+        used:
+          type: integer
+          title: Used
+        limit:
+          type: integer
+          title: Limit
+        remaining:
+          type: integer
+          title: Remaining
+      type: object
+      required:
+      - used
+      - limit
+      - remaining
+      title: CostSummaryItem
+    CostSummaryResponse:
+      properties:
+        llm_ask:
+          $ref: '#/components/schemas/CostSummaryItem'
+        ocr_receipt:
+          $ref: '#/components/schemas/CostSummaryItem'
+        tryon:
+          $ref: '#/components/schemas/CostSummaryItem'
+      type: object
+      required:
+      - llm_ask
+      - ocr_receipt
+      - tryon
+      title: CostSummaryResponse
     CreateImportTaskRequest:
       properties:
         input_type:
@@ -1962,6 +2405,41 @@ components:
       - input_type
       - source_type
       title: CreateImportTaskRequest
+    DataExportResponse:
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          title: Job Id
+        status:
+          type: string
+          title: Status
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - job_id
+      - status
+      - message
+      title: DataExportResponse
+    DeactivateResponse:
+      properties:
+        deactivated_at:
+          type: string
+          title: Deactivated At
+        scheduled_purge_at:
+          type: string
+          title: Scheduled Purge At
+        grace_days:
+          type: integer
+          title: Grace Days
+      type: object
+      required:
+      - deactivated_at
+      - scheduled_purge_at
+      - grace_days
+      title: DeactivateResponse
     DeleteWardrobeItemResponse:
       properties:
         deleted:
@@ -2184,6 +2662,33 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    I18nMessage:
+      properties:
+        key:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Key
+        params:
+          additionalProperties: true
+          type: object
+          title: Params
+        fallback_text:
+          type: string
+          maxLength: 256
+          minLength: 1
+          title: Fallback Text
+      type: object
+      required:
+      - key
+      - fallback_text
+      title: I18nMessage
+      description: "A renderable explanation token.\n\n- `key` is a stable dotted\
+        \ identifier (`obstacle.laundry`, `prep.iron`).\n  Clients lookup their own\
+        \ locale bundle by this key.\n- `params` is a flat string-keyed dict; values\
+        \ must be JSON-serializable\n  and already client-safe (no internal IDs, no\
+        \ PII).\n- `fallback_text` is the server-rendered zh-CN string. REQUIRED.\n\
+        \  Clients without a locale bundle for `key` display this verbatim."
     IdleItemResponse:
       properties:
         item_id:
@@ -2355,6 +2860,47 @@ components:
       - daily_counts
       - entries
       title: ItemWearHistoryResponse
+    ObstacleResponse:
+      properties:
+        kind:
+          type: string
+          enum:
+          - laundry
+          - lost
+          - seasonal
+          - stale
+          - weather_mismatch
+          title: Kind
+        item_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: string
+          title: Item Id
+        severity:
+          type: string
+          enum:
+          - blocking
+          - warning
+          - info
+          title: Severity
+        title:
+          $ref: '#/components/schemas/I18nMessage'
+        replacement_candidate_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+          - type: 'null'
+          title: Replacement Candidate Ids
+      type: object
+      required:
+      - kind
+      - item_id
+      - severity
+      - title
+      title: ObstacleResponse
     OotdUploadRequest:
       properties:
         ootd_image_url:
@@ -2530,6 +3076,31 @@ components:
             $ref: '#/components/schemas/RecommendationItemResponse'
           type: array
           title: Items
+        scores:
+          anyOf:
+          - $ref: '#/components/schemas/OutfitScoresResponse'
+          - type: 'null'
+        obstacles:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ObstacleResponse'
+            type: array
+          - type: 'null'
+          title: Obstacles
+        prep_steps:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/I18nMessage'
+            type: array
+          - type: 'null'
+          title: Prep Steps
+        prep_notes:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/I18nMessage'
+            type: array
+          - type: 'null'
+          title: Prep Notes
       type: object
       required:
       - outfit_id
@@ -2538,6 +3109,35 @@ components:
       - reason
       - items
       title: OutfitResponse
+    OutfitScoresResponse:
+      properties:
+        aesthetic:
+          type: number
+          title: Aesthetic
+        feasibility:
+          type: number
+          title: Feasibility
+        fit:
+          type: number
+          title: Fit
+        total:
+          type: number
+          title: Total
+        prep_minutes:
+          type: integer
+          title: Prep Minutes
+        rules_version:
+          type: string
+          title: Rules Version
+      type: object
+      required:
+      - aesthetic
+      - feasibility
+      - fit
+      - total
+      - prep_minutes
+      - rules_version
+      title: OutfitScoresResponse
     OutfitSummary:
       properties:
         outfit_id:
@@ -2738,6 +3338,54 @@ components:
           - type: 'null'
       type: object
       title: ResponseModel[ConfirmImportResponse]
+    ResponseModel_CostSummaryResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/CostSummaryResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[CostSummaryResponse]
+    ResponseModel_DataExportResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/DataExportResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[DataExportResponse]
+    ResponseModel_DeactivateResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/DeactivateResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[DeactivateResponse]
     ResponseModel_DeleteWardrobeItemResponse_:
       properties:
         code:
@@ -2945,6 +3593,22 @@ components:
           - type: 'null'
       type: object
       title: ResponseModel[PresignUploadResponse]
+    ResponseModel_StsTokenResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/StsTokenResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[StsTokenResponse]
     ResponseModel_TodayRecommendationResponse_:
       properties:
         code:
@@ -3025,6 +3689,63 @@ components:
           - type: 'null'
       type: object
       title: ResponseModel[WearOutfitResponse]
+    StsTokenRequest:
+      properties:
+        bucket_alias:
+          type: string
+          enum:
+          - items
+          - ootd
+          - private
+          - derived
+          title: Bucket Alias
+          default: items
+        action:
+          type: string
+          enum:
+          - upload
+          - read
+          title: Action
+          default: upload
+      type: object
+      title: StsTokenRequest
+    StsTokenResponse:
+      properties:
+        access_key_id:
+          type: string
+          title: Access Key Id
+        access_key_secret:
+          type: string
+          title: Access Key Secret
+        security_token:
+          type: string
+          title: Security Token
+        expiration:
+          type: string
+          title: Expiration
+        bucket:
+          type: string
+          title: Bucket
+        region:
+          type: string
+          title: Region
+        endpoint:
+          type: string
+          title: Endpoint
+        object_key_prefix:
+          type: string
+          title: Object Key Prefix
+      type: object
+      required:
+      - access_key_id
+      - access_key_secret
+      - security_token
+      - expiration
+      - bucket
+      - region
+      - endpoint
+      - object_key_prefix
+      title: StsTokenResponse
     StyleContextResponse:
       properties:
         template_id:
@@ -3070,6 +3791,30 @@ components:
       required:
       - trend
       title: StyleTrendResponse
+    TodayContextResponse:
+      properties:
+        weather:
+          anyOf:
+          - $ref: '#/components/schemas/WeatherContextResponse'
+          - type: 'null'
+        scene:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Scene
+        fetched_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fetched At
+      type: object
+      title: TodayContextResponse
+      description: 'Phase D — context snapshot the engine saw at generation time.
+        Surfaced
+
+        only when ENABLE_TODAY_CONTEXT=true; absent on rows generated before
+
+        Phase D landed.'
     TodayRecommendationResponse:
       properties:
         recommendation_date:
@@ -3093,6 +3838,10 @@ components:
         style_context:
           anyOf:
           - $ref: '#/components/schemas/StyleContextResponse'
+          - type: 'null'
+        context:
+          anyOf:
+          - $ref: '#/components/schemas/TodayContextResponse'
           - type: 'null'
       type: object
       required:
@@ -3554,3 +4303,24 @@ components:
       required:
       - success
       title: WearOutfitResponse
+    WeatherContextResponse:
+      properties:
+        temperature_c:
+          type: number
+          title: Temperature C
+        feels_like_c:
+          type: number
+          title: Feels Like C
+        rain_probability:
+          type: number
+          title: Rain Probability
+        condition:
+          type: string
+          title: Condition
+      type: object
+      required:
+      - temperature_c
+      - feels_like_c
+      - rain_probability
+      - condition
+      title: WeatherContextResponse
