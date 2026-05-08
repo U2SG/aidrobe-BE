@@ -91,6 +91,29 @@ class Settings(BaseSettings):
     # ENABLE_TODAY_REFRESH=True.
     TODAY_REFRESH_DAILY_LIMIT: int = 3
 
+    # Phase E — PIPL-aware account deletion + cost guard.
+    # When False, DELETE /v1/me returns 503 (deliberate kill switch so a
+    # bad rollout doesn't accidentally let users self-destruct mid-incident).
+    ENABLE_USER_PURGE: bool = False
+    # Days between deactivation and the hard-purge async-job firing. PIPL
+    # doesn't fix a number, but giving users a window to reactivate is
+    # standard. 30d aligns with industry norm.
+    USER_PURGE_GRACE_DAYS: int = 30
+    # HMAC key used to derive the opaque `usr_<22ch>` identifier passed to
+    # LLM prompts in place of the raw user_id. MUST be ≥ 32 random bytes
+    # in prod. Leaving the default in prod is a safety hazard — the
+    # sanitizer module raises on first use if APP_ENV='prod' and this is
+    # still the default placeholder.
+    LLM_USER_TOKEN_HMAC_KEY: str = "dev-only-change-me-llm-user-token-hmac-key-32b"
+    # Whether the `cost_guard` middleware is on. When off, jobs run
+    # unconditionally; tokens are still recorded on `async_jobs.cost_*`
+    # so the limit can be enabled later without backfill.
+    ENABLE_COST_GUARD: bool = False
+    # Per-user-per-day caps. Enforced only when ENABLE_COST_GUARD=True.
+    LLM_DAILY_TOKEN_LIMIT: int = 50_000
+    OCR_DAILY_CALL_LIMIT: int = 100
+    TRYON_DAILY_CALL_LIMIT: int = 5
+
     # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
     # every authenticated user is admin (DX); empty in prod means the admin
     # surface is locked off. This is intentional so a misconfigured prod

@@ -23,6 +23,16 @@ class User(UUIDPrimaryKeyMixin, Base):
         String(255), unique=True, nullable=True, index=True
     )
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    # Phase E1 — PIPL soft-delete state machine. Both NULL = active.
+    # `deactivated_at` only → in grace; auth refuses login.
+    # `purged_at` not NULL → personal data wiped; row preserved as a stub
+    # so dangling foreign-key references (audit_log.user_id) stay readable.
+    deactivated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    purged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     settings: Mapped["UserSettings | None"] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )

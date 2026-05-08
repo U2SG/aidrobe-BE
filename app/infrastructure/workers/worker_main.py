@@ -19,6 +19,7 @@ from app.infrastructure.workers.outfit_board_worker import (
     reconcile_dead_outfit_board_assets,
 )
 from app.infrastructure.workers.style_learn_worker import learn_style_source
+from app.infrastructure.workers.user_purge_worker import drain_user_purge_jobs
 
 
 async def build_fit_profiles(ctx: object) -> int:
@@ -63,6 +64,7 @@ class WorkerSettings:
         build_fit_profiles,
         drain_embedding_jobs,
         drain_outfit_board_jobs,
+        drain_user_purge_jobs,
         recover_async_job_leases,
         reconcile_dead_outfit_board_assets,
     ]
@@ -85,6 +87,13 @@ class WorkerSettings:
                 reconcile_dead_outfit_board_assets,
                 minute={5, 20, 35, 50},
                 name="outfit_board_reconcile_dead_assets",
+            ),
+            # Purge cadence is hourly: grace boundary is days, so finer-grain
+            # ticking just wastes claim_one queries.
+            cron(
+                drain_user_purge_jobs,
+                minute={10},
+                name="user_purge_drain",
             ),
         ]
         if cron is not None

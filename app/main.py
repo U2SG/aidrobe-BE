@@ -11,6 +11,7 @@ from app.infrastructure.logging.setup import setup_logging
 from app.infrastructure.persistence.session import AsyncSessionLocal
 from app.jobs.scheduler import create_scheduler
 from app.presentation.api.v1.routers import (
+    account,
     admin,
     auth,
     fit,
@@ -73,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(outfit_history.router)
     app.include_router(outfit_visual.router)
     app.include_router(admin.router)
+    app.include_router(account.router)
     return app
 
 

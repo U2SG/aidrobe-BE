@@ -53,6 +53,16 @@ async def get_current_user(
                 "Invalid access token subject",
                 status_code=401,
             )
+        # Phase E1 — soft-deleted users can't auth. Tokens issued before
+        # deactivation become useless on the next request rather than at
+        # token expiry, which is a stricter guarantee than "wait for the
+        # token to expire naturally."
+        if user.deactivated_at is not None:
+            raise FriendlyException(
+                error_codes.UNAUTHORIZED,
+                "Account deactivated",
+                status_code=401,
+            )
         sentry_sdk.set_user({"id": str(user.id)})
         return user
 
@@ -76,6 +86,12 @@ async def get_current_user(
         ) from exc
 
     user = await repository.get_or_create(user_id)
+    if user.deactivated_at is not None:
+        raise FriendlyException(
+            error_codes.UNAUTHORIZED,
+            "Account deactivated",
+            status_code=401,
+        )
     sentry_sdk.set_user({"id": str(user.id)})
     return user
 

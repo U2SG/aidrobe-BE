@@ -1,4 +1,5 @@
 from app.infrastructure.persistence.models.async_job import AsyncJob
+from app.infrastructure.persistence.models.audit_log import AuditLog
 from app.infrastructure.persistence.models.base import Base
 from app.infrastructure.persistence.models.embedding import ItemEmbedding
 from app.infrastructure.persistence.models.fit import FitFeedback
@@ -19,6 +20,7 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem, Wardrob
 
 __all__ = [
     "AsyncJob",
+    "AuditLog",
     "Base",
     "OutfitVisualAsset",
     "DailyRecommendation",
