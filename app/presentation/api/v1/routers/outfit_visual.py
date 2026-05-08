@@ -52,11 +52,30 @@ async def get_outfit_visual_asset(
     return OutfitVisualAssetResponse(
         asset_id=asset.id,
         generation_status=asset.generation_status,
-        image_url=asset.image_url,
+        # Phase E5 — prefer object_key + sign at request time so private
+        # buckets work without a long-TTL URL baked into the row. Fall
+        # back to the persisted image_url for legacy / non-OSS deploys.
+        image_url=_resolve_render_url(asset.object_key, asset.image_url),
         visual_type=asset.visual_type,
         error_code=asset.error_code,
         error_message=asset.error_message,
     )
+
+
+def _resolve_render_url(object_key: str | None, fallback_url: str | None) -> str | None:
+    """Sign and return a short-lived URL when an object_key is present;
+    otherwise return the persisted URL as-is. Used by both endpoints
+    below so the policy is consistent."""
+    if object_key:
+        from app.bootstrap.container import object_storage
+
+        try:
+            return object_storage().sign_render_url(object_key)
+        except Exception:
+            # If signing fails (storage misconfigured), fall through to
+            # the persisted URL rather than 500-ing the read.
+            pass
+    return fallback_url
 
 
 @router.get(
@@ -87,7 +106,10 @@ async def get_item_images(
         select(WardrobeItemImage).where(WardrobeItemImage.item_id == item_id)
     )
     images = [
-        {"image_type": img.image_type, "image_url": img.image_url}
+        {
+            "image_type": img.image_type,
+            "image_url": _resolve_render_url(img.object_key, img.image_url),
+        }
         for img in img_result.scalars().all()
     ]
 

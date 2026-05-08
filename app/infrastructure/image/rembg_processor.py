@@ -129,10 +129,13 @@ class RembgImageProcessor:
             quality_score, quality_flags = 0.5, []
 
         # upload to S3
-        normalized_url = await self._upload(normalized_bytes, f"{user_id}/{item_id}/normalized.jpg", "image/jpeg")
-        thumbnail_url = await self._upload(thumb_bytes, f"{user_id}/{item_id}/thumbnail.jpg", "image/jpeg")
+        normalized_key = f"{user_id}/{item_id}/normalized.jpg"
+        thumbnail_key = f"{user_id}/{item_id}/thumbnail.jpg"
+        cutout_key = f"{user_id}/{item_id}/cutout.{cutout_ext}"
+        normalized_url = await self._upload(normalized_bytes, normalized_key, "image/jpeg")
+        thumbnail_url = await self._upload(thumb_bytes, thumbnail_key, "image/jpeg")
         cutout_mime = "image/png" if cutout_ext == "png" else "image/jpeg"
-        cutout_url = await self._upload(cutout_bytes, f"{user_id}/{item_id}/cutout.{cutout_ext}", cutout_mime)
+        cutout_url = await self._upload(cutout_bytes, cutout_key, cutout_mime)
 
         return ImageProcessingResult(
             normalized_url=normalized_url,
@@ -140,6 +143,9 @@ class RembgImageProcessor:
             cutout_url=cutout_url,
             quality_score=quality_score,
             quality_flags=quality_flags,
+            normalized_key=normalized_key,
+            thumbnail_key=thumbnail_key,
+            cutout_key=cutout_key,
         )
 
     async def _upload(self, data: bytes, key: str, content_type: str) -> str:

@@ -38,19 +38,22 @@ async def process_image_job(ctx: object, job_id: str) -> None:
                 str(job.user_id),
             )
 
-            # update wardrobe_item_images
+            # update wardrobe_item_images. Phase E5: object_key is the
+            # stable identifier; image_url stays for backwards compat
+            # (and so a fallback render path exists if signing fails).
             if job.item_id:
                 now = datetime.now(UTC)
-                for image_type, url in (
-                    ("normalized", result.normalized_url),
-                    ("thumbnail", result.thumbnail_url),
-                    ("cutout", result.cutout_url),
+                for image_type, url, key in (
+                    ("normalized", result.normalized_url, result.normalized_key),
+                    ("thumbnail", result.thumbnail_url, result.thumbnail_key),
+                    ("cutout", result.cutout_url, result.cutout_key),
                 ):
                     session.add(
                         WardrobeItemImage(
                             item_id=job.item_id,
                             image_type=image_type,
                             image_url=url,
+                            object_key=key,
                             created_at=now,
                         )
                     )

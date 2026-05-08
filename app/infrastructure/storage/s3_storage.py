@@ -56,6 +56,21 @@ class S3ObjectStorage:
         )
         return self._file_url(key)
 
+    def sign_render_url(
+        self,
+        key: str,
+        *,
+        ttl_seconds: int = 1800,
+        process: str | None = None,
+    ) -> str:
+        """S3 presigned GET. `process` is OSS-specific; on S3 it is
+        ignored (no equivalent server-side image processing)."""
+        return self.client.generate_presigned_url(  # type: ignore[no-any-return]
+            "get_object",
+            Params={"Bucket": self.bucket, "Key": key},
+            ExpiresIn=ttl_seconds,
+        )
+
     def _file_url(self, object_key: str) -> str:
         if self.settings.S3_PUBLIC_BASE_URL:
             return f"{self.settings.S3_PUBLIC_BASE_URL.rstrip('/')}/{object_key}"

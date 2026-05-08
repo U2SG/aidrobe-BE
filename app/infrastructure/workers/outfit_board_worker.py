@@ -136,10 +136,10 @@ def _draw_placeholder(canvas: Image.Image, box: tuple[int, int, int, int], label
     )
 
 
-async def _render_and_upload(snapshot: _AssetSnapshot) -> str:
-    """Render the composite board and upload to object storage. Returns the
-    public image URL. Raises on storage / encode failures (the worker
-    converts to mark_failed)."""
+async def _render_and_upload(snapshot: _AssetSnapshot) -> tuple[str, str]:
+    """Render the composite board and upload to object storage. Returns
+    `(image_url, object_key)`. Raises on storage / encode failures (the
+    worker converts to mark_failed)."""
     items = snapshot.input_snapshot.get("item_list", [])
     canvas = Image.new("RGBA", (CANVAS_W, CANVAS_H), (255, 255, 255, 255))
 
@@ -169,7 +169,8 @@ async def _render_and_upload(snapshot: _AssetSnapshot) -> str:
 
     storage = object_storage()
     key = f"{snapshot.user_id}/outfit_boards/{snapshot.id}.jpg"
-    return await storage.put_object(key, buf.read(), "image/jpeg")
+    url = await storage.put_object(key, buf.read(), "image/jpeg")
+    return url, key
 
 
 async def _process_one(job: AsyncJob) -> None:
@@ -219,7 +220,7 @@ async def _process_one(job: AsyncJob) -> None:
 
         # 2. Render + upload (no DB session held during slow IO).
         try:
-            image_url = await _render_and_upload(snapshot)
+            image_url, object_key = await _render_and_upload(snapshot)
         except Exception as exc:
             logger.warning("outfit_board_render_failed", error=str(exc))
             async with AsyncSessionLocal() as session:
@@ -248,7 +249,9 @@ async def _process_one(job: AsyncJob) -> None:
         # retry's own write.
         async with AsyncSessionLocal() as session:
             repo = SqlAlchemyOutfitVisualRepository(session)
-            await repo.update_status(asset_id, "completed", image_url=image_url)
+            await repo.update_status(
+                asset_id, "completed", image_url=image_url, object_key=object_key
+            )
             ok = await mark_succeeded(session, job.id, claimed_attempt=job.attempts)
             if not ok:
                 await session.rollback()

@@ -28,3 +28,18 @@ class ObjectStoragePort(Protocol):
     ) -> str:
         """Upload bytes directly and return the public file URL."""
         ...
+
+    def sign_render_url(
+        self,
+        key: str,
+        *,
+        ttl_seconds: int = 1800,
+        process: str | None = None,
+    ) -> str:
+        """Phase E5 — return a short-lived URL the client can GET.
+
+        For private buckets this signs the request; for public/local
+        backends it just constructs the URL. `process` carries an optional
+        OSS image-processing string (e.g. resize+quality); when supported
+        by the backend the signature covers it so clients cannot tamper."""
+        ...

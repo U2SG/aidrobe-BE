@@ -34,6 +34,7 @@ class SqlAlchemyOutfitVisualRepository:
         image_url: str | None = None,
         error_code: str | None = None,
         error: str | None = None,
+        object_key: str | None = None,
     ) -> None:
         asset = await self.get_by_id(asset_id)
         if asset is None:
@@ -41,6 +42,8 @@ class SqlAlchemyOutfitVisualRepository:
         asset.generation_status = status
         if image_url is not None:
             asset.image_url = image_url
+        if object_key is not None:
+            asset.object_key = object_key
         if error_code is not None:
             asset.error_code = error_code
         if error is not None:

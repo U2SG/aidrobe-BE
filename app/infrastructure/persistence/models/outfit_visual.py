@@ -17,6 +17,9 @@ class OutfitVisualAsset(UUIDPrimaryKeyMixin, Base):
     outfit_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     visual_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Phase E5 — internal-storage object key for the rendered board.
+    # Readers prefer this + sign on request when present.
+    object_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     template_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     generation_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="queued"

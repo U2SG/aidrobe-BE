@@ -100,6 +100,16 @@ class AliyunOssStorage:
         # route through CDN via cdn_url.py once that is enabled).
         return f"{self.settings.ALIYUN_OSS_ENDPOINT}/{self.settings.ALIYUN_OSS_BUCKET}/{key}"
 
+    def sign_render_url(
+        self,
+        key: str,
+        *,
+        ttl_seconds: int = 1800,
+        process: str | None = None,
+    ) -> str:
+        """ObjectStoragePort interface name — delegates to sign_get_url."""
+        return self.sign_get_url(key, ttl_seconds=ttl_seconds, process=process)
+
     def sign_get_url(
         self,
         key: str,

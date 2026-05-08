@@ -61,6 +61,11 @@ class WardrobeItemImage(UUIDPrimaryKeyMixin, Base):
         String(32), default=ImageType.ORIGINAL.value, nullable=False
     )
     image_url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    # Phase E5 — internal-storage object key. Set when the row's image
+    # was produced by our storage pipeline (cutouts, thumbnails, etc).
+    # Readers prefer this and sign on request; image_url is for external
+    # URLs (imported originals).
+    object_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     item: Mapped[WardrobeItem] = relationship(back_populates="images")

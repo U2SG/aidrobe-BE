@@ -33,3 +33,19 @@ class LocalObjectStorage:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         return f"{self.base_url}/files/{key}"
+
+    def sign_render_url(
+        self,
+        key: str,
+        *,
+        ttl_seconds: int = 1800,
+        process: str | None = None,
+    ) -> str:
+        """Local storage has no private/signed concept — return the same
+        public URL `put_object` returned. `process` is appended for parity
+        with OSS but the local stub doesn't actually transform images."""
+        url = f"{self.base_url}/files/{key}"
+        if process is not None:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}x-oss-process={process}"
+        return url
