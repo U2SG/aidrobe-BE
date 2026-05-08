@@ -71,14 +71,16 @@ async def usage_today(
     (ocr_receipt, tryon) count rows. Anything else returns 0 — the caller
     should check `_limit_for` first."""
     start, end = _today_window()
+    # Count anything that wasn't pure-queued — failed and dead jobs may
+    # have already incurred partial cost from the upstream provider
+    # (LLM partial completions, OCR billed-on-attempt, etc.) and
+    # ignoring them was a small but real cost leak.
     base = select(AsyncJob).where(
         AsyncJob.user_id == user_id,
         AsyncJob.job_type == job_type,
         AsyncJob.created_at >= start,
         AsyncJob.created_at < end,
-        # Don't count dead/failed jobs — they didn't actually consume the
-        # quota; only succeeded + currently-running do.
-        AsyncJob.status.in_(("succeeded", "running")),
+        AsyncJob.status.in_(("succeeded", "running", "failed", "dead")),
     )
     if job_type == "llm_ask":
         return int(

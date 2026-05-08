@@ -168,3 +168,65 @@ async def _by_category(
     )
     rows = (await session.execute(stmt)).scalars().all()
     return list(rows)
+
+
+async def find_replacements_batch(
+    session: AsyncSession,
+    items: list[WardrobeItem],
+    *,
+    exclude_ids: Iterable[uuid.UUID] = (),
+    k: int = DEFAULT_K,
+) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """Find replacements for multiple items with one DB query rather than
+    N. Returns a map item_id → top-K candidate ids. Skips the embedding
+    tier (per-item by nature) and the strict color tier (would require
+    multiple sub-queries to disambiguate); callers that get an empty
+    list for an item should fall back to the per-item `find_replacements`
+    so the cascade still bottoms out correctly.
+
+    Used by `obstacles.attach_replacement_candidates` to avoid per-
+    obstacle SQL on the /today hot path."""
+    if not items:
+        return {}
+    exclude = {*exclude_ids, *(i.id for i in items)}
+    user_id = items[0].user_id  # all items share a user
+    categories = list({i.category for i in items})
+    rows = (
+        await session.execute(
+            select(WardrobeItem.id, WardrobeItem.category, WardrobeItem.color_main)
+            .where(
+                WardrobeItem.user_id == user_id,
+                WardrobeItem.category.in_(categories),
+                WardrobeItem.status == ItemStatus.WEARABLE.value,
+                WardrobeItem.deleted_at.is_(None),
+                WardrobeItem.id.notin_(exclude),
+            )
+            .order_by(WardrobeItem.created_at.desc())
+        )
+    ).all()
+    # Bucket candidates by (category, color) and (category) for in-memory
+    # ranking matching the cascade order.
+    by_cat_color: dict[tuple[str, str | None], list[uuid.UUID]] = {}
+    by_cat: dict[str, list[uuid.UUID]] = {}
+    for row in rows:
+        key_full = (row.category, row.color_main)
+        by_cat_color.setdefault(key_full, []).append(row.id)
+        by_cat.setdefault(row.category, []).append(row.id)
+
+    out: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for item in items:
+        # Tier 2: same category + same color first.
+        cands = by_cat_color.get((item.category, item.color_main), [])
+        if len(cands) < k:
+            # Tier 3: top up from same-category pool, preserving order
+            # (created_at DESC) and avoiding duplicates.
+            seen = set(cands)
+            for cand in by_cat.get(item.category, []):
+                if cand in seen:
+                    continue
+                cands.append(cand)
+                seen.add(cand)
+                if len(cands) >= k:
+                    break
+        out[item.id] = cands[:k]
+    return out

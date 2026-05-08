@@ -7,6 +7,7 @@ DELETE on every cold start)."""
 
 from __future__ import annotations
 
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.cost_guard import cost_summary_today
 from app.application.users.deactivate_account import deactivate_account
+from app.application.users.export_data import request_data_export
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
 from app.config.settings import Settings, get_settings
@@ -59,6 +61,32 @@ async def get_cost_summary(
             llm_ask=CostSummaryItem(**raw["llm_ask"]),
             ocr_receipt=CostSummaryItem(**raw["ocr_receipt"]),
             tryon=CostSummaryItem(**raw["tryon"]),
+        )
+    )
+
+
+class DataExportResponse(BaseModel):
+    job_id: uuid.UUID
+    status: str  # "pending" — caller can poll job status later
+    message: str
+
+
+@router.post("/me/data-export", response_model=ResponseModel[DataExportResponse])
+async def request_my_data_export(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[DataExportResponse]:
+    """PIPL DSAR — kick off an asynchronous export of the user's personal
+    data. Bundle path runs as a `user_export` async-job; the user receives
+    a download link (push / email) when ready. Idempotent per pending
+    request: re-calling while one is in flight returns the same job_id."""
+    job_id = await request_data_export(session, current_user)
+    await session.commit()
+    return ResponseModel(
+        data=DataExportResponse(
+            job_id=job_id,
+            status="pending",
+            message="Data export started. You'll be notified when it's ready.",
         )
     )
 

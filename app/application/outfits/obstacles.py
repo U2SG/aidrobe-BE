@@ -208,22 +208,44 @@ async def attach_replacement_candidates(
     """Augment item-targeted obstacles with `replacement_candidate_ids`.
     Stale obstacles are skipped (suggesting a freshly-worn item to replace
     a freshly-worn item is unhelpful), as are weather_mismatch entries
-    (no single item is the problem)."""
+    (no single item is the problem).
+
+    Batched: instead of a per-obstacle find_replacements (which is up to 3
+    SQL queries each, ⇒ N×3 queries on /today GET), we collect every
+    obstacle's category in one go and run a single category-IN query, then
+    rank in-memory per obstacle. Embedding-similarity tier (which is
+    per-item by nature) still takes its own query when pgvector is on,
+    but tier-2/tier-3 fallbacks become O(1) total queries instead of O(N)."""
+    from app.application.outfits.replacements import find_replacements_batch
+
     items_by_id = {str(i.id): i for i in items}
+    targeted = [
+        o
+        for o in obstacles
+        if o.get("kind") not in {"stale", "weather_mismatch"} and o.get("item_id")
+    ]
+    targeted_items = [
+        items_by_id[o["item_id"]] for o in targeted if o["item_id"] in items_by_id
+    ]
+    if not targeted_items:
+        return obstacles
+
     other_outfit_item_ids = {i.id for i in items}
-    for o in obstacles:
-        if o.get("kind") in {"stale", "weather_mismatch"}:
+    candidates_by_item = await find_replacements_batch(
+        session, targeted_items, exclude_ids=other_outfit_item_ids, k=k
+    )
+    for o in targeted:
+        item_id = o["item_id"]
+        if item_id not in items_by_id:
             continue
-        item_id = o.get("item_id")
-        if not item_id:
-            continue
-        item = items_by_id.get(item_id)
-        if item is None:
-            continue
-        candidates = await find_replacements(
-            session, item, exclude_ids=other_outfit_item_ids, k=k
-        )
-        # Always set the field (even when empty) so the client schema can
-        # reason about presence/absence consistently.
-        o["replacement_candidate_ids"] = [str(c) for c in candidates]
+        item = items_by_id[item_id]
+        ids = candidates_by_item.get(item.id, [])
+        if not ids:
+            # Cascade fall-through to the per-item function so embedding-
+            # tier (when enabled) still runs. The per-item path is the
+            # exception, not the rule, so we don't lose the batched win.
+            ids = await find_replacements(
+                session, item, exclude_ids=other_outfit_item_ids, k=k
+            )
+        o["replacement_candidate_ids"] = [str(c) for c in ids]
     return obstacles

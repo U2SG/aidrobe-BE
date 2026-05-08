@@ -41,6 +41,17 @@ class AuthService:
         user = existing_user or await self.user_repository.get_or_create_by_apple_subject(
             identity.subject, email=identity.email
         )
+        # Phase E1 — auto-reactivate within grace. PIPL respects user
+        # right-to-restore, and without this path soft-deleted users have
+        # no way back in (auth gate refuses subsequent calls). Hard-purged
+        # users (purged_at set) get a fresh row via get_or_create above,
+        # so they aren't reactivated — they're a brand-new account that
+        # happens to share the Apple sub.
+        if user.deactivated_at is not None and user.purged_at is None:
+            user.deactivated_at = None
+            await self.operation_log_repository.add(
+                user.id, "user_reactivate", {"platform": "ios"}
+            )
         refresh_token = self.jwt_service.create_refresh_token()
         session = await self.user_repository.create_session(
             user_id=user.id,

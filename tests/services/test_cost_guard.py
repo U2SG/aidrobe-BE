@@ -83,15 +83,15 @@ async def test_usage_today_counts_only_today(db_session: AsyncSession) -> None:
     assert await usage_today(db_session, user_id, "llm_ask") == 300
 
 
-async def test_usage_today_ignores_failed_and_dead_jobs(
+async def test_usage_today_includes_failed_and_dead_jobs(
     db_session: AsyncSession,
 ) -> None:
-    """Quota only counts work that actually consumed cost. Dead/failed
-    jobs should not eat into the user's daily budget."""
+    """LLM provider partial completions / OCR billed-on-attempt are real
+    incurred costs even on failed/dead jobs. The quota must include them
+    so a flaky retry loop doesn't silently inflate the user's bill."""
     user_id = await _seed_user(db_session)
     await _add_succeeded_job(db_session, user_id, job_type="llm_ask", cost_tokens=200)
 
-    # Failed + dead with cost recorded — must NOT count.
     when = datetime.now(UTC)
     for status in ("failed", "dead"):
         db_session.add(
@@ -103,7 +103,7 @@ async def test_usage_today_ignores_failed_and_dead_jobs(
                 status=status,
                 attempts=3,
                 max_attempts=3,
-                cost_tokens=999,
+                cost_tokens=100,
                 cost_cents=0,
                 created_at=when,
                 updated_at=when,
@@ -111,7 +111,8 @@ async def test_usage_today_ignores_failed_and_dead_jobs(
             )
         )
     await db_session.flush()
-    assert await usage_today(db_session, user_id, "llm_ask") == 200
+    # 200 (succeeded) + 100 (failed) + 100 (dead) = 400.
+    assert await usage_today(db_session, user_id, "llm_ask") == 400
 
 
 async def test_call_count_quota_for_ocr(db_session: AsyncSession) -> None:
