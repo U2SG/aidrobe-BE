@@ -18,6 +18,7 @@ Flow:
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,16 +39,17 @@ async def request_data_export(
     """Enqueue an export job and audit the request. Caller owns commit.
     Returns the job_id so the client can poll status if it wants
     (V4 will surface a /v1/me/data-export/{job_id} status endpoint)."""
+    today = datetime.now(UTC).date().isoformat()
     job, inserted = await enqueue(
         session,
         job_type=EXPORT_JOB_TYPE,
-        # One pending export per user — re-requesting while a prior is
-        # in-flight returns the existing job. After completion the user
-        # can request a new export (the next call's idempotency-key
-        # construction includes a date stamp so today's export is
-        # distinct from yesterday's).
-        idempotency_key=f"user_export:{user.id}:pending",
-        payload={"user_id": str(user.id)},
+        # One export per user per day. Re-requesting today returns the
+        # existing job (idempotent / cost-controlled); next-day request
+        # gets a fresh job because the date stamp moves. The previous
+        # `:pending` literal silently locked users out of all subsequent
+        # exports once the first one succeeded.
+        idempotency_key=f"user_export:{user.id}:{today}",
+        payload={"user_id": str(user.id), "requested_for_date": today},
         user_id=user.id,
         target_id=user.id,
     )

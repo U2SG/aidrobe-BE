@@ -122,6 +122,37 @@ async def test_call_count_quota_for_ocr(db_session: AsyncSession) -> None:
     assert await usage_today(db_session, user_id, "ocr_receipt") == 2
 
 
+async def test_call_count_quota_excludes_failed_and_dead(db_session: AsyncSession) -> None:
+    """Call-count quotas (ocr_receipt / tryon) MUST NOT count failed and
+    dead retries — otherwise a 100-call daily limit collapses to ~33 for
+    a user with flaky network conditions where every job retries 3 times.
+    Only completed work (succeeded/running) burns quota."""
+    user_id = await _seed_user(db_session)
+    await _add_succeeded_job(db_session, user_id, job_type="ocr_receipt")
+
+    when = datetime.now(UTC)
+    for status in ("failed", "dead"):
+        db_session.add(
+            AsyncJob(
+                id=uuid.uuid4(),
+                job_type="ocr_receipt",
+                idempotency_key=f"test:{uuid.uuid4()}",
+                user_id=user_id,
+                status=status,
+                attempts=3,
+                max_attempts=3,
+                cost_tokens=0,
+                cost_cents=0,
+                created_at=when,
+                updated_at=when,
+                next_run_at=when,
+            )
+        )
+    await db_session.flush()
+    # Only the 1 succeeded job counts.
+    assert await usage_today(db_session, user_id, "ocr_receipt") == 1
+
+
 async def test_assert_within_quota_passes_under_limit(
     db_session: AsyncSession,
 ) -> None:

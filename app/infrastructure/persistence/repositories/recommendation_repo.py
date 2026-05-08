@@ -96,29 +96,30 @@ class SqlAlchemyRecommendationRepository:
         is no engagement). The two paths exist on purpose: background
         recompute ⇒ replace; user-initiated refresh ⇒ archive+revise.
 
-        Concurrency: serializes per (user_id, recommendation_date) via
-        SELECT ... FOR UPDATE on the existing current row before reading
-        max(revision). Without this, two concurrent refreshes both see
-        max=N and both INSERT rev=N+1, with the second hitting the
-        partial-unique `(user_id, recommendation_date) WHERE is_current`
-        constraint as IntegrityError → 500."""
-        from sqlalchemy import func
+        Concurrency: takes a Postgres advisory lock keyed by
+        (user_id, recommendation_date). The lock holds for the outer
+        transaction so the UPDATE → max-read → INSERT sequence is
+        linearizable. Advisory locks (vs SELECT FOR UPDATE) cover the
+        first-refresh case where no current row yet exists — there is
+        nothing to lock at row level, but the advisory key is independent
+        of row existence."""
+        import hashlib
 
-        # 1. Lock the existing current row (if any) so a concurrent
-        #    refresh has to wait. The lock survives the subsequent UPDATE
-        #    + INSERT until the outer transaction commits.
+        from sqlalchemy import func, text
+
+        # Hash (user_id, date) into a signed bigint for pg_advisory_xact_lock.
+        # SHA1 first 8 bytes gives a stable 64-bit key; signed-int cast just
+        # for Postgres bigint range. Collisions across different (user, date)
+        # pairs are statistically irrelevant at our scale.
+        digest = hashlib.sha1(
+            f"refresh:{daily.user_id}:{daily.recommendation_date.isoformat()}".encode()
+        ).digest()[:8]
+        lock_key = int.from_bytes(digest, "big", signed=True)
         await self.session.execute(
-            select(DailyRecommendation.id)
-            .where(
-                DailyRecommendation.user_id == daily.user_id,
-                DailyRecommendation.recommendation_date == daily.recommendation_date,
-                DailyRecommendation.is_current.is_(True),
-            )
-            .with_for_update()
+            text("SELECT pg_advisory_xact_lock(:k)"), {"k": lock_key}
         )
 
-        # 2. Mark all existing rows for this (user, date) as not-current.
-        #    If a prior bug left multiple is_current rows, this heals it.
+        # Under the lock now: serialize UPDATE → INSERT.
         await self.session.execute(
             update(DailyRecommendation)
             .where(
@@ -128,8 +129,6 @@ class SqlAlchemyRecommendationRepository:
             )
             .values(is_current=False)
         )
-        # 3. Pick next revision number — under the lock, so this read +
-        #    the INSERT below are linearizable per (user, date).
         max_rev = (
             await self.session.scalar(
                 select(func.coalesce(func.max(DailyRecommendation.revision), 0)).where(

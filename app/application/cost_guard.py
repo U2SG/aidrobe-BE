@@ -67,36 +67,54 @@ async def usage_today(
 ) -> int:
     """How much the user has consumed of the given job_type today.
 
-    Token-based quotas (llm_ask) sum cost_tokens; call-count quotas
-    (ocr_receipt, tryon) count rows. Anything else returns 0 — the caller
-    should check `_limit_for` first."""
+    Two quota modes with different counting semantics:
+
+    - **Token mode** (`llm_ask`): SUM(cost_tokens) over status IN
+      (succeeded, running, failed, dead). Provider partial completions
+      are real billed cost even when the wrapper job fails / dead-letters,
+      so ignoring failed/dead would underbill the user.
+
+    - **Call-count mode** (`ocr_receipt`, `tryon`): COUNT(*) over status
+      IN (succeeded, running). Counting failed retries here would shrink
+      a 100-call quota to ~33 if every call retries 3 times before
+      succeeding, which would be a hostile regression for users with
+      flaky network conditions. Only completed work consumes the quota.
+    """
     start, end = _today_window()
-    # Count anything that wasn't pure-queued — failed and dead jobs may
-    # have already incurred partial cost from the upstream provider
-    # (LLM partial completions, OCR billed-on-attempt, etc.) and
-    # ignoring them was a small but real cost leak.
-    base = select(AsyncJob).where(
-        AsyncJob.user_id == user_id,
-        AsyncJob.job_type == job_type,
-        AsyncJob.created_at >= start,
-        AsyncJob.created_at < end,
-        AsyncJob.status.in_(("succeeded", "running", "failed", "dead")),
-    )
+
     if job_type == "llm_ask":
+        # Token quotas count ALL cost-bearing statuses including failed/
+        # dead — see docstring rationale.
+        statuses = ("succeeded", "running", "failed", "dead")
         return int(
             (
                 await session.execute(
-                    select(func.coalesce(func.sum(AsyncJob.cost_tokens), 0)).select_from(
-                        base.subquery()
+                    select(func.coalesce(func.sum(AsyncJob.cost_tokens), 0)).where(
+                        AsyncJob.user_id == user_id,
+                        AsyncJob.job_type == job_type,
+                        AsyncJob.created_at >= start,
+                        AsyncJob.created_at < end,
+                        AsyncJob.status.in_(statuses),
                     )
                 )
             ).scalar()
             or 0
         )
+
+    # Call-count quotas: only completed work counts. A retry that
+    # eventually succeeds counts once (the succeeded row); failed/dead
+    # retries don't burn quota.
+    statuses = ("succeeded", "running")
     return int(
         (
             await session.execute(
-                select(func.count()).select_from(base.subquery())
+                select(func.count()).select_from(AsyncJob).where(
+                    AsyncJob.user_id == user_id,
+                    AsyncJob.job_type == job_type,
+                    AsyncJob.created_at >= start,
+                    AsyncJob.created_at < end,
+                    AsyncJob.status.in_(statuses),
+                )
             )
         ).scalar()
         or 0
