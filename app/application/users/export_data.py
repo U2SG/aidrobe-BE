@@ -21,9 +21,11 @@ import uuid
 from datetime import UTC, datetime
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.audit import record
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.workers.job_runtime import enqueue
 
@@ -38,16 +40,42 @@ async def request_data_export(
 ) -> uuid.UUID:
     """Enqueue an export job and audit the request. Caller owns commit.
     Returns the job_id so the client can poll status if it wants
-    (V4 will surface a /v1/me/data-export/{job_id} status endpoint)."""
+    (V4 will surface a /v1/me/data-export/{job_id} status endpoint).
+
+    Concurrency: at most one in-flight export per user across days. A
+    long-running export on day 1 still pending on day 2 must NOT spawn
+    a second concurrent job — the first call into a new day returns
+    the existing pending job until it terminates. After terminal status
+    (succeeded/failed/dead) the per-day key opens up a fresh request."""
+    # Look up any in-flight export for this user regardless of key date.
+    in_flight = (
+        await session.execute(
+            select(AsyncJob)
+            .where(
+                AsyncJob.job_type == EXPORT_JOB_TYPE,
+                AsyncJob.user_id == user.id,
+                AsyncJob.status.in_(("queued", "running")),
+            )
+            .order_by(AsyncJob.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if in_flight is not None:
+        logger.info(
+            "user.data_export_already_in_flight",
+            user_id=str(user.id),
+            job_id=str(in_flight.id),
+        )
+        return in_flight.id
+
     today = datetime.now(UTC).date().isoformat()
     job, inserted = await enqueue(
         session,
         job_type=EXPORT_JOB_TYPE,
-        # One export per user per day. Re-requesting today returns the
-        # existing job (idempotent / cost-controlled); next-day request
-        # gets a fresh job because the date stamp moves. The previous
-        # `:pending` literal silently locked users out of all subsequent
-        # exports once the first one succeeded.
+        # Day-keyed: today's request is idempotent within the day, but
+        # tomorrow gets a fresh idempotency_key. Combined with the
+        # in-flight short-circuit above, this gives "≤1 in-flight job
+        # globally" + "fresh attempts after terminal status the next day".
         idempotency_key=f"user_export:{user.id}:{today}",
         payload={"user_id": str(user.id), "requested_for_date": today},
         user_id=user.id,
@@ -65,7 +93,7 @@ async def request_data_export(
         logger.info("user.data_export_requested", user_id=str(user.id), job_id=str(job.id))
     else:
         logger.info(
-            "user.data_export_already_pending",
+            "user.data_export_already_today",
             user_id=str(user.id),
             job_id=str(job.id),
         )
