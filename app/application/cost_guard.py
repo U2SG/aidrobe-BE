@@ -13,6 +13,18 @@ Wiring contract:
   this aggregation reads back.
 - ENABLE_COST_GUARD off ⇒ check is a no-op. Tokens are STILL recorded on
   async_jobs so flipping the flag on later doesn't require backfill.
+
+Concurrency model:
+- The DB-aggregate path is read-after-write and TOCTOU-leaky: two parallel
+  requests each see used=900 (limit 1000), each gets +200 budget approved,
+  total spend = 1300. For LLM with single-request cost variance up to
+  thousands of tokens this is a real over-spend hazard.
+- Redis INCRBY (when configured) provides atomic check-and-increment.
+  The DB aggregate stays the audit ground truth; Redis is a per-day
+  spending counter that drains via TTL=24h.
+- When Redis is unavailable (test env, infra outage), we fall back to
+  the DB aggregate path. Better to soft-limit + log than refuse all
+  cost-bearing requests.
 """
 
 from __future__ import annotations
@@ -89,12 +101,18 @@ async def usage_today(
     )
 
 
+def _redis_quota_key(user_id: uuid.UUID, job_type: str) -> str:
+    start, _ = _today_window()
+    return f"cost_guard:{user_id}:{job_type}:{start.strftime('%Y%m%d')}"
+
+
 async def assert_within_quota(
     session: AsyncSession,
     user_id: uuid.UUID,
     job_type: str,
     *,
     cost_tokens: int = 1,
+    redis_client: object | None = None,
 ) -> None:
     """Raise FriendlyException(429) when consuming `cost_tokens` for
     `job_type` today would exceed the user's daily limit.
@@ -102,15 +120,59 @@ async def assert_within_quota(
     `cost_tokens` is the projected cost of the operation about to run; for
     call-count quotas it's ignored (each call counts as 1). When
     ENABLE_COST_GUARD is False this is a no-op — the function still runs
-    for parity but does not raise."""
+    for parity but does not raise.
+
+    `redis_client` (when provided) is used for atomic INCRBY → race-safe
+    check-and-reserve. When omitted we fall back to the DB aggregate
+    path, which is TOCTOU-leaky but acceptable for low concurrency."""
     settings = get_settings()
     if not settings.ENABLE_COST_GUARD:
         return
     limit = _limit_for(settings, job_type)
     if limit is None:
         return
+
+    delta = cost_tokens if job_type == "llm_ask" else 1
+
+    if redis_client is not None:
+        # Atomic path. INCRBY returns the post-increment value; if that
+        # exceeds limit we DECRBY back so a denied request doesn't
+        # poison the counter for subsequent requests within budget.
+        try:
+            key = _redis_quota_key(user_id, job_type)
+            new_total = int(await redis_client.incrby(key, delta))  # type: ignore[attr-defined]
+            # Set TTL on first write only (best-effort; INCRBY on a
+            # non-existent key starts at 0 + delta, no TTL set).
+            await redis_client.expire(key, 86400)  # type: ignore[attr-defined]
+            if new_total > limit:
+                # Roll back our reservation so other in-budget requests
+                # don't false-fail behind us.
+                await redis_client.incrby(key, -delta)  # type: ignore[attr-defined]
+                logger.warning(
+                    "cost_guard.exhausted",
+                    user_id=str(user_id),
+                    job_type=job_type,
+                    used=new_total - delta,
+                    projected=new_total,
+                    limit=limit,
+                    path="redis",
+                )
+                raise FriendlyException(
+                    error_codes.STATE_CONFLICT,
+                    f"daily {job_type} quota exhausted",
+                    status_code=429,
+                )
+            return
+        except FriendlyException:
+            raise
+        except Exception as exc:
+            # Redis path failed; fall through to DB aggregate. Log but
+            # don't fail the request — better soft-limit than block.
+            logger.warning("cost_guard.redis_unavailable", error=str(exc))
+
+    # DB-aggregate fallback (TOCTOU-leaky; documented).
     used = await usage_today(session, user_id, job_type)
-    projected = used + (cost_tokens if job_type == "llm_ask" else 1)
+    projected = used + delta
     if projected > limit:
         logger.warning(
             "cost_guard.exhausted",
@@ -119,6 +181,7 @@ async def assert_within_quota(
             used=used,
             projected=projected,
             limit=limit,
+            path="db",
         )
         raise FriendlyException(
             error_codes.STATE_CONFLICT,

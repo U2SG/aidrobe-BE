@@ -94,10 +94,30 @@ class SqlAlchemyRecommendationRepository:
 
         Distinct from `replace_daily` (which OVERWRITES in-place when there
         is no engagement). The two paths exist on purpose: background
-        recompute ⇒ replace; user-initiated refresh ⇒ archive+revise."""
+        recompute ⇒ replace; user-initiated refresh ⇒ archive+revise.
+
+        Concurrency: serializes per (user_id, recommendation_date) via
+        SELECT ... FOR UPDATE on the existing current row before reading
+        max(revision). Without this, two concurrent refreshes both see
+        max=N and both INSERT rev=N+1, with the second hitting the
+        partial-unique `(user_id, recommendation_date) WHERE is_current`
+        constraint as IntegrityError → 500."""
         from sqlalchemy import func
 
-        # 1. Mark all existing rows for this (user, date) as not-current.
+        # 1. Lock the existing current row (if any) so a concurrent
+        #    refresh has to wait. The lock survives the subsequent UPDATE
+        #    + INSERT until the outer transaction commits.
+        await self.session.execute(
+            select(DailyRecommendation.id)
+            .where(
+                DailyRecommendation.user_id == daily.user_id,
+                DailyRecommendation.recommendation_date == daily.recommendation_date,
+                DailyRecommendation.is_current.is_(True),
+            )
+            .with_for_update()
+        )
+
+        # 2. Mark all existing rows for this (user, date) as not-current.
         #    If a prior bug left multiple is_current rows, this heals it.
         await self.session.execute(
             update(DailyRecommendation)
@@ -108,7 +128,8 @@ class SqlAlchemyRecommendationRepository:
             )
             .values(is_current=False)
         )
-        # 2. Pick next revision number.
+        # 3. Pick next revision number — under the lock, so this read +
+        #    the INSERT below are linearizable per (user, date).
         max_rev = (
             await self.session.scalar(
                 select(func.coalesce(func.max(DailyRecommendation.revision), 0)).where(
