@@ -1,0 +1,76 @@
+# Phase E5 — bucket lifecycle policy spec.
+#
+# Operator workflow:
+#   1. Edit this file when retention requirements change.
+#   2. Run `uv run python -m app.infrastructure.storage.lifecycle apply --env=prod`
+#      to push rules to Aliyun OSS via the SDK.
+#   3. Server-side OSS lifecycle handles bulk expiration; the backend NEVER
+#      deletes objects directly except for `user_purge` (per-user deletion is
+#      not bulk, must be precise).
+#
+# Tier semantics (Aliyun OSS storage classes):
+#   Standard   — hot reads; default for live items + outfit boards
+#   IA         — infrequent access; > 30d cooldown items + audit-log offsite
+#   Archive    — cold; > 365d audit / aggregate stats
+#   delete     — permanent removal at the threshold
+#
+# Bucket naming convention: aidrobe-<purpose>-<env>. E.g. aidrobe-private-prod.
+# All buckets default-private; access via STS (write) or signed URL (read).
+
+version: "v1"
+
+buckets:
+  - name: aidrobe-items
+    purpose: "wardrobe item cutouts + originals; user-content, retained for the user's life"
+    private: true
+    rules:
+      # Move stale per-item images to IA after 30 days; user can still view via
+      # signed URL — IA is a price-tier change, not a delete.
+      - prefix: ""
+        transitions:
+          - days: 30
+            storage_class: IA
+          - days: 180
+            storage_class: Archive
+        # No expiration: items are user content. Deletion path is user_purge.
+
+  - name: aidrobe-ootd
+    purpose: "OOTD selfies; user-deletable but never auto-purged"
+    private: true
+    rules:
+      - prefix: ""
+        transitions:
+          - days: 90
+            storage_class: IA
+
+  - name: aidrobe-private
+    purpose: "try-on body images, shopping screenshots — sensitive PII"
+    private: true
+    rules:
+      - prefix: ""
+        # Auto-delete after 30d. PIPL-aligned: minimum-necessary retention
+        # for sensitive personal data the user opted into for one feature.
+        expiration_days: 30
+
+  - name: aidrobe-derived
+    purpose: "outfit board renders + other server-generated artifacts; cheap to recreate"
+    private: true
+    rules:
+      - prefix: ""
+        # Boards are derived data — regenerable from the source outfit. 60d
+        # is enough for "open my old recommendation, see the board" and
+        # avoids hoarding cheap-to-recreate assets.
+        expiration_days: 60
+
+  - name: aidrobe-audit
+    purpose: "PII-stripped audit log object snapshots (compliance evidence)"
+    private: true
+    rules:
+      - prefix: ""
+        transitions:
+          - days: 30
+            storage_class: IA
+          - days: 365
+            storage_class: Archive
+        # 3 years aligns with industry norm for fraud / DSAR audit trail.
+        expiration_days: 1095

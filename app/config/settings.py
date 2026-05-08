@@ -105,6 +105,27 @@ class Settings(BaseSettings):
     # sanitizer module raises on first use if APP_ENV='prod' and this is
     # still the default placeholder.
     LLM_USER_TOKEN_HMAC_KEY: str = "dev-only-change-me-llm-user-token-hmac-key-32b"
+
+    # Phase E5 — Aliyun OSS / STS / CDN. Provider selection is via
+    # STORAGE_PROVIDER ("aliyun_oss" wires the OSS adapter); leaving these
+    # at their defaults keeps the existing S3 / local paths working.
+    ENABLE_OSS_STS: bool = False
+    ALIYUN_OSS_REGION: str = "cn-hangzhou"
+    ALIYUN_OSS_ENDPOINT: str = ""
+    ALIYUN_OSS_BUCKET: str = ""
+    ALIYUN_OSS_ACCESS_KEY_ID: str = ""
+    ALIYUN_OSS_ACCESS_KEY_SECRET: str = ""
+    ALIYUN_OSS_PUBLIC_BASE_URL: str = ""
+    # STS uses a separate, narrower-scoped credential pair than the OSS
+    # service account so a leak here doesn't compromise the buckets too.
+    ALIYUN_STS_ACCESS_KEY_ID: str = ""
+    ALIYUN_STS_ACCESS_KEY_SECRET: str = ""
+    ALIYUN_STS_ROLE_ARN: str = ""
+    ALIYUN_STS_TTL_SECONDS: int = 900
+    # CDN signing for private-bucket reads. See cdn_url.py for scheme details.
+    CDN_BASE_URL: str = ""
+    CDN_AUTH_KEY: str = ""
+    CDN_SIGN_TTL_SECONDS: int = 1800
     # Whether the `cost_guard` middleware is on. When off, jobs run
     # unconditionally; tokens are still recorded on `async_jobs.cost_*`
     # so the limit can be enabled later without backfill.

@@ -40,7 +40,27 @@ def object_storage() -> LocalObjectStorage | S3ObjectStorage:
         )
     if settings.STORAGE_PROVIDER == "s3":
         return S3ObjectStorage(settings)
+    if settings.STORAGE_PROVIDER == "aliyun_oss":
+        # Lazy import — `oss2` is an optional runtime dep loaded only when
+        # the operator actually selects this provider, so dev without the
+        # SDK installed still works.
+        from app.infrastructure.storage.aliyun_oss import AliyunOssStorage
+
+        return AliyunOssStorage(settings)  # type: ignore[return-value]
     raise ValueError(f"Unsupported storage provider: {settings.STORAGE_PROVIDER}")
+
+
+def sts_provider() -> object:
+    """Phase E5 — STS issuer for client-direct OSS uploads. Returns Fake in
+    dev / test (no Aliyun SDK round-trip), real Aliyun provider in prod."""
+    settings = get_settings()
+    if settings.APP_ENV in ("dev", "test") or not settings.ALIYUN_STS_ROLE_ARN:
+        from app.infrastructure.storage.fake_sts import FakeStsProvider
+
+        return FakeStsProvider()
+    from app.infrastructure.storage.aliyun_sts import AliyunStsProvider
+
+    return AliyunStsProvider(settings)
 
 
 def vision_service() -> FakeVision | QwenVision:
