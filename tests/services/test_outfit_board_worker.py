@@ -65,12 +65,15 @@ def _patch_renderer_to_skip_io(monkeypatch: pytest.MonkeyPatch) -> None:
     """Skip the heavy PIL render path — we don't need actual JPEG bytes to
     prove the worker's state-machine semantics."""
 
-    async def _fake_render(snapshot: outfit_board_worker._AssetSnapshot) -> str:
+    async def _fake_render(
+        snapshot: outfit_board_worker._AssetSnapshot,
+    ) -> tuple[str, str]:
         from app.bootstrap.container import object_storage
 
         storage = object_storage()
         key = f"{snapshot.user_id}/outfit_boards/{snapshot.id}.jpg"
-        return await storage.put_object(key, b"\xff\xd8\xff\xe0", "image/jpeg")
+        url = await storage.put_object(key, b"\xff\xd8\xff\xe0", "image/jpeg")
+        return url, key
 
     monkeypatch.setattr(outfit_board_worker, "_render_and_upload", _fake_render)
 
@@ -83,6 +86,8 @@ async def _seed_asset(
     user_id = uuid.uuid4()
     async with factory() as s:
         s.add(User(id=user_id))
+        # Flush user before child to guarantee FK-safe insert ordering.
+        await s.flush()
         asset = OutfitVisualAsset(
             user_id=user_id,
             generation_status="queued",

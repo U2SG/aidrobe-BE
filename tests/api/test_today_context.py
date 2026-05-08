@@ -6,6 +6,7 @@ import uuid
 from datetime import date
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +16,7 @@ from app.application.recommendations.generator import RecommendationGenerator
 from app.common.enums import Category, ItemStatus
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.recommendation import DailyRecommendation
-from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
@@ -58,9 +59,28 @@ def _build_app(session: AsyncSession, settings_override: Settings) -> FastAPI:
     return app
 
 
+@pytest.fixture
+def patched_settings_in_router(monkeypatch: pytest.MonkeyPatch):
+    """The recommendations router calls `get_settings()` directly inside
+    `_build_context_response` (lru-cached, bypasses FastAPI dep override).
+    Tests that flip ENABLE_TODAY_CONTEXT must patch the module-level
+    `get_settings` — matches the codebase pattern in cost_guard / user_purge."""
+    def _factory(**overrides: Any):
+        merged = Settings(APP_ENV="dev", **overrides)
+        monkeypatch.setattr(
+            "app.presentation.api.v1.routers.recommendations.get_settings",
+            lambda: merged,
+        )
+        return merged
+    return _factory
+
+
 async def _seed_user_and_items(session: AsyncSession) -> uuid.UUID:
     user_id = uuid.uuid4()
-    session.add(User(id=user_id, location="Beijing"))
+    session.add(User(id=user_id))
+    # location lives on UserSettings, not User — needed because the
+    # generator reads location to feed the weather port.
+    session.add(UserSettings(user_id=user_id, location="Beijing"))
     await session.flush()
     for title, category, color in [
         ("White shirt", Category.TOP.value, "white"),
@@ -130,13 +150,16 @@ async def test_today_response_omits_context_when_flag_off(db_session: AsyncSessi
     assert body.get("context") is None
 
 
-async def test_today_response_exposes_context_when_flag_on(db_session: AsyncSession) -> None:
+async def test_today_response_exposes_context_when_flag_on(
+    db_session: AsyncSession, patched_settings_in_router: Any
+) -> None:
     user_id = await _seed_user_and_items(db_session)
     repo = SqlAlchemyRecommendationRepository(db_session)
     await RecommendationGenerator(repo, weather_service=_StaticWeather()).generate_for_user(
         user_id, date.today(), "manual"
     )
 
+    patched_settings_in_router(ENABLE_TODAY_CONTEXT=True)
     app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_TODAY_CONTEXT=True))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         resp = await client.get(
@@ -151,7 +174,7 @@ async def test_today_response_exposes_context_when_flag_on(db_session: AsyncSess
 
 
 async def test_today_response_handles_legacy_rows_without_context(
-    db_session: AsyncSession,
+    db_session: AsyncSession, patched_settings_in_router: Any
 ) -> None:
     """A daily row written before Phase D landed has context_json=NULL.
     The flag-on path must not raise on those rows."""
@@ -168,6 +191,7 @@ async def test_today_response_handles_legacy_rows_without_context(
     )
     await db_session.commit()
 
+    patched_settings_in_router(ENABLE_TODAY_CONTEXT=True)
     app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_TODAY_CONTEXT=True))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         resp = await client.get(
@@ -205,7 +229,7 @@ async def test_generator_persists_null_context_when_weather_provider_raises(
 
 
 async def test_today_response_drops_malformed_weather_chunk(
-    db_session: AsyncSession,
+    db_session: AsyncSession, patched_settings_in_router: Any
 ) -> None:
     """If a future schema change leaves persisted weather in an old shape, the
     presentation layer drops the malformed sub-field instead of 500-ing."""
@@ -225,6 +249,7 @@ async def test_today_response_drops_malformed_weather_chunk(
     )
     await db_session.commit()
 
+    patched_settings_in_router(ENABLE_TODAY_CONTEXT=True)
     app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_TODAY_CONTEXT=True))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         resp = await client.get(

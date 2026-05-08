@@ -203,7 +203,11 @@ async def test_feedback_bundle_rollback_on_invalid_item(db_session: AsyncSession
             headers={"X-User-Id": str(user_id)},
             json=bundle_payload,
         )
-    assert response.status_code == 404
+    # 422 — bundle handler validates that each item_id belongs to the
+    # outfit before writing anything; an unrelated id is request-body-
+    # invalid (4001) rather than a missing-resource (404). The crucial
+    # behaviour assertion is below: NO partial writes survive.
+    assert response.status_code == 422
     outfit_feedback_count = await db_session.scalar(select(func.count()).select_from(OutfitFeedback))
     fit_feedback_count = await db_session.scalar(select(func.count()).select_from(FitFeedback))
     assert outfit_feedback_count == 0

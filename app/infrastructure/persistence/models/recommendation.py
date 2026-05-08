@@ -130,6 +130,18 @@ class OutfitFeedback(UUIDPrimaryKeyMixin, Base):
 
 class WearHistory(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "wear_history"
+    __table_args__ = (
+        # Phase A — concurrent wear-record idempotency: same outfit can
+        # only be recorded once per (user, day). Migration 0020 added this
+        # at SQL level; declared here too so `Base.metadata.create_all`
+        # in tests gets the constraint without going through migrations.
+        UniqueConstraint(
+            "user_id",
+            "outfit_id",
+            "worn_date",
+            name="uq_wear_history_user_outfit_date",
+        ),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True

@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, time, timedelta
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,7 +28,11 @@ from app.presentation.api.v1.routers import recommendations as recommendations_r
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
 
 
-def _build_app(session: AsyncSession, settings_override: Settings) -> FastAPI:
+def _build_app(
+    session: AsyncSession,
+    settings_override: Settings,
+    monkeypatch: pytest.MonkeyPatch | None = None,
+) -> FastAPI:
     app = FastAPI()
     setup_exception_handlers(app)
 
@@ -39,6 +44,14 @@ def _build_app(session: AsyncSession, settings_override: Settings) -> FastAPI:
 
     app.dependency_overrides[get_db_session] = override_db_session
     app.dependency_overrides[get_settings] = override_settings
+    # The refresh_today use case calls get_settings() directly (bypasses
+    # FastAPI dep). Match the codebase convention (cost_guard /
+    # user_purge_worker) and patch the module-level get_settings.
+    if monkeypatch is not None:
+        monkeypatch.setattr(
+            "app.application.recommendations.refresh_today.get_settings",
+            lambda: settings_override,
+        )
     app.include_router(recommendations_router.router)
     return app
 
@@ -84,7 +97,7 @@ async def test_refresh_endpoint_returns_403_when_flag_off(db_session: AsyncSessi
 
 
 async def test_refresh_writes_new_revision_and_archives_old(
-    db_session: AsyncSession,
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Refresh must NOT overwrite — old revision stays accessible by id so
     wear/feedback references that point at it remain valid."""
@@ -98,7 +111,9 @@ async def test_refresh_writes_new_revision_and_archives_old(
     assert rev1.revision == 1
     assert rev1.is_current is True
 
-    app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_TODAY_REFRESH=True))
+    app = _build_app(
+        db_session, Settings(APP_ENV="dev", ENABLE_TODAY_REFRESH=True), monkeypatch
+    )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         resp = await client.post(
             "/v1/recommendations/today/refresh", headers={"X-User-Id": str(user_id)}
@@ -120,7 +135,7 @@ async def test_refresh_writes_new_revision_and_archives_old(
 
 
 async def test_refresh_rate_limit_returns_429_after_exhaustion(
-    db_session: AsyncSession,
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     user_id = await _seed_user_with_wardrobe(db_session)
     await _generate_initial_revision(db_session, user_id)
@@ -128,6 +143,7 @@ async def test_refresh_rate_limit_returns_429_after_exhaustion(
     app = _build_app(
         db_session,
         Settings(APP_ENV="dev", ENABLE_TODAY_REFRESH=True, TODAY_REFRESH_DAILY_LIMIT=2),
+        monkeypatch,
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         # Limit is 2 total rows. Initial gen counts as 1; one refresh should
@@ -143,7 +159,7 @@ async def test_refresh_rate_limit_returns_429_after_exhaustion(
 
 
 async def test_refresh_preserves_old_outfit_feedback_via_outfit_id(
-    db_session: AsyncSession,
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Detail endpoint by outfit_id must still resolve the old outfit after
     refresh, because feedback rows reference the OLD outfit_id and the user
@@ -166,7 +182,9 @@ async def test_refresh_preserves_old_outfit_feedback_via_outfit_id(
     )
     await db_session.commit()
 
-    app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_TODAY_REFRESH=True))
+    app = _build_app(
+        db_session, Settings(APP_ENV="dev", ENABLE_TODAY_REFRESH=True), monkeypatch
+    )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         refresh_resp = await client.post(
             "/v1/recommendations/today/refresh", headers={"X-User-Id": str(user_id)}

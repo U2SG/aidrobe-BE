@@ -224,7 +224,10 @@ def _build_context_response(raw: object) -> TodayContextResponse | None:
     """Read context_json from the daily row and surface it only when
     ENABLE_TODAY_CONTEXT is on. The row itself may be persisted regardless
     of the flag — this is a presentation-layer gate so we can roll the
-    feature back without losing the data the engine saw."""
+    feature back without losing the data the engine saw.
+
+    Tests patch `app.presentation.api.v1.routers.recommendations.get_settings`
+    via monkeypatch (matches the codebase pattern for flag-gated paths)."""
     if not get_settings().ENABLE_TODAY_CONTEXT:
         return None
     if not isinstance(raw, dict) or not raw:
@@ -360,7 +363,17 @@ async def refresh_today(
     daily = await refresh_today_recommendation(
         current_user.id, repository, style_repo, scene=scene
     )
-    await session.commit()
+    # Re-fetch with eager-loaded outfits + items so today_response can
+    # build the response without triggering lazy loads when Pydantic
+    # walks the relationship tree (those would raise MissingGreenlet
+    # in async/sync mixed FastAPI serialization).
+    daily = await repository.get_daily(current_user.id, daily.recommendation_date)
+    if daily is None:  # pragma: no cover — refresh just wrote it
+        raise FriendlyException(
+            error_codes.INTERNAL_ERROR,
+            "refresh succeeded but row vanished",
+            status_code=500,
+        )
 
     # Drop any stale /today cache for this user so the next GET reads the
     # new revision rather than serving the prior cached payload.

@@ -72,6 +72,10 @@ async def test_visual_asset_response_signs_when_object_key_present(
 ) -> None:
     user_id = uuid.uuid4()
     db_session.add(User(id=user_id))
+    # Flush the user before adding the asset so SQLAlchemy emits the
+    # User INSERT first; without this the unitofwork can interleave
+    # them and trip the FK on outfit_visual_assets.user_id.
+    await db_session.flush()
     asset = OutfitVisualAsset(
         user_id=user_id,
         generation_status="completed",
@@ -106,6 +110,10 @@ async def test_visual_asset_response_falls_back_when_no_object_key(
     own — e.g. import-flow originals)."""
     user_id = uuid.uuid4()
     db_session.add(User(id=user_id))
+    # Flush the user before adding the asset so SQLAlchemy emits the
+    # User INSERT first; without this the unitofwork can interleave
+    # them and trip the FK on outfit_visual_assets.user_id.
+    await db_session.flush()
     asset = OutfitVisualAsset(
         user_id=user_id,
         generation_status="completed",
@@ -146,6 +154,10 @@ async def test_visual_asset_response_falls_back_when_signing_raises(
 
     user_id = uuid.uuid4()
     db_session.add(User(id=user_id))
+    # Flush the user before adding the asset so SQLAlchemy emits the
+    # User INSERT first; without this the unitofwork can interleave
+    # them and trip the FK on outfit_visual_assets.user_id.
+    await db_session.flush()
     asset = OutfitVisualAsset(
         user_id=user_id,
         generation_status="completed",
@@ -186,6 +198,9 @@ async def test_item_images_response_signs_each_internal_variant(
     db_session.add(item)
     await db_session.flush()
 
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
     # External (import) original — no object_key.
     db_session.add(
         WardrobeItemImage(
@@ -193,6 +208,7 @@ async def test_item_images_response_signs_each_internal_variant(
             image_type="original",
             image_url="https://external/import.jpg",
             object_key=None,
+            created_at=now,
         )
     )
     # Internal cutout produced by image_worker — has object_key.
@@ -202,6 +218,7 @@ async def test_item_images_response_signs_each_internal_variant(
             image_type="cutout",
             image_url="https://stale-baked-in/cutout.png",
             object_key=f"{user_id}/{item.id}/cutout.png",
+            created_at=now,
         )
     )
     await db_session.flush()

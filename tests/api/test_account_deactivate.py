@@ -116,23 +116,25 @@ async def test_delete_me_soft_deletes_and_schedules_purge(db_session: AsyncSessi
 
 async def test_delete_me_idempotent_on_already_deactivated(db_session: AsyncSession) -> None:
     user_id = await _seed_user(db_session)
-    # Manually deactivate to set up the precondition. We can't go through
-    # auth here because get_current_user blocks deactivated users.
     user = await db_session.get(User, user_id)
     assert user is not None
-    user.deactivated_at = datetime.now(UTC) - timedelta(days=2)
-    await db_session.commit()
-
-    # Re-issuing the deactivate via the use-case directly (auth would 401
-    # in this state by design — see deactivated-user 401 test below).
+    # First deactivation: stamps deactivated_at AND enqueues the purge job.
+    # We exercise the use case directly because `get_current_user` blocks
+    # deactivated users, so DELETE /v1/me would 401 on the second call.
     from app.application.users.deactivate_account import deactivate_account
 
+    first = await deactivate_account(db_session, user)
+    await db_session.commit()
+    first_deactivated_at = first.deactivated_at
+    assert first_deactivated_at is not None
+
+    # Second call must be a no-op: timestamp preserved, purge job not
+    # re-enqueued (idempotency_key short-circuits).
     refreshed = await deactivate_account(db_session, user)
     await db_session.commit()
-    # deactivated_at not advanced — original timestamp preserved.
-    assert refreshed.deactivated_at == user.deactivated_at
+    assert refreshed.deactivated_at == first_deactivated_at
 
-    # Only one user_purge job exists (idempotent enqueue).
+    # Exactly one user_purge job exists across both calls.
     rows = (
         await db_session.execute(
             select(AsyncJob).where(

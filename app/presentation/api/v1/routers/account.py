@@ -81,7 +81,7 @@ async def request_my_data_export(
     a download link (push / email) when ready. Idempotent per pending
     request: re-calling while one is in flight returns the same job_id."""
     job_id = await request_data_export(session, current_user)
-    await session.commit()
+    # No explicit commit — get_db_session commits on yield-exit.
     return ResponseModel(
         data=DataExportResponse(
             job_id=job_id,
@@ -113,7 +113,7 @@ async def deactivate_me(
         )
 
     user = await deactivate_account(session, current_user)
-    await session.commit()
+    # No explicit commit — get_db_session commits on yield-exit.
 
     from datetime import timedelta
 

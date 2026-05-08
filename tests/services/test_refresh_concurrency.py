@@ -38,6 +38,7 @@ async def _seed_user_with_first_revision(
     user_id = uuid.uuid4()
     async with factory() as s:
         s.add(User(id=user_id))
+        await s.flush()  # FK-safe ordering for the children below
         for title, category, color in [
             ("White shirt", Category.TOP.value, "white"),
             ("Black pants", Category.BOTTOM.value, "black"),
