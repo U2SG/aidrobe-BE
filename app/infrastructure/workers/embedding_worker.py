@@ -49,10 +49,16 @@ async def enqueue_embedding(
     item_id: uuid.UUID,
     image_url: str,
     model_version: str,
+    image_key: str | None = None,
     user_id: uuid.UUID | None = None,
     correlation_id: str | None = None,
 ) -> tuple[AsyncJob, bool]:
-    """Idempotent enqueue for an embedding job. Caller owns commit."""
+    """Idempotent enqueue for an embedding job. Caller owns commit.
+
+    `image_key` is the storage object key (preferred — the worker resigns
+    the URL at execution time so retry backoff up to 2h doesn't outlive a
+    30-min signed URL). `image_url` is kept for external/legacy paths
+    where we don't own the object."""
     return await enqueue(
         session,
         job_type=JOB_TYPE,
@@ -60,6 +66,7 @@ async def enqueue_embedding(
         payload={
             "item_id": str(item_id),
             "image_url": image_url,
+            "image_key": image_key,
             "model_version": model_version,
         },
         user_id=user_id,
@@ -76,9 +83,11 @@ async def _process_one(job: AsyncJob) -> None:
     payload: dict[str, Any] = job.payload or {}
     item_id_str = payload.get("item_id")
     image_url = payload.get("image_url")
+    image_key = payload.get("image_key")
     model_version = payload.get("model_version")
-    if not item_id_str or not image_url or not model_version:
-        # Bad payload — fail fast and let dead-letter pick it up.
+    # image_url OR image_key satisfies the requirement (image_key is the
+    # production path; image_url remains for legacy / external sources).
+    if not item_id_str or not (image_url or image_key) or not model_version:
         async with AsyncSessionLocal() as session:
             await mark_failed(session, job.id, claimed_attempt=job.attempts, error="missing payload fields")
             await session.commit()
@@ -110,8 +119,24 @@ async def _process_one(job: AsyncJob) -> None:
                 await session.commit()
             return
 
+        # Resolve a fresh signed URL from the object_key when present so
+        # retry backoff (up to 2h) doesn't outlive the 30-min TTL of a
+        # URL stamped at enqueue time. Fall back to the persisted URL
+        # for external sources (import flow).
+        fetch_url = image_url
+        if image_key:
+            from app.bootstrap.container import object_storage
+
+            try:
+                fetch_url = object_storage().sign_render_url(image_key)
+            except Exception as exc:
+                logger.warning("embedding.sign_url_failed", error=str(exc))
+                # Fall back to the original image_url if signing fails
+                # (e.g. storage misconfigured); image_url may still work
+                # in dev / public-bucket setups.
+
         try:
-            vector = await embedder.embed_image(image_url)
+            vector = await embedder.embed_image(fetch_url or "")
         except Exception as exc:
             logger.warning("embedding.embed_failed", error=str(exc))
             async with AsyncSessionLocal() as session:

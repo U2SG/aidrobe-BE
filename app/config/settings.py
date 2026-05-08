@@ -112,7 +112,14 @@ class Settings(BaseSettings):
     ENABLE_OSS_STS: bool = False
     ALIYUN_OSS_REGION: str = "cn-hangzhou"
     ALIYUN_OSS_ENDPOINT: str = ""
+    # Default bucket (fallback when a per-purpose bucket env is unset).
+    # Keep `ALIYUN_OSS_BUCKET` so the legacy single-bucket dev config still
+    # works; production MUST set the per-purpose ones.
     ALIYUN_OSS_BUCKET: str = ""
+    ALIYUN_OSS_BUCKET_ITEMS: str = ""
+    ALIYUN_OSS_BUCKET_OOTD: str = ""
+    ALIYUN_OSS_BUCKET_PRIVATE: str = ""
+    ALIYUN_OSS_BUCKET_DERIVED: str = ""
     ALIYUN_OSS_ACCESS_KEY_ID: str = ""
     ALIYUN_OSS_ACCESS_KEY_SECRET: str = ""
     ALIYUN_OSS_PUBLIC_BASE_URL: str = ""

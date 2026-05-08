@@ -13,6 +13,7 @@ lazily so dev environments without the SDK still load this module.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 
@@ -66,10 +67,15 @@ class AliyunStsProvider:
         )
         req = AssumeRoleRequest.AssumeRoleRequest()
         req.set_RoleArn(self.settings.ALIYUN_STS_ROLE_ARN)
-        # SessionName is required + bounded; using user_id makes audit
-        # logs link back to the requesting user even after the token is
-        # revoked.
-        req.set_RoleSessionName(f"aidrobe-{user_id}-{action}")
+        # SessionName is required, ≤ 32 chars (Aliyun limit), and only
+        # contains [A-Za-z0-9._-]. Raw `f"aidrobe-{user_id}-{action}"`
+        # with a UUID would be 51 chars and fail at AssumeRole-call time.
+        # Hash to 12 hex chars: collision-safe across realistic user
+        # counts and audit logs can still reverse-lookup via DB.
+        user_hash = hashlib.sha1(str(user_id).encode()).hexdigest()[:12]
+        action_short = "up" if action == "upload" else "rd"
+        # 8 + 12 + 1 + 2 = 23 chars.
+        req.set_RoleSessionName(f"aidrobe-{user_hash}-{action_short}")
         req.set_Policy(json.dumps(policy))
         req.set_DurationSeconds(ttl_seconds)
         req.set_accept_format("JSON")

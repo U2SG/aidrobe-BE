@@ -82,8 +82,13 @@ async def process_image_job(ctx: object, job_id: str) -> None:
             #    idempotent on (item_id, model_version), so a previous-attempt
             #    enqueue followed by a transient failure is recovered cleanly.
             if job.item_id:
+                # Prefer the cutout for embedding (background removed →
+                # cleaner CLIP signal). Pair URL+key so the worker can
+                # re-sign on retry; raw URL is just a fallback for tests
+                # / non-OSS dev where object_key isn't populated.
                 embed_url = result.cutout_url or result.normalized_url
-                if embed_url:
+                embed_key = result.cutout_key or result.normalized_key
+                if embed_url or embed_key:
                     try:
                         from app.bootstrap.container import embedding_service
                         from app.infrastructure.workers.embedding_worker import (
@@ -95,7 +100,8 @@ async def process_image_job(ctx: object, job_id: str) -> None:
                             await enqueue_embedding(
                                 session,
                                 item_id=job.item_id,
-                                image_url=embed_url,
+                                image_url=embed_url or "",
+                                image_key=embed_key,
                                 model_version=embedder.model_version,
                                 user_id=job.user_id,
                                 correlation_id=str(job.id),

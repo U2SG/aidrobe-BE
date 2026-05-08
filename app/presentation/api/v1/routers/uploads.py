@@ -15,13 +15,16 @@ from app.presentation.api.v1.schemas.uploads import PresignUploadRequest, Presig
 router = APIRouter(prefix="/v1/uploads", tags=["uploads"])
 
 ALLOWED_IMAGE_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
-# Phase E5 — bucket aliases the iOS client may request. The aliasing layer
-# means we can rename the actual OSS bucket without breaking clients.
+# Phase E5 — bucket aliases the iOS client may request, mapped to per-
+# purpose env vars. Plan §2.9 calls for 4 separate buckets so retention /
+# privacy policies can differ per purpose (try-on body images auto-purge
+# in 30d, items retain forever, etc). Aliasing also lets us rename the
+# real OSS bucket without breaking clients.
 _BUCKET_ALIAS = {
-    "items": "ALIYUN_OSS_BUCKET",  # default bucket
-    "ootd": "ALIYUN_OSS_BUCKET",
-    "private": "ALIYUN_OSS_BUCKET",
-    "derived": "ALIYUN_OSS_BUCKET",
+    "items": "ALIYUN_OSS_BUCKET_ITEMS",
+    "ootd": "ALIYUN_OSS_BUCKET_OOTD",
+    "private": "ALIYUN_OSS_BUCKET_PRIVATE",
+    "derived": "ALIYUN_OSS_BUCKET_DERIVED",
 }
 
 
@@ -88,7 +91,10 @@ async def issue_sts_token(
             f"unknown bucket alias: {payload.bucket_alias}",
             status_code=422,
         )
-    bucket = getattr(settings, bucket_field, "")
+    # Per-purpose bucket env var first; legacy ALIYUN_OSS_BUCKET as fallback
+    # so single-bucket dev configs keep working. Prod operators MUST set the
+    # per-purpose vars to get bucket isolation.
+    bucket = getattr(settings, bucket_field, "") or settings.ALIYUN_OSS_BUCKET
     if not bucket:
         # Operator hasn't configured this bucket yet — fail closed rather
         # than issuing creds for an empty target.
