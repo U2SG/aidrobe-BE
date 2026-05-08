@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.cost_guard import cost_summary_today
 from app.application.users.deactivate_account import deactivate_account
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
@@ -29,6 +30,37 @@ class DeactivateResponse(BaseModel):
     deactivated_at: str
     scheduled_purge_at: str
     grace_days: int
+
+
+class CostSummaryItem(BaseModel):
+    used: int
+    limit: int
+    remaining: int
+
+
+class CostSummaryResponse(BaseModel):
+    llm_ask: CostSummaryItem
+    ocr_receipt: CostSummaryItem
+    tryon: CostSummaryItem
+
+
+@router.get("/user/cost-summary", response_model=ResponseModel[CostSummaryResponse])
+async def get_cost_summary(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[CostSummaryResponse]:
+    """User-visible token / call usage for today. Always returns a payload —
+    when ENABLE_COST_GUARD is off the `limit` field is the unused default
+    (so the client can pre-render the UI before the operator turns the
+    feature on)."""
+    raw = await cost_summary_today(session, current_user.id)
+    return ResponseModel(
+        data=CostSummaryResponse(
+            llm_ask=CostSummaryItem(**raw["llm_ask"]),
+            ocr_receipt=CostSummaryItem(**raw["ocr_receipt"]),
+            tryon=CostSummaryItem(**raw["tryon"]),
+        )
+    )
 
 
 @router.delete("/me", response_model=ResponseModel[DeactivateResponse])
