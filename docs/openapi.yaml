@@ -3244,6 +3244,11 @@ components:
         object_key:
           type: string
           title: Object Key
+        fields:
+          additionalProperties:
+            type: string
+          type: object
+          title: Fields
       type: object
       required:
       - upload_url

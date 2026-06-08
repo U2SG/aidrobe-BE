@@ -12,3 +12,6 @@ class PresignUploadResponse(BaseModel):
     upload_url: str
     file_url: str
     object_key: str
+    # Non-empty when upload_url is a presigned POST (S3 multipart form, e.g. minio).
+    # Clients POST multipart/form-data with these fields + the file; empty => PUT.
+    fields: dict[str, str] = Field(default_factory=dict)

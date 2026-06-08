@@ -29,7 +29,7 @@ async def test_presign_accepts_image_content_type() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["code"] == 0
-    assert set(body["data"]) == {"upload_url", "file_url", "object_key"}
+    assert set(body["data"]) == {"upload_url", "file_url", "object_key", "fields"}
     assert body["data"]["object_key"].endswith("/shirt.jpg")
 
 

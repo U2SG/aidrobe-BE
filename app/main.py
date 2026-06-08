@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 import sentry_sdk
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 
 from app.config.settings import get_settings
@@ -56,8 +57,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    cfg = get_settings()
     app = FastAPI(title="Aidrobe API", lifespan=lifespan)
-    app.add_middleware(InMemoryRateLimitMiddleware, settings=get_settings())
+    # CORS for browser (web) clients. Native apps are unaffected. Dev/test allow
+    # any localhost origin; prod only when CORS_ALLOW_ORIGINS is configured.
+    explicit_origins = [o.strip() for o in cfg.CORS_ALLOW_ORIGINS.split(",") if o.strip()]
+    if cfg.APP_ENV != "prod":
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
+            allow_methods=["*"],
+            allow_headers=["*"],
+            allow_credentials=False,
+        )
+    elif explicit_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=explicit_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            allow_credentials=False,
+        )
+    app.add_middleware(InMemoryRateLimitMiddleware, settings=cfg)
     app.add_middleware(TimingMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
     setup_exception_handlers(app)

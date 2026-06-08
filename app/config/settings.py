@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     LOCAL_STORAGE_BASE_URL: str = "http://localhost:9000/local"
     API_RATE_LIMIT_PER_USER_MINUTE: int = 100
     AUTH_RATE_LIMIT_PER_IP_MINUTE: int = 10
+    # Browser clients (web build) need CORS; native apps don't. In dev/test any
+    # localhost origin is allowed automatically; in prod, set explicit origins
+    # here (comma-separated) to enable CORS for a hosted web client.
+    CORS_ALLOW_ORIGINS: str = ""
     VISION_MAX_CALLS_PER_USER_HOUR: int = 60
     VISION_TIMEOUT_SECONDS: float = 10.0
     QWEN_API_KEY: str | None = None
