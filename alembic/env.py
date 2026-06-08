@@ -1,8 +1,7 @@
 from logging.config import fileConfig
 
-from sqlalchemy import pool
+from sqlalchemy import engine_from_config, pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 from app.config.settings import get_settings
@@ -15,8 +14,17 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def _sync_url() -> str:
+    # The app runs on asyncpg, but alembic must run migrations synchronously:
+    # asyncpg's prepared-statement protocol rejects multi-statement DDL and
+    # alembic's autocommit_block (used by CONCURRENTLY index migrations like
+    # 0018-0020) can't drive the async-bridged connection. psycopg2 (a project
+    # dependency) handles both. Swap the driver for migrations only.
+    return get_settings().DATABASE_URL.replace("+asyncpg", "+psycopg2")
+
+
 def run_migrations_offline() -> None:
-    url = get_settings().DATABASE_URL
+    url = _sync_url()
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -55,31 +63,35 @@ def do_run_migrations(connection: Connection) -> None:
     # Pre-create with the wider column on fresh DBs and widen defensively on
     # legacy DBs so both paths work.
     connection.exec_driver_sql(_PREPARE_VERSION_TABLE_SQL)
-    context.configure(connection=connection, target_metadata=target_metadata)
+    # Commit the prep so the connection isn't left mid-transaction: otherwise
+    # alembic sees an open connection transaction but its own _transaction is
+    # None, and autocommit_block() (CONCURRENTLY migrations 0018-0020) asserts.
+    connection.commit()
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        # Recommended when migrations contain autocommit blocks: each migration
+        # gets its own transaction so an autocommit block can commit + restore.
+        transaction_per_migration=True,
+    )
 
     with context.begin_transaction():
         context.run_migrations()
 
 
-async def run_async_migrations() -> None:
+def run_migrations_online() -> None:
     configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = get_settings().DATABASE_URL
-    connectable = async_engine_from_config(
+    configuration["sqlalchemy.url"] = _sync_url()
+    connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
 
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+    with connectable.connect() as connection:
+        do_run_migrations(connection)
 
-    await connectable.dispose()
-
-
-def run_migrations_online() -> None:
-    import asyncio
-
-    asyncio.run(run_async_migrations())
+    connectable.dispose()
 
 
 if context.is_offline_mode():
