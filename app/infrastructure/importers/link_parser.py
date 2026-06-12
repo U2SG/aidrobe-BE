@@ -14,6 +14,18 @@ META_IMAGE_RE = re.compile(
 )
 IMG_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
 
+# A default httpx user-agent gets 403'd or served a bot page by most sites
+# (Wikipedia, Taobao, etc.). Present as a normal browser; zh Accept-Language
+# helps the CN shopping sites return product markup.
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
+
 _ALLOWED_SCHEMES = {"http", "https"}
 
 
@@ -49,6 +61,7 @@ class HtmlLinkParser:
         async with httpx.AsyncClient(
             timeout=self.settings.LINK_PARSE_TIMEOUT_SECONDS,
             follow_redirects=False,
+            headers=BROWSER_HEADERS,
         ) as client:
             response = await client.get(source_url)
             # Follow redirects manually so we can re-check each hop

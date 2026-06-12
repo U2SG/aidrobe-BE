@@ -65,8 +65,17 @@ class QwenVision:
         # Already inlined (e.g. a caller passed a data URI) — pass through.
         if image_url.startswith("data:"):
             return image_url
-        async with httpx.AsyncClient(timeout=self.settings.VISION_TIMEOUT_SECONDS) as client:
-            response = await client.get(image_url)
+        # Some image hosts 403 a default httpx UA; present as a browser.
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+        }
+        async with httpx.AsyncClient(
+            timeout=self.settings.VISION_TIMEOUT_SECONDS, headers=headers
+        ) as client:
+            response = await client.get(image_url, follow_redirects=True)
             response.raise_for_status()
         content_type = response.headers.get("content-type", "image/jpeg").split(";")[0].strip()
         if not content_type.startswith("image/"):

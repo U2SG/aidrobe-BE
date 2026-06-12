@@ -7,7 +7,11 @@ from app.config.settings import Settings
 from app.infrastructure.importers.adapters.douyin import DouyinAdapter
 from app.infrastructure.importers.adapters.taobao import TaobaoAdapter
 from app.infrastructure.importers.adapters.xhs import XhsAdapter
-from app.infrastructure.importers.link_parser import HtmlLinkParser, _is_safe_url
+from app.infrastructure.importers.link_parser import (
+    BROWSER_HEADERS,
+    HtmlLinkParser,
+    _is_safe_url,
+)
 
 
 class ImportAdapter(Protocol):
@@ -60,6 +64,7 @@ async def route_extract_image_url(source_url: str, settings: Settings) -> str | 
     async with httpx.AsyncClient(
         timeout=settings.LINK_PARSE_TIMEOUT_SECONDS,
         follow_redirects=False,
+        headers=BROWSER_HEADERS,
     ) as client:
         expanded_url = await _expand_short_links(source_url, client)
         if expanded_url is None:
