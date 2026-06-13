@@ -1840,6 +1840,177 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/packing-lists:
+    post:
+      tags:
+      - packing-list
+      summary: Create Packing List
+      operationId: create_packing_list_v1_packing_lists_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePackingListRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PackingListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - packing-list
+      summary: List Packing Lists
+      operationId: list_packing_lists_v1_packing_lists_get
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PackingListResponse'
+                title: Response List Packing Lists V1 Packing Lists Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/packing-lists/{packing_list_id}:
+    get:
+      tags:
+      - packing-list
+      summary: Get Packing List
+      operationId: get_packing_list_v1_packing_lists__packing_list_id__get
+      parameters:
+      - name: packing_list_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Packing List Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PackingListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      tags:
+      - packing-list
+      summary: Update Packing List
+      operationId: update_packing_list_v1_packing_lists__packing_list_id__patch
+      parameters:
+      - name: packing_list_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Packing List Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePackingListRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PackingListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/admin/jobs:
     get:
       tags:
@@ -2405,6 +2576,37 @@ components:
       - input_type
       - source_type
       title: CreateImportTaskRequest
+    CreatePackingListRequest:
+      properties:
+        destination:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Destination
+        days:
+          type: integer
+          title: Days
+        scenes:
+          items:
+            type: string
+          type: array
+          title: Scenes
+        weather_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Weather Hint
+        departure_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Departure Date
+      type: object
+      required:
+      - days
+      - scenes
+      title: CreatePackingListRequest
     DataExportResponse:
       properties:
         job_id:
@@ -3206,6 +3408,70 @@ components:
       - asset_id
       - generation_status
       title: OutfitVisualAssetResponse
+    PackingItem:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        day:
+          type: integer
+          title: Day
+        scene:
+          type: string
+          title: Scene
+        notes:
+          type: string
+          title: Notes
+          default: ''
+      type: object
+      required:
+      - item_id
+      - day
+      - scene
+      title: PackingItem
+    PackingListResponse:
+      properties:
+        packing_list_id:
+          type: string
+          format: uuid
+          title: Packing List Id
+        destination:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Destination
+        days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Days
+        scenes:
+          items:
+            type: string
+          type: array
+          title: Scenes
+        departure_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Departure Date
+        items:
+          items:
+            $ref: '#/components/schemas/PackingItem'
+          type: array
+          title: Items
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - packing_list_id
+      - scenes
+      - items
+      - status
+      title: PackingListResponse
     PresignUploadRequest:
       properties:
         file_name:
@@ -3911,6 +4177,22 @@ components:
           title: Comfort Score
       type: object
       title: UpdateFitRequest
+    UpdatePackingListRequest:
+      properties:
+        items:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PackingItem'
+            type: array
+          - type: 'null'
+          title: Items
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      type: object
+      title: UpdatePackingListRequest
     UpdateStyleTagsRequest:
       properties:
         tags:
