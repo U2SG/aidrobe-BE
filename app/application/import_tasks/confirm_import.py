@@ -1,5 +1,6 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 
 from app.application.recommendations.background import schedule_today_recompute
 from app.common import error_codes
@@ -39,6 +40,8 @@ class ConfirmImageImportTask:
         location: str | None = None,
         size_label: str | None = None,
         fit_status: str | None = None,
+        purchase_price: Decimal | None = None,
+        purchase_date: date | None = None,
     ) -> WardrobeItem:
         task = await self.import_task_repository.get_for_user(task_id, user_id)
         if task is None:
@@ -50,11 +53,19 @@ class ConfirmImageImportTask:
                 status_code=409,
             )
 
-        original_image_url = None
-        if task.candidate_payload:
-            original_image_url = task.candidate_payload.get("original_image_url")
+        candidate = task.candidate_payload or {}
+        original_image_url = candidate.get("original_image_url")
         if original_image_url is None:
             original_image_url = task.input_payload.get("image_url")
+
+        # M18 — auto-fill from the OCR candidate when the client didn't override.
+        # candidate_payload stores price/date as strings (JSONB-safe), so coerce.
+        if size_label is None:
+            size_label = candidate.get("size_label")
+        if purchase_price is None:
+            purchase_price = _to_decimal(candidate.get("purchase_price"))
+        if purchase_date is None:
+            purchase_date = _to_date(candidate.get("purchase_date"))
 
         item = WardrobeItem(
             user_id=user_id,
@@ -67,6 +78,8 @@ class ConfirmImageImportTask:
             location=location,
             size_label=size_label,
             fit_status=fit_status or "unknown",
+            purchase_price=purchase_price,
+            purchase_date=purchase_date,
         )
         await self.wardrobe_repository.add(item)
 
@@ -93,3 +106,21 @@ class ConfirmImageImportTask:
         await self.import_task_repository.flush()
         await schedule_today_recompute(user_id, self.recommendation_repository, self.style_repository)
         return item
+
+
+def _to_decimal(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _to_date(value: object) -> date | None:
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return None

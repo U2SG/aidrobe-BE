@@ -2248,6 +2248,21 @@ components:
         original_image_url:
           type: string
           title: Original Image Url
+        size_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Size Label
+        purchase_price:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Purchase Price
+        purchase_date:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Purchase Date
       type: object
       required:
       - title
@@ -2301,6 +2316,20 @@ components:
           - type: string
           - type: 'null'
           title: Fit Status
+        purchase_price:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Purchase Price
+        purchase_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Purchase Date
       type: object
       required:
       - title
@@ -2382,7 +2411,7 @@ components:
       properties:
         input_type:
           type: string
-          pattern: ^(image|link|screenshot|image_batch|shared_content)$
+          pattern: ^(image|link|screenshot|image_batch|shared_content|receipt_screenshot|order_screenshot|shopping_email)$
           title: Input Type
         source_type:
           type: string

@@ -4,10 +4,18 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.link_parser import LinkParserPort
+from app.application.ports.ocr import OcrPort
 from app.application.ports.rate_limit import UserRateLimiter
 from app.application.ports.vision import VisionPort
-from app.bootstrap.container import link_parser, vision_rate_limiter, vision_service
+from app.bootstrap.container import (
+    link_parser,
+    ocr_service,
+    vision_rate_limiter,
+    vision_service,
+)
 from app.common.enums import ImportStatus
+from app.infrastructure.importers.ocr_router import OcrCandidateAdapter, ocr_adapter_for
+from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.repositories.import_task_repo import (
     SqlAlchemyImportTaskRepository,
 )
@@ -23,11 +31,13 @@ class ProcessImageImportTask:
         vision: VisionPort,
         parser: LinkParserPort | None = None,
         vision_rate_limiter: UserRateLimiter | None = None,
+        ocr: OcrPort | None = None,
     ) -> None:
         self.repository = repository
         self.vision = vision
         self.parser = parser
         self.vision_rate_limiter = vision_rate_limiter
+        self.ocr = ocr
 
     async def execute(self, task_id: uuid.UUID, user_id: uuid.UUID) -> None:
         task = await self.repository.get_for_user(task_id, user_id)
@@ -41,6 +51,14 @@ class ProcessImageImportTask:
         task.error_code = None
         task.error_message = None
         await self.repository.flush()
+
+        # M18 — receipt / order-screenshot / shopping-email imports go through
+        # the OCR pipeline instead of vision: the screenshot itself is OCR'd for
+        # structured fields (title/category/color/size/price/date).
+        ocr_adapter = ocr_adapter_for(task.input_type)
+        if ocr_adapter is not None:
+            await self._process_ocr(task, task_id, user_id, ocr_adapter)
+            return
 
         try:
             image_url = task.input_payload.get("image_url")
@@ -72,6 +90,35 @@ class ProcessImageImportTask:
         }
         await self.repository.flush()
 
+    async def _process_ocr(
+        self,
+        task: ImportTask,
+        task_id: uuid.UUID,
+        user_id: uuid.UUID,
+        adapter: OcrCandidateAdapter,
+    ) -> None:
+        try:
+            if self.ocr is None:
+                raise ValueError("OCR provider is not configured")
+            image_url = task.input_payload.get("image_url")
+            if not isinstance(image_url, str) or not image_url:
+                raise ValueError("image_url is required for OCR import")
+
+            if self.vision_rate_limiter is not None:
+                self.vision_rate_limiter.check(user_id)
+            ocr_result = await self.ocr.extract_text(image_url)
+        except Exception as exc:
+            logger.warning("import_task_ocr_failed", task_id=str(task_id), error=str(exc))
+            task.task_status = ImportStatus.FAILED.value
+            task.error_code = "ocr_failed"
+            task.error_message = str(exc)
+            await self.repository.flush()
+            return
+
+        task.task_status = ImportStatus.WAITING_CONFIRM.value
+        task.candidate_payload = adapter.to_candidate_payload(ocr_result, image_url)
+        await self.repository.flush()
+
 
 async def process_import_task_with_session(
     session: AsyncSession,
@@ -83,6 +130,7 @@ async def process_import_task_with_session(
         vision_service(),
         link_parser(),
         vision_rate_limiter(),
+        ocr_service(),
     )
     await worker.execute(task_id, user_id)
 

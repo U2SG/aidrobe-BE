@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     QWEN_API_KEY: str | None = None
     QWEN_VISION_MODEL: str = "qwen-vl-max"
     QWEN_VISION_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    # M18 — OCR pipeline for receipt / order-screenshot / shopping-email imports.
+    # Mirrors VISION_PROVIDER: "fake" (default, no key) or "qwen" (Qwen-VL OCR).
+    OCR_PROVIDER: str = "fake"
+    OCR_TIMEOUT_SECONDS: float = 15.0
+    QWEN_OCR_MODEL: str = "qwen-vl-ocr"
+    QWEN_OCR_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     S3_BUCKET: str | None = None
     S3_REGION: str = "us-east-1"
     S3_ENDPOINT_URL: str | None = None
@@ -145,6 +151,10 @@ class Settings(BaseSettings):
     LLM_DAILY_TOKEN_LIMIT: int = 50_000
     OCR_DAILY_CALL_LIMIT: int = 100
     TRYON_DAILY_CALL_LIMIT: int = 5
+
+    # M18 — receipt / order-screenshot / shopping-email import pipeline.
+    # When False, POST /v1/import-tasks with receipt input_types returns 400.
+    ENABLE_RECEIPT_IMPORT: bool = False
 
     # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
     # every authenticated user is admin (DX); empty in prod means the admin
