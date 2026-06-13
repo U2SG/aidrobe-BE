@@ -41,6 +41,23 @@ class BatchInspirationResponse(BaseModel):
     items: list[InspirationResponse]
 
 
+class PdfStyleSourceRequest(BaseModel):
+    # M19: PDF / magazine multi-page style ingest. input_type is fixed to
+    # pdf_magazine for now (the only async multi-file source); kept explicit so
+    # the contract can grow other source types later without a breaking change.
+    file_url: str = Field(min_length=1, max_length=1024)
+    input_type: str = Field(default="pdf_magazine", pattern="^pdf_magazine$")
+    title: str | None = Field(default=None, max_length=255)
+
+
+class PdfStyleSourceResponse(BaseModel):
+    source_id: uuid.UUID
+    status: str = "queued"
+    # Best-effort: the real page count is only known after the worker downloads
+    # and rasterizes the PDF, so this is 0 at enqueue time.
+    estimated_pages: int = 0
+
+
 class UpdateStyleTagsRequest(BaseModel):
     tags: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(
         min_length=1, max_length=20
