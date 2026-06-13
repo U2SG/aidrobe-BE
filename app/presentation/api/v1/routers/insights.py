@@ -1,11 +1,14 @@
 """Wardrobe insights router — M12."""
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.insights import wardrobe_insights
+from app.application.insights import wardrobe_insights, wardrobe_report
+from app.common import error_codes
+from app.common.exceptions import FriendlyException
+from app.config.settings import get_settings
 from app.presentation.api.v1.deps import get_current_user
 from app.infrastructure.persistence.session import get_db_session as get_db
 from app.presentation.api.v1.schemas.insights import (
@@ -15,6 +18,7 @@ from app.presentation.api.v1.schemas.insights import (
     InsightsSummaryResponse,
     StyleTrendResponse,
     TopItemResponse,
+    WardrobeReportResponse,
 )
 
 router = APIRouter(prefix="/v1/insights", tags=["insights"])
@@ -92,3 +96,22 @@ async def cost_per_wear(
 ) -> list[CostPerWearItem]:
     rows = await wardrobe_insights.get_cost_per_wear(current_user.id, db)
     return [CostPerWearItem(**r) for r in rows]
+
+
+@router.get("/reports/{period}", response_model=WardrobeReportResponse)
+async def wardrobe_period_report(
+    period: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+) -> WardrobeReportResponse:
+    """Spotify-Wrapped-style half-year / annual report. ``period`` like ``2026-H1``.
+
+    Off by default; returns 503 when ``ENABLE_WARDROBE_REPORT`` is false. Malformed
+    period → 422 (VALIDATION_ERROR) from the aggregation layer.
+    """
+    if not get_settings().ENABLE_WARDROBE_REPORT:
+        raise FriendlyException(
+            error_codes.FORBIDDEN, "Wardrobe report is not enabled", status_code=503
+        )
+    report = await wardrobe_report.build_report(current_user.id, db, period)
+    return WardrobeReportResponse.model_validate(report, from_attributes=True)

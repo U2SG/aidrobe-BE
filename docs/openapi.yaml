@@ -1557,6 +1557,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/insights/reports/{period}:
+    get:
+      tags:
+      - insights
+      summary: Wardrobe Period Report
+      description: 'Spotify-Wrapped-style half-year / annual report. ``period`` like
+        ``2026-H1``.
+
+
+        Off by default; returns 503 when ``ENABLE_WARDROBE_REPORT`` is false. Malformed
+
+        period → 422 (VALIDATION_ERROR) from the aggregation layer.'
+      operationId: wardrobe_period_report_v1_insights_reports__period__get
+      parameters:
+      - name: period
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Period
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WardrobeReportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/outfit-history:
     get:
       tags:
@@ -3295,6 +3344,150 @@ components:
       required:
       - refresh_token
       title: RefreshTokenRequest
+    ReportCostPerWear:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          type: string
+          title: Title
+        purchase_price:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Purchase Price
+        wear_count:
+          type: integer
+          title: Wear Count
+        cost_per_wear:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Cost Per Wear
+      type: object
+      required:
+      - item_id
+      - title
+      - purchase_price
+      - wear_count
+      - cost_per_wear
+      title: ReportCostPerWear
+    ReportIdleItem:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          type: string
+          title: Title
+        category:
+          type: string
+          title: Category
+        cover_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cover Image Url
+        last_worn:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Worn
+        idle_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Idle Days
+      type: object
+      required:
+      - item_id
+      - title
+      - category
+      title: ReportIdleItem
+    ReportOutfitCombo:
+      properties:
+        outfit_id:
+          type: string
+          format: uuid
+          title: Outfit Id
+        title:
+          type: string
+          title: Title
+        wear_count:
+          type: integer
+          title: Wear Count
+      type: object
+      required:
+      - outfit_id
+      - title
+      - wear_count
+      title: ReportOutfitCombo
+    ReportStyleTrend:
+      properties:
+        period:
+          type: string
+          title: Period
+        prev_period:
+          type: string
+          title: Prev Period
+        current:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Current
+        previous:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Previous
+        rising:
+          items:
+            type: string
+          type: array
+          title: Rising
+        fading:
+          items:
+            type: string
+          type: array
+          title: Fading
+      type: object
+      required:
+      - period
+      - prev_period
+      - current
+      - previous
+      - rising
+      - fading
+      title: ReportStyleTrend
+    ReportTopItem:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          type: string
+          title: Title
+        category:
+          type: string
+          title: Category
+        cover_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cover Image Url
+        wear_count:
+          type: integer
+          title: Wear Count
+      type: object
+      required:
+      - item_id
+      - title
+      - category
+      - wear_count
+      title: ReportTopItem
     ResponseModel_AuthTokenResponse_:
       properties:
         code:
@@ -4269,6 +4462,77 @@ components:
       - offset
       - total
       title: WardrobeListResponse
+    WardrobeReportResponse:
+      properties:
+        period:
+          type: string
+          title: Period
+        label:
+          type: string
+          title: Label
+        start_date:
+          type: string
+          format: date
+          title: Start Date
+        end_date:
+          type: string
+          format: date
+          title: End Date
+        is_empty:
+          type: boolean
+          title: Is Empty
+        total_wears:
+          type: integer
+          title: Total Wears
+        top_items:
+          items:
+            $ref: '#/components/schemas/ReportTopItem'
+          type: array
+          title: Top Items
+        top_combos:
+          items:
+            $ref: '#/components/schemas/ReportOutfitCombo'
+          type: array
+          title: Top Combos
+        color_palette:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Color Palette
+        style_keywords:
+          items:
+            type: string
+          type: array
+          title: Style Keywords
+        style_trend:
+          anyOf:
+          - $ref: '#/components/schemas/ReportStyleTrend'
+          - type: 'null'
+        highest_cost_per_wear:
+          anyOf:
+          - $ref: '#/components/schemas/ReportCostPerWear'
+          - type: 'null'
+        longest_idle_item:
+          anyOf:
+          - $ref: '#/components/schemas/ReportIdleItem'
+          - type: 'null'
+        recommendation_adoption_rate:
+          type: number
+          title: Recommendation Adoption Rate
+      type: object
+      required:
+      - period
+      - label
+      - start_date
+      - end_date
+      - is_empty
+      - total_wears
+      - top_items
+      - top_combos
+      - color_palette
+      - style_keywords
+      - recommendation_adoption_rate
+      title: WardrobeReportResponse
     WearHistoryEntry:
       properties:
         worn_date:
