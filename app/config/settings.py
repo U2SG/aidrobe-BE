@@ -146,6 +146,10 @@ class Settings(BaseSettings):
     OCR_DAILY_CALL_LIMIT: int = 100
     TRYON_DAILY_CALL_LIMIT: int = 5
 
+    # V4 Outfit Calendar — plan/calendar endpoints. Off by default; plans
+    # persist regardless of the flag, the flag only gates exposure.
+    ENABLE_OUTFIT_CALENDAR: bool = False
+
     # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
     # every authenticated user is admin (DX); empty in prod means the admin
     # surface is locked off. This is intentional so a misconfigured prod
