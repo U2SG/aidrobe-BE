@@ -14,6 +14,7 @@ from app.infrastructure.persistence.models.recommendation import (
     OutfitItem,
     WearHistory,
 )
+from app.infrastructure.persistence.models.shopping import ShoppingSenseCheck
 from app.infrastructure.persistence.models.style import UserStyleProfile
 from app.infrastructure.persistence.models.user import User, UserSession, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
@@ -32,6 +33,7 @@ __all__ = [
     "Outfit",
     "OutfitFeedback",
     "OutfitItem",
+    "ShoppingSenseCheck",
     "User",
     "UserSession",
     "UserSettings",

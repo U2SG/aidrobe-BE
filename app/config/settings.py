@@ -146,6 +146,11 @@ class Settings(BaseSettings):
     OCR_DAILY_CALL_LIMIT: int = 100
     TRYON_DAILY_CALL_LIMIT: int = 5
 
+    # V4 M17 Shopping Sense-Check — purchase evaluation endpoints. Off by
+    # default; sense-check history persists regardless of the flag, the flag
+    # only gates exposure.
+    ENABLE_SENSE_CHECK: bool = False
+
     # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
     # every authenticated user is admin (DX); empty in prod means the admin
     # surface is locked off. This is intentional so a misconfigured prod
