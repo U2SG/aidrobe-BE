@@ -1,5 +1,8 @@
+from typing import Any
+
 import httpx
 
+from app.application.ports.llm import LlmAnswer
 from app.config.settings import Settings
 
 
@@ -24,3 +27,33 @@ class QwenLlm:
             )
             response.raise_for_status()
         return str(response.json()["choices"][0]["message"]["content"])
+
+    async def ask(self, system_prompt: str, question: str) -> LlmAnswer:
+        payload = {
+            "model": self.settings.QWEN_LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question},
+            ],
+            "temperature": 0.4,
+        }
+        headers = {"Authorization": f"Bearer {self.settings.QWEN_API_KEY}"}
+        async with httpx.AsyncClient(timeout=self.settings.LLM_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                self.settings.QWEN_LLM_BASE_URL,
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+        data = response.json()
+        text = str(data["choices"][0]["message"]["content"])
+        return LlmAnswer(text=text, tokens_used=_extract_total_tokens(data))
+
+
+def _extract_total_tokens(data: dict[str, Any]) -> int:
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        total = usage.get("total_tokens")
+        if isinstance(total, int):
+            return total
+    return 0

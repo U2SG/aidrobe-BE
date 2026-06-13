@@ -14,6 +14,7 @@ from app.jobs.scheduler import create_scheduler
 from app.presentation.api.v1.routers import (
     account,
     admin,
+    ask,
     auth,
     fit,
     health,
@@ -96,6 +97,7 @@ def create_app() -> FastAPI:
     app.include_router(outfit_visual.router)
     app.include_router(admin.router)
     app.include_router(account.router)
+    app.include_router(ask.router)
     return app
 
 
