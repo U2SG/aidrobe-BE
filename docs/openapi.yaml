@@ -1704,7 +1704,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OutfitCalendarResponse'
+                $ref: '#/components/schemas/app__presentation__api__v1__schemas__outfit_history__OutfitCalendarResponse'
         '422':
           description: Validation Error
           content:
@@ -1797,6 +1797,190 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OotdUploadResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-plans/calendar:
+    get:
+      tags:
+      - outfit-plan
+      summary: Get Calendar
+      operationId: get_calendar_v1_outfit_plans_calendar_get
+      parameters:
+      - name: start
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Start
+      - name: end
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: End
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/app__presentation__api__v1__schemas__outfit_plan__OutfitCalendarResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-plans:
+    post:
+      tags:
+      - outfit-plan
+      summary: Create Plan
+      operationId: create_plan_v1_outfit_plans_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOutfitPlanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutfitPlanResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-plans/{outfit_plan_id}:
+    patch:
+      tags:
+      - outfit-plan
+      summary: Update Plan
+      operationId: update_plan_v1_outfit_plans__outfit_plan_id__patch
+      parameters:
+      - name: outfit_plan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Outfit Plan Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOutfitPlanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutfitPlanResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-plans/{outfit_plan_id}/wear:
+    post:
+      tags:
+      - outfit-plan
+      summary: Mark Worn
+      operationId: mark_worn_v1_outfit_plans__outfit_plan_id__wear_post
+      parameters:
+      - name: outfit_plan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Outfit Plan Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WearPlanResponse'
         '422':
           description: Validation Error
           content:
@@ -2280,6 +2464,57 @@ components:
       required:
       - items
       title: BatchInspirationResponse
+    CalendarCell:
+      properties:
+        kind:
+          type: string
+          title: Kind
+        outfit:
+          anyOf:
+          - $ref: '#/components/schemas/OutfitSummary'
+          - type: 'null'
+        wear_history_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Wear History Id
+        ootd_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ootd Image Url
+        outfit_plan_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Outfit Plan Id
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      type: object
+      required:
+      - kind
+      title: CalendarCell
+    CalendarDayResponse:
+      properties:
+        date:
+          type: string
+          format: date
+          title: Date
+        cells:
+          items:
+            $ref: '#/components/schemas/CalendarCell'
+          type: array
+          title: Cells
+      type: object
+      required:
+      - date
+      - cells
+      title: CalendarDayResponse
     CandidateItem:
       properties:
         title:
@@ -2454,6 +2689,21 @@ components:
       - input_type
       - source_type
       title: CreateImportTaskRequest
+    CreateOutfitPlanRequest:
+      properties:
+        outfit_id:
+          type: string
+          format: uuid
+          title: Outfit Id
+        planned_date:
+          type: string
+          format: date
+          title: Planned Date
+      type: object
+      required:
+      - outfit_id
+      - planned_date
+      title: CreateOutfitPlanRequest
     DataExportResponse:
       properties:
         job_id:
@@ -2973,18 +3223,6 @@ components:
       - wear_history_id
       - ootd_image_url
       title: OotdUploadResponse
-    OutfitCalendarResponse:
-      properties:
-        dates:
-          items:
-            type: string
-            format: date
-          type: array
-          title: Dates
-      type: object
-      required:
-      - dates
-      title: OutfitCalendarResponse
     OutfitHistoryEntry:
       properties:
         wear_history_id:
@@ -3101,6 +3339,30 @@ components:
       - limit
       - offset
       title: OutfitHistoryResponse
+    OutfitPlanResponse:
+      properties:
+        outfit_plan_id:
+          type: string
+          format: uuid
+          title: Outfit Plan Id
+        outfit_id:
+          type: string
+          format: uuid
+          title: Outfit Id
+        planned_date:
+          type: string
+          format: date
+          title: Planned Date
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - outfit_plan_id
+      - outfit_id
+      - planned_date
+      - status
+      title: OutfitPlanResponse
     OutfitResponse:
       properties:
         outfit_id:
@@ -4104,6 +4366,21 @@ components:
           title: Comfort Score
       type: object
       title: UpdateFitRequest
+    UpdateOutfitPlanRequest:
+      properties:
+        planned_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Planned Date
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      type: object
+      title: UpdateOutfitPlanRequest
     UpdateStyleTagsRequest:
       properties:
         tags:
@@ -4572,6 +4849,30 @@ components:
       required:
       - success
       title: WearOutfitResponse
+    WearPlanResponse:
+      properties:
+        outfit_plan_id:
+          type: string
+          format: uuid
+          title: Outfit Plan Id
+        wear_history_id:
+          type: string
+          format: uuid
+          title: Wear History Id
+        worn_date:
+          type: string
+          format: date
+          title: Worn Date
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - outfit_plan_id
+      - wear_history_id
+      - worn_date
+      - status
+      title: WearPlanResponse
     WeatherContextResponse:
       properties:
         temperature_c:
@@ -4593,3 +4894,26 @@ components:
       - rain_probability
       - condition
       title: WeatherContextResponse
+    app__presentation__api__v1__schemas__outfit_history__OutfitCalendarResponse:
+      properties:
+        dates:
+          items:
+            type: string
+            format: date
+          type: array
+          title: Dates
+      type: object
+      required:
+      - dates
+      title: OutfitCalendarResponse
+    app__presentation__api__v1__schemas__outfit_plan__OutfitCalendarResponse:
+      properties:
+        days:
+          items:
+            $ref: '#/components/schemas/CalendarDayResponse'
+          type: array
+          title: Days
+      type: object
+      required:
+      - days
+      title: OutfitCalendarResponse
