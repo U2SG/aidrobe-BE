@@ -181,6 +181,13 @@ class Settings(BaseSettings):
     # only gates exposure.
     ENABLE_SENSE_CHECK: bool = False
 
+    # V4 M19 — PDF / magazine multi-page style ingest. When False, POST
+    # /v1/style/sources returns 503 (kill switch). The parent row is still
+    # persisted regardless; only the async rasterize/ingest is gated so a bad
+    # rollout can't burn poppler/storage cost. Requires the poppler system
+    # binary (pdf2image dep) on the worker host to actually run.
+    ENABLE_PDF_STYLE_INGEST: bool = False
+
     # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
     # every authenticated user is admin (DX); empty in prod means the admin
     # surface is locked off. This is intentional so a misconfigured prod

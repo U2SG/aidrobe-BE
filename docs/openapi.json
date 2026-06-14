@@ -2116,6 +2116,82 @@
         }
       }
     },
+    "/v1/style/sources": {
+      "post": {
+        "tags": [
+          "style"
+        ],
+        "summary": "Add Pdf Source",
+        "description": "M19 — async PDF / magazine multi-page style ingest.\n\nThe parent row is always persisted; the async ingest is gated by\n`ENABLE_PDF_STYLE_INGEST` (kill switch — default off so a bad rollout can't\nburn rasterize/storage cost). `estimated_pages` is best-effort 0 at enqueue:\nthe real count is only known once the worker downloads and rasterizes the\nPDF, and blocking the request on an OSS fetch would defeat the async design.",
+        "operationId": "add_pdf_source_v1_style_sources_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PdfStyleSourceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_PdfStyleSourceResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/style/inspirations/{inspiration_id}": {
       "delete": {
         "tags": [
@@ -5904,6 +5980,63 @@
         ],
         "title": "OutfitVisualAssetResponse"
       },
+      "PdfStyleSourceRequest": {
+        "properties": {
+          "file_url": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "File Url"
+          },
+          "input_type": {
+            "type": "string",
+            "pattern": "^pdf_magazine$",
+            "title": "Input Type",
+            "default": "pdf_magazine"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_url"
+        ],
+        "title": "PdfStyleSourceRequest"
+      },
+      "PdfStyleSourceResponse": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "queued"
+          },
+          "estimated_pages": {
+            "type": "integer",
+            "title": "Estimated Pages",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_id"
+        ],
+        "title": "PdfStyleSourceResponse"
+      },
       "PresignUploadRequest": {
         "properties": {
           "file_name": {
@@ -6699,6 +6832,32 @@
         },
         "type": "object",
         "title": "ResponseModel[OutfitResponse]"
+      },
+      "ResponseModel_PdfStyleSourceResponse_": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PdfStyleSourceResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ResponseModel[PdfStyleSourceResponse]"
       },
       "ResponseModel_PresignUploadResponse_": {
         "properties": {
