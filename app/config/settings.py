@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     QWEN_API_KEY: str | None = None
     QWEN_VISION_MODEL: str = "qwen-vl-max"
     QWEN_VISION_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    # wanx image edit (V4 OOTD poster) — async ImageSynthesis API, same
+    # DashScope key as vision. Background-only mask repaint keeps the
+    # subject (person + clothes) pixel-locked.
+    QWEN_IMAGEEDIT_MODEL: str = "wanx2.1-imageedit"
+    QWEN_IMAGEEDIT_BASE_URL: str = (
+        "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2image/image-synthesis"
+    )
+    QWEN_TASK_POLL_BASE_URL: str = "https://dashscope.aliyuncs.com/api/v1/tasks"
+    IMAGEEDIT_TIMEOUT_SECONDS: float = 60.0
     S3_BUCKET: str | None = None
     S3_REGION: str = "us-east-1"
     S3_ENDPOINT_URL: str | None = None
@@ -145,6 +154,18 @@ class Settings(BaseSettings):
     LLM_DAILY_TOKEN_LIMIT: int = 50_000
     OCR_DAILY_CALL_LIMIT: int = 100
     TRYON_DAILY_CALL_LIMIT: int = 5
+    OOTD_POSTER_DAILY_CALL_LIMIT: int = 5
+
+    # OOTD poster (V4): LLM-generated stylized poster from a user's real
+    # wear selfie. Background-only repaint via wanx mask edit; clothes stay
+    # pixel-locked. Off by default; each call requires explicit user consent
+    # (body image leaves to a third-party model). Data persists regardless of
+    # the flag; the flag only gates exposure.
+    ENABLE_OOTD_POSTER: bool = False
+
+    # V4 Outfit Calendar — plan/calendar endpoints. Off by default; plans
+    # persist regardless of the flag, the flag only gates exposure.
+    ENABLE_OUTFIT_CALENDAR: bool = False
 
     # M16 Travel Packing List — generate/edit endpoints. Off by default;
     # lists persist regardless of the flag, the flag only gates exposure.

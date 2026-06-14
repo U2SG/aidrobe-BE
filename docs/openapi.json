@@ -2858,7 +2858,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OutfitCalendarResponse"
+                  "$ref": "#/components/schemas/app__presentation__api__v1__schemas__outfit_history__OutfitCalendarResponse"
                 }
               }
             }
@@ -3036,6 +3036,326 @@
         }
       }
     },
+    "/v1/outfit-plans/calendar": {
+      "get": {
+        "tags": [
+          "outfit-plan"
+        ],
+        "summary": "Get Calendar",
+        "operationId": "get_calendar_v1_outfit_plans_calendar_get",
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "title": "Start"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "title": "End"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/app__presentation__api__v1__schemas__outfit_plan__OutfitCalendarResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/outfit-plans": {
+      "post": {
+        "tags": [
+          "outfit-plan"
+        ],
+        "summary": "Create Plan",
+        "operationId": "create_plan_v1_outfit_plans_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateOutfitPlanRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutfitPlanResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/outfit-plans/{outfit_plan_id}": {
+      "patch": {
+        "tags": [
+          "outfit-plan"
+        ],
+        "summary": "Update Plan",
+        "operationId": "update_plan_v1_outfit_plans__outfit_plan_id__patch",
+        "parameters": [
+          {
+            "name": "outfit_plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Outfit Plan Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateOutfitPlanRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutfitPlanResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/outfit-plans/{outfit_plan_id}/wear": {
+      "post": {
+        "tags": [
+          "outfit-plan"
+        ],
+        "summary": "Mark Worn",
+        "operationId": "mark_worn_v1_outfit_plans__outfit_plan_id__wear_post",
+        "parameters": [
+          {
+            "name": "outfit_plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Outfit Plan Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WearPlanResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/outfit-visual-assets/{asset_id}": {
       "get": {
         "tags": [
@@ -3169,306 +3489,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WardrobeItemImagesResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/packing-lists": {
-      "post": {
-        "tags": [
-          "packing-list"
-        ],
-        "summary": "Create Packing List",
-        "operationId": "create_packing_list_v1_packing_lists_post",
-        "parameters": [
-          {
-            "name": "Authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "name": "X-User-Id",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-User-Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreatePackingListRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PackingListResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "get": {
-        "tags": [
-          "packing-list"
-        ],
-        "summary": "List Packing Lists",
-        "operationId": "list_packing_lists_v1_packing_lists_get",
-        "parameters": [
-          {
-            "name": "Authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "name": "X-User-Id",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-User-Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/PackingListResponse"
-                  },
-                  "title": "Response List Packing Lists V1 Packing Lists Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/packing-lists/{packing_list_id}": {
-      "get": {
-        "tags": [
-          "packing-list"
-        ],
-        "summary": "Get Packing List",
-        "operationId": "get_packing_list_v1_packing_lists__packing_list_id__get",
-        "parameters": [
-          {
-            "name": "packing_list_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Packing List Id"
-            }
-          },
-          {
-            "name": "Authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "name": "X-User-Id",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-User-Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PackingListResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "tags": [
-          "packing-list"
-        ],
-        "summary": "Update Packing List",
-        "operationId": "update_packing_list_v1_packing_lists__packing_list_id__patch",
-        "parameters": [
-          {
-            "name": "packing_list_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Packing List Id"
-            }
-          },
-          {
-            "name": "Authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "name": "X-User-Id",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-User-Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdatePackingListRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PackingListResponse"
                 }
               }
             }
@@ -4073,6 +4093,97 @@
         ],
         "title": "BatchInspirationResponse"
       },
+      "CalendarCell": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "outfit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutfitSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wear_history_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wear History Id"
+          },
+          "ootd_image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ootd Image Url"
+          },
+          "outfit_plan_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outfit Plan Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "CalendarCell"
+      },
+      "CalendarDayResponse": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "title": "Date"
+          },
+          "cells": {
+            "items": {
+              "$ref": "#/components/schemas/CalendarCell"
+            },
+            "type": "array",
+            "title": "Cells"
+          }
+        },
+        "type": "object",
+        "required": [
+          "date",
+          "cells"
+        ],
+        "title": "CalendarDayResponse"
+      },
       "CandidateItem": {
         "properties": {
           "title": {
@@ -4335,60 +4446,25 @@
         ],
         "title": "CreateImportTaskRequest"
       },
-      "CreatePackingListRequest": {
+      "CreateOutfitPlanRequest": {
         "properties": {
-          "destination": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Destination"
+          "outfit_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Outfit Id"
           },
-          "days": {
-            "type": "integer",
-            "title": "Days"
-          },
-          "scenes": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Scenes"
-          },
-          "weather_hint": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Weather Hint"
-          },
-          "departure_date": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Departure Date"
+          "planned_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Planned Date"
           }
         },
         "type": "object",
         "required": [
-          "days",
-          "scenes"
+          "outfit_id",
+          "planned_date"
         ],
-        "title": "CreatePackingListRequest"
+        "title": "CreateOutfitPlanRequest"
       },
       "DataExportResponse": {
         "properties": {
@@ -5146,23 +5222,6 @@
         ],
         "title": "OotdUploadResponse"
       },
-      "OutfitCalendarResponse": {
-        "properties": {
-          "dates": {
-            "items": {
-              "type": "string",
-              "format": "date"
-            },
-            "type": "array",
-            "title": "Dates"
-          }
-        },
-        "type": "object",
-        "required": [
-          "dates"
-        ],
-        "title": "OutfitCalendarResponse"
-      },
       "OutfitHistoryEntry": {
         "properties": {
           "wear_history_id": {
@@ -5334,6 +5393,37 @@
           "offset"
         ],
         "title": "OutfitHistoryResponse"
+      },
+      "OutfitPlanResponse": {
+        "properties": {
+          "outfit_plan_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Outfit Plan Id"
+          },
+          "outfit_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Outfit Id"
+          },
+          "planned_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Planned Date"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "outfit_plan_id",
+          "outfit_id",
+          "planned_date",
+          "status"
+        ],
+        "title": "OutfitPlanResponse"
       },
       "OutfitResponse": {
         "properties": {
@@ -5578,104 +5668,6 @@
           "generation_status"
         ],
         "title": "OutfitVisualAssetResponse"
-      },
-      "PackingItem": {
-        "properties": {
-          "item_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Item Id"
-          },
-          "day": {
-            "type": "integer",
-            "title": "Day"
-          },
-          "scene": {
-            "type": "string",
-            "title": "Scene"
-          },
-          "notes": {
-            "type": "string",
-            "title": "Notes",
-            "default": ""
-          }
-        },
-        "type": "object",
-        "required": [
-          "item_id",
-          "day",
-          "scene"
-        ],
-        "title": "PackingItem"
-      },
-      "PackingListResponse": {
-        "properties": {
-          "packing_list_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Packing List Id"
-          },
-          "destination": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Destination"
-          },
-          "days": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Days"
-          },
-          "scenes": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Scenes"
-          },
-          "departure_date": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Departure Date"
-          },
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/PackingItem"
-            },
-            "type": "array",
-            "title": "Items"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status"
-          }
-        },
-        "type": "object",
-        "required": [
-          "packing_list_id",
-          "scenes",
-          "items",
-          "status"
-        ],
-        "title": "PackingListResponse"
       },
       "PresignUploadRequest": {
         "properties": {
@@ -6784,21 +6776,19 @@
         "type": "object",
         "title": "UpdateFitRequest"
       },
-      "UpdatePackingListRequest": {
+      "UpdateOutfitPlanRequest": {
         "properties": {
-          "items": {
+          "planned_date": {
             "anyOf": [
               {
-                "items": {
-                  "$ref": "#/components/schemas/PackingItem"
-                },
-                "type": "array"
+                "type": "string",
+                "format": "date"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Items"
+            "title": "Planned Date"
           },
           "status": {
             "anyOf": [
@@ -6813,7 +6803,7 @@
           }
         },
         "type": "object",
-        "title": "UpdatePackingListRequest"
+        "title": "UpdateOutfitPlanRequest"
       },
       "UpdateStyleTagsRequest": {
         "properties": {
@@ -7524,6 +7514,37 @@
         ],
         "title": "WearOutfitResponse"
       },
+      "WearPlanResponse": {
+        "properties": {
+          "outfit_plan_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Outfit Plan Id"
+          },
+          "wear_history_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Wear History Id"
+          },
+          "worn_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Worn Date"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "outfit_plan_id",
+          "wear_history_id",
+          "worn_date",
+          "status"
+        ],
+        "title": "WearPlanResponse"
+      },
       "WeatherContextResponse": {
         "properties": {
           "temperature_c": {
@@ -7551,6 +7572,39 @@
           "condition"
         ],
         "title": "WeatherContextResponse"
+      },
+      "app__presentation__api__v1__schemas__outfit_history__OutfitCalendarResponse": {
+        "properties": {
+          "dates": {
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "type": "array",
+            "title": "Dates"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dates"
+        ],
+        "title": "OutfitCalendarResponse"
+      },
+      "app__presentation__api__v1__schemas__outfit_plan__OutfitCalendarResponse": {
+        "properties": {
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/CalendarDayResponse"
+            },
+            "type": "array",
+            "title": "Days"
+          }
+        },
+        "type": "object",
+        "required": [
+          "days"
+        ],
+        "title": "OutfitCalendarResponse"
       }
     }
   }

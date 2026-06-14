@@ -21,8 +21,6 @@ from __future__ import annotations
 
 import io
 import uuid
-from dataclasses import dataclass
-from typing import Any
 
 import httpx
 import structlog
@@ -30,13 +28,12 @@ from PIL import Image, ImageDraw
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.models.async_job import AsyncJob
-from app.infrastructure.persistence.session import AsyncSessionLocal
-from app.infrastructure.workers.job_runtime import (
-    claim_one,
-    enqueue,
-    mark_failed,
-    mark_succeeded,
+from app.infrastructure.workers._visual_asset_runtime import (
+    VisualAssetSnapshot,
+    drain_visual_jobs,
+    reconcile_dead_visual_assets,
 )
+from app.infrastructure.workers.job_runtime import enqueue
 
 logger = structlog.get_logger(__name__)
 
@@ -59,13 +56,6 @@ LAYOUT: dict[str, tuple[int, int, int, int]] = {
     "shoes": (280, 880, 240, 100),
 }
 DEFAULT_BOX = (200, 400, 320, 320)
-
-
-@dataclass
-class _AssetSnapshot:
-    id: uuid.UUID
-    user_id: uuid.UUID
-    input_snapshot: dict[str, Any]
 
 
 def _idempotency_key(*, outfit_id: uuid.UUID | None, asset_id: uuid.UUID, layout_version: str) -> str:
@@ -136,7 +126,7 @@ def _draw_placeholder(canvas: Image.Image, box: tuple[int, int, int, int], label
     )
 
 
-async def _render_and_upload(snapshot: _AssetSnapshot) -> tuple[str, str]:
+async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str]:
     """Render the composite board and upload to object storage. Returns
     `(image_url, object_key)`. Raises on storage / encode failures (the
     worker converts to mark_failed)."""
@@ -173,159 +163,15 @@ async def _render_and_upload(snapshot: _AssetSnapshot) -> tuple[str, str]:
     return url, key
 
 
-async def _process_one(job: AsyncJob) -> None:
-    """Run a single claimed outfit_board job end-to-end. Each session is
-    short-lived so a crash between calls doesn't poison subsequent claims."""
-    from app.infrastructure.persistence.repositories.outfit_visual_repo import (
-        SqlAlchemyOutfitVisualRepository,
-    )
-
-    payload: dict[str, Any] = job.payload or {}
-    asset_id_str = payload.get("asset_id")
-    if not asset_id_str:
-        async with AsyncSessionLocal() as session:
-            await mark_failed(session, job.id, claimed_attempt=job.attempts, error="missing asset_id in payload")
-            await session.commit()
-        return
-
-    asset_id = uuid.UUID(asset_id_str)
-    structlog.contextvars.bind_contextvars(
-        correlation_id=job.correlation_id or "",
-        job_id=str(job.id),
-        asset_id=str(asset_id),
-    )
-    try:
-        # 1. Snapshot input + flip read-model status to processing.
-        async with AsyncSessionLocal() as session:
-            repo = SqlAlchemyOutfitVisualRepository(session)
-            asset = await repo.get_by_id(asset_id)
-            if asset is None:
-                logger.warning("outfit_visual_asset_not_found", asset_id=str(asset_id))
-                async with AsyncSessionLocal() as fail_session:
-                    await mark_failed(
-                        fail_session,
-                        job.id,
-                        claimed_attempt=job.attempts,
-                        error="asset_not_found",
-                    )
-                    await fail_session.commit()
-                return
-            snapshot = _AssetSnapshot(
-                id=asset.id,
-                user_id=asset.user_id,
-                input_snapshot=dict(asset.input_snapshot or {}),
-            )
-            await repo.update_status(asset_id, "processing")
-            await session.commit()
-
-        # 2. Render + upload (no DB session held during slow IO).
-        try:
-            image_url, object_key = await _render_and_upload(snapshot)
-        except Exception as exc:
-            logger.warning("outfit_board_render_failed", error=str(exc))
-            async with AsyncSessionLocal() as session:
-                repo = SqlAlchemyOutfitVisualRepository(session)
-                # Asset stays in 'processing' so a retry can flip it back; only
-                # on dead does the read model land on 'failed' (handled below
-                # via the runtime's status return).
-                await session.commit()
-            async with AsyncSessionLocal() as fail_session:
-                new_status = await mark_failed(fail_session, job.id, claimed_attempt=job.attempts, error=str(exc))
-                # If the runtime tells us the job is dead, surface that to the
-                # read model so the GET endpoint shows 'failed' rather than
-                # an indefinite 'processing'.
-                if new_status == "dead":
-                    repo = SqlAlchemyOutfitVisualRepository(fail_session)
-                    await repo.update_status(asset_id, "failed", error=str(exc))
-                await fail_session.commit()
-            return
-
-        # 3. Persist result + finalize. Fenced on this attempt's claim: if the
-        # lease was recovered while we were rendering (renders can run long),
-        # `mark_succeeded` returns False and we MUST NOT commit `completed`
-        # to the read model. Otherwise a stale worker would expose a board
-        # for a job that another retry has already taken over (or that
-        # oncall sees as `dead`), and the asset would race against the
-        # retry's own write.
-        async with AsyncSessionLocal() as session:
-            repo = SqlAlchemyOutfitVisualRepository(session)
-            await repo.update_status(
-                asset_id, "completed", image_url=image_url, object_key=object_key
-            )
-            ok = await mark_succeeded(session, job.id, claimed_attempt=job.attempts)
-            if not ok:
-                await session.rollback()
-                logger.warning(
-                    "outfit_board.lease_lost_discarding_completion",
-                    job_id=str(job.id),
-                    asset_id=str(asset_id),
-                )
-                return
-            await session.commit()
-            logger.info(
-                "outfit_board_generated",
-                asset_id=str(asset_id),
-                image_url=image_url,
-            )
-    finally:
-        structlog.contextvars.unbind_contextvars("correlation_id", "job_id", "asset_id")
-
-
 async def reconcile_dead_outfit_board_assets(ctx: object) -> int:
-    """Flip `OutfitVisualAsset.generation_status` to 'failed' for assets whose
-    backing job has gone `dead` via lease recovery (which happens when a
-    worker crashes hard enough to never reach `mark_failed` itself).
-
-    Without this, a hard-killed render leaves the asset stuck on
-    `processing` forever — oncall sees the job as `dead` but the user-facing
-    GET endpoint still says "still rendering."
-
-    Runs as an arq cron alongside `recover_async_job_leases` so the user-
-    visible read model converges within one recovery interval."""
-    from sqlalchemy import select
-
-    from app.infrastructure.persistence.models.async_job import AsyncJob
-    from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
-    from app.infrastructure.persistence.repositories.outfit_visual_repo import (
-        SqlAlchemyOutfitVisualRepository,
-    )
-
-    async with AsyncSessionLocal() as session:
-        # All async_jobs of type outfit_board that are dead but whose target
-        # asset is still in `queued` / `processing`.
-        rows = (
-            await session.execute(
-                select(AsyncJob.id, AsyncJob.target_id, AsyncJob.last_error)
-                .join(OutfitVisualAsset, OutfitVisualAsset.id == AsyncJob.target_id)
-                .where(
-                    AsyncJob.job_type == JOB_TYPE,
-                    AsyncJob.status == "dead",
-                    AsyncJob.target_id.is_not(None),
-                    OutfitVisualAsset.generation_status.in_(("queued", "processing")),
-                )
-            )
-        ).all()
-
-        if not rows:
-            return 0
-
-        repo = SqlAlchemyOutfitVisualRepository(session)
-        for _job_id, target_id, last_error in rows:
-            await repo.update_status(target_id, "failed", error=last_error or "job_dead_letter")
-        await session.commit()
-    logger.warning("outfit_board.reconciled_dead_assets", count=len(rows))
-    return len(rows)
+    return await reconcile_dead_visual_assets(JOB_TYPE, "outfit_board")
 
 
 async def drain_outfit_board_jobs(ctx: object) -> int:
-    processed = 0
-    for _ in range(MAX_DRAIN_PER_TICK):
-        async with AsyncSessionLocal() as session:
-            job = await claim_one(session, [JOB_TYPE])
-        if job is None:
-            break
-        await _process_one(job)
-        processed += 1
-    if processed:
-        logger.info("outfit_board.drain_completed", processed=processed)
-    return processed
+    return await drain_visual_jobs(
+        JOB_TYPE,
+        _render_and_upload,
+        MAX_DRAIN_PER_TICK,
+        "outfit_board",
+        asset_not_found_event="outfit_visual_asset_not_found",
+    )
