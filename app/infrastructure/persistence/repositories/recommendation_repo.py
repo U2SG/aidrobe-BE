@@ -12,6 +12,7 @@ from app.infrastructure.persistence.models.recommendation import (
     Outfit,
     OutfitFeedback,
     OutfitItem,
+    OutfitPlan,
     WearHistory,
 )
 from app.infrastructure.persistence.models.user import User, UserSettings
@@ -411,6 +412,74 @@ class SqlAlchemyRecommendationRepository:
             if role in {"top", "dress"}:
                 outfit_map[key] = str(item_id)
         return outfit_map
+
+    # --- V4 Outfit Calendar ---------------------------------------------
+
+    async def add_outfit_plan(self, plan: OutfitPlan) -> OutfitPlan:
+        self.session.add(plan)
+        await self.session.flush()
+        return plan
+
+    async def get_outfit_plan_for_user(
+        self, plan_id: uuid.UUID, user_id: uuid.UUID
+    ) -> OutfitPlan | None:
+        return cast(
+            OutfitPlan | None,
+            await self.session.scalar(
+                select(OutfitPlan).where(
+                    OutfitPlan.id == plan_id, OutfitPlan.user_id == user_id
+                )
+            ),
+        )
+
+    async def list_plans_in_range(
+        self,
+        user_id: uuid.UUID,
+        start: date,
+        end: date,
+        status: str = "planned",
+    ) -> list[OutfitPlan]:
+        result = await self.session.scalars(
+            select(OutfitPlan)
+            .where(
+                OutfitPlan.user_id == user_id,
+                OutfitPlan.status == status,
+                OutfitPlan.planned_date >= start,
+                OutfitPlan.planned_date <= end,
+            )
+            .order_by(OutfitPlan.planned_date)
+        )
+        return list(result)
+
+    async def list_wear_history_in_range(
+        self, user_id: uuid.UUID, start: date, end: date
+    ) -> list[WearHistory]:
+        result = await self.session.scalars(
+            select(WearHistory)
+            .where(
+                WearHistory.user_id == user_id,
+                WearHistory.worn_date >= start,
+                WearHistory.worn_date <= end,
+            )
+            .order_by(WearHistory.worn_date)
+        )
+        return list(result)
+
+    async def update_outfit_plan(self, plan: OutfitPlan) -> OutfitPlan:
+        self.session.add(plan)
+        await self.session.flush()
+        return plan
+
+    async def get_outfit_summaries(
+        self, outfit_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, Outfit]:
+        """Batch-load outfits for calendar cells, avoiding N+1."""
+        if not outfit_ids:
+            return {}
+        result = await self.session.scalars(
+            select(Outfit).where(Outfit.id.in_(outfit_ids))
+        )
+        return {o.id: o for o in result}
 
 
 def _time_in_next_window(target: time, start: time, minutes: int) -> bool:
