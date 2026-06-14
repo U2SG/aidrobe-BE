@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     )
     QWEN_TASK_POLL_BASE_URL: str = "https://dashscope.aliyuncs.com/api/v1/tasks"
     IMAGEEDIT_TIMEOUT_SECONDS: float = 60.0
+    # M18 — OCR pipeline for receipt / order-screenshot / shopping-email imports.
+    # Mirrors VISION_PROVIDER: "fake" (default, no key) or "qwen" (Qwen-VL OCR).
+    OCR_PROVIDER: str = "fake"
+    OCR_TIMEOUT_SECONDS: float = 15.0
+    QWEN_OCR_MODEL: str = "qwen-vl-ocr"
+    QWEN_OCR_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     S3_BUCKET: str | None = None
     S3_REGION: str = "us-east-1"
     S3_ENDPOINT_URL: str | None = None
@@ -191,6 +197,10 @@ class Settings(BaseSettings):
     # rollout can't burn poppler/storage cost. Requires the poppler system
     # binary (pdf2image dep) on the worker host to actually run.
     ENABLE_PDF_STYLE_INGEST: bool = False
+
+    # M18 — receipt / order-screenshot / shopping-email import pipeline.
+    # When False, POST /v1/import-tasks with receipt input_types returns 400.
+    ENABLE_RECEIPT_IMPORT: bool = False
 
     # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
     # every authenticated user is admin (DX); empty in prod means the admin

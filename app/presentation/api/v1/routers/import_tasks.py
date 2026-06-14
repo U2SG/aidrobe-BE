@@ -8,7 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.import_tasks.confirm_import import ConfirmImageImportTask
 from app.application.import_tasks.create_import import CreateImageImportTask
 from app.common import error_codes
+from app.common.enums import InputType
 from app.common.exceptions import FriendlyException
+from app.config.settings import get_settings
 from app.infrastructure.cache.client import get_redis_client, invalidate_daily_recommendation_cache
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.user import User
@@ -33,6 +35,12 @@ from app.presentation.api.v1.schemas.import_tasks import (
     ImportTaskResponse,
 )
 from app.presentation.api.v1.schemas.wardrobe import ConfirmImportRequest, ConfirmImportResponse
+
+_RECEIPT_INPUT_TYPES = {
+    InputType.RECEIPT_SCREENSHOT.value,
+    InputType.ORDER_SCREENSHOT.value,
+    InputType.SHOPPING_EMAIL.value,
+}
 
 router = APIRouter(prefix="/v1/import-tasks", tags=["import-tasks"])
 
@@ -66,6 +74,14 @@ async def create_import_task(
             error_codes.VALIDATION_ERROR,
             "image_url or source_url is required",
             status_code=422,
+        )
+
+    # M18 — receipt / order / email input_types require the feature flag.
+    if payload.input_type in _RECEIPT_INPUT_TYPES and not get_settings().ENABLE_RECEIPT_IMPORT:
+        raise FriendlyException(
+            error_codes.VALIDATION_ERROR,
+            "receipt import is not enabled",
+            status_code=400,
         )
 
     repository = SqlAlchemyImportTaskRepository(session)
@@ -105,6 +121,8 @@ async def confirm_import_task(
         location=payload.location,
         size_label=payload.size_label,
         fit_status=payload.fit_status,
+        purchase_price=payload.purchase_price,
+        purchase_date=payload.purchase_date,
     )
     await SqlAlchemyOperationLogRepository(session).add(
         current_user.id,

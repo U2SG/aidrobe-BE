@@ -28,6 +28,9 @@ class InputType(StrEnum):
     SCREENSHOT = "screenshot"
     IMAGE_BATCH = "image_batch"
     SHARED_CONTENT = "shared_content"
+    RECEIPT_SCREENSHOT = "receipt_screenshot"
+    ORDER_SCREENSHOT = "order_screenshot"
+    SHOPPING_EMAIL = "shopping_email"
 
 
 class SourceType(StrEnum):

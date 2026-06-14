@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -13,6 +14,9 @@ class ConfirmImportRequest(BaseModel):
     location: str | None = Field(default=None, max_length=120)
     size_label: str | None = Field(default=None, max_length=32)
     fit_status: str | None = None
+    # M18 — client may override the OCR-auto-filled values from the candidate.
+    purchase_price: Decimal | None = Field(default=None, ge=0)
+    purchase_date: date | None = None
 
 
 class ConfirmImportResponse(BaseModel):

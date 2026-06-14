@@ -10,6 +10,7 @@ except ImportError:
 
 from app.application.ports.embedding import EmbeddingPort
 from app.application.ports.llm import LlmPort
+from app.application.ports.ocr import OcrPort
 from app.application.ports.weather import WeatherPort
 from app.config.settings import get_settings
 from app.infrastructure.cache.client import get_redis_client
@@ -80,6 +81,24 @@ def image_generation_service() -> FakeImageGeneration | WanxImageGeneration:
     if settings.VISION_PROVIDER == "qwen":
         return WanxImageGeneration(settings)
     return FakeImageGeneration()
+
+
+def ocr_service() -> OcrPort:
+    """M18 — OCR provider for receipt / order-screenshot / shopping-email imports.
+
+    Mirrors ``vision_service``: ``fake`` in dev/test (no key required), ``qwen``
+    for the real Qwen-VL OCR endpoint. Lazy-imported so the optional providers
+    are only loaded when selected.
+    """
+    from app.infrastructure.ocr.fake_ocr import FakeOcr
+    from app.infrastructure.ocr.qwen_ocr import QwenOcr
+
+    settings = get_settings()
+    if settings.OCR_PROVIDER == "fake":
+        return FakeOcr()
+    if settings.OCR_PROVIDER == "qwen":
+        return QwenOcr(settings)
+    raise ValueError(f"Unsupported OCR provider: {settings.OCR_PROVIDER}")
 
 
 def vision_rate_limiter() -> InMemoryVisionRateLimiter:
