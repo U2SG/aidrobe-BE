@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     # to roll back scoring).
     ENABLE_TODAY_CONTEXT: bool = False
     ENABLE_TODAY_REFRESH: bool = False
+    # M15 Ask Aidrobe (LLM Q&A). Off by default; data persists regardless of
+    # the flag, the flag only gates endpoint exposure (503 when off). Pair
+    # with LLM_PROVIDER (qwen/openai) and ENABLE_COST_GUARD for quotas.
+    ENABLE_ASK_AIDROBE: bool = False
     # Total daily_recommendations rows allowed per (user, date), inclusive
     # of the original background-generated rev-1. Enforced when
     # ENABLE_TODAY_REFRESH=True.

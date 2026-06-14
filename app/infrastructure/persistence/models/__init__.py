@@ -1,3 +1,4 @@
+from app.infrastructure.persistence.models.ask_session import AskSession
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.audit_log import AuditLog
 from app.infrastructure.persistence.models.base import Base
@@ -21,6 +22,7 @@ from app.infrastructure.persistence.models.user import User, UserSession, UserSe
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 
 __all__ = [
+    "AskSession",
     "AsyncJob",
     "AuditLog",
     "Base",
