@@ -18,6 +18,7 @@ from app.application.outfits.plan import (
     CreateOutfitPlan,
     GetOutfitCalendar,
     MarkPlanWorn,
+    OutfitPlanResult,
     ReschedulePlan,
 )
 from app.common import error_codes
@@ -34,7 +35,7 @@ from app.presentation.api.v1.schemas.outfit_plan import (
     CalendarCell,
     CalendarDayResponse,
     CreateOutfitPlanRequest,
-    OutfitCalendarResponse,
+    OutfitPlanCalendarResponse,
     OutfitPlanResponse,
     UpdateOutfitPlanRequest,
     WearPlanResponse,
@@ -53,17 +54,17 @@ def _gate() -> None:
 
 
 # /calendar registered before /{outfit_plan_id} to avoid path-param shadowing.
-@router.get("/calendar", response_model=OutfitCalendarResponse)
+@router.get("/calendar", response_model=OutfitPlanCalendarResponse)
 async def get_calendar(
     start: date,
     end: date,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     current_user: Annotated[User, Depends(get_current_user)],
-) -> OutfitCalendarResponse:
+) -> OutfitPlanCalendarResponse:
     _gate()
     repo = SqlAlchemyRecommendationRepository(session)
     days = await GetOutfitCalendar(repo).execute(current_user.id, start, end)
-    return OutfitCalendarResponse(
+    return OutfitPlanCalendarResponse(
         days=[
             CalendarDayResponse(
                 date=day.cell_date,
@@ -140,29 +141,33 @@ async def update_plan(
     existing = await repo.get_outfit_plan_for_user(outfit_plan_id, user_id)
     if existing is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Plan not found", status_code=404)
-    plan = existing
     # Reschedule (planned_date) and cancel (status) may arrive together — apply both.
+    # Keep result as OutfitPlanResult throughout to avoid ORM/dataclass type mix.
+    result: OutfitPlanResult | None = None
     try:
         if payload.planned_date is not None:
-            plan = await ReschedulePlan(repo).execute(
+            result = await ReschedulePlan(repo).execute(
                 outfit_plan_id, user_id, payload.planned_date
             )
         if payload.status == "cancelled":
-            plan = await CancelPlan(repo).execute(outfit_plan_id, user_id)
+            result = await CancelPlan(repo).execute(outfit_plan_id, user_id)
         elif payload.status == "planned":
-            plan.status = "planned"
-            plan = await repo.update_outfit_plan(plan)
+            existing.status = "planned"
+            orm_plan = await repo.update_outfit_plan(existing)
+            result = OutfitPlanResult.from_model(orm_plan)
     except IntegrityError as exc:
         raise FriendlyException(
             error_codes.STATE_CONFLICT,
             "This outfit is already planned for that date",
             status_code=409,
         ) from exc
+    # If neither field was provided, reflect current state unchanged.
+    final = result if result is not None else OutfitPlanResult.from_model(existing)
     return OutfitPlanResponse(
-        outfit_plan_id=plan.id,
-        outfit_id=plan.outfit_id,
-        planned_date=plan.planned_date,
-        status=plan.status,
+        outfit_plan_id=final.id,
+        outfit_id=final.outfit_id,
+        planned_date=final.planned_date,
+        status=final.status,
     )
 
 
@@ -174,10 +179,10 @@ async def mark_worn(
 ) -> WearPlanResponse:
     _gate()
     repo = SqlAlchemyRecommendationRepository(session)
-    wear_history = await MarkPlanWorn(repo).execute(outfit_plan_id, current_user.id)
+    wear_result = await MarkPlanWorn(repo).execute(outfit_plan_id, current_user.id)
     return WearPlanResponse(
         outfit_plan_id=outfit_plan_id,
-        wear_history_id=wear_history.id,
-        worn_date=wear_history.worn_date,
+        wear_history_id=wear_result.wear_history_id,
+        worn_date=wear_result.worn_date,
         status="cancelled",
     )

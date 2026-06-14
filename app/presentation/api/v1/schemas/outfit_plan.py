@@ -48,5 +48,5 @@ class CalendarDayResponse(BaseModel):
     cells: list[CalendarCell]
 
 
-class OutfitCalendarResponse(BaseModel):
+class OutfitPlanCalendarResponse(BaseModel):
     days: list[CalendarDayResponse]

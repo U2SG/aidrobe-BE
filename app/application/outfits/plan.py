@@ -8,15 +8,44 @@ cancels the plan — wear logic is never re-implemented here.
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 
 from app.application.outfits.wear import WearOutfit
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
-from app.infrastructure.persistence.models.recommendation import OutfitPlan, WearHistory
+from app.infrastructure.persistence.models.recommendation import OutfitPlan
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
+
+
+@dataclass(frozen=True)
+class OutfitPlanResult:
+    id: uuid.UUID
+    user_id: uuid.UUID
+    outfit_id: uuid.UUID
+    planned_date: date
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_model(cls, plan: OutfitPlan) -> "OutfitPlanResult":
+        return cls(
+            id=plan.id,
+            user_id=plan.user_id,
+            outfit_id=plan.outfit_id,
+            planned_date=plan.planned_date,
+            status=plan.status,
+            created_at=plan.created_at,
+            updated_at=plan.updated_at,
+        )
+
+
+@dataclass(frozen=True)
+class WearHistoryResult:
+    wear_history_id: uuid.UUID
+    worn_date: date
 
 
 @dataclass
@@ -51,7 +80,7 @@ class CreateOutfitPlan:
 
     async def execute(
         self, user_id: uuid.UUID, outfit_id: uuid.UUID, planned_date: date
-    ) -> OutfitPlan:
+    ) -> OutfitPlanResult:
         outfit = await self.repository.get_outfit_for_user(outfit_id, user_id)
         if outfit is None:
             raise FriendlyException(error_codes.NOT_FOUND, "Outfit not found", status_code=404)
@@ -61,7 +90,8 @@ class CreateOutfitPlan:
             planned_date=planned_date,
             status="planned",
         )
-        return await self.repository.add_outfit_plan(plan)
+        orm_plan = await self.repository.add_outfit_plan(plan)
+        return OutfitPlanResult.from_model(orm_plan)
 
 
 class ReschedulePlan:
@@ -70,31 +100,33 @@ class ReschedulePlan:
 
     async def execute(
         self, plan_id: uuid.UUID, user_id: uuid.UUID, planned_date: date
-    ) -> OutfitPlan:
+    ) -> OutfitPlanResult:
         plan = await self.repository.get_outfit_plan_for_user(plan_id, user_id)
         if plan is None:
             raise FriendlyException(error_codes.NOT_FOUND, "Plan not found", status_code=404)
         plan.planned_date = planned_date
-        return await self.repository.update_outfit_plan(plan)
+        orm_plan = await self.repository.update_outfit_plan(plan)
+        return OutfitPlanResult.from_model(orm_plan)
 
 
 class CancelPlan:
     def __init__(self, repository: SqlAlchemyRecommendationRepository) -> None:
         self.repository = repository
 
-    async def execute(self, plan_id: uuid.UUID, user_id: uuid.UUID) -> OutfitPlan:
+    async def execute(self, plan_id: uuid.UUID, user_id: uuid.UUID) -> OutfitPlanResult:
         plan = await self.repository.get_outfit_plan_for_user(plan_id, user_id)
         if plan is None:
             raise FriendlyException(error_codes.NOT_FOUND, "Plan not found", status_code=404)
         plan.status = "cancelled"
-        return await self.repository.update_outfit_plan(plan)
+        orm_plan = await self.repository.update_outfit_plan(plan)
+        return OutfitPlanResult.from_model(orm_plan)
 
 
 class MarkPlanWorn:
     def __init__(self, repository: SqlAlchemyRecommendationRepository) -> None:
         self.repository = repository
 
-    async def execute(self, plan_id: uuid.UUID, user_id: uuid.UUID) -> WearHistory:
+    async def execute(self, plan_id: uuid.UUID, user_id: uuid.UUID) -> WearHistoryResult:
         plan = await self.repository.get_outfit_plan_for_user(plan_id, user_id)
         if plan is None:
             raise FriendlyException(error_codes.NOT_FOUND, "Plan not found", status_code=404)
@@ -105,7 +137,10 @@ class MarkPlanWorn:
         )
         plan.status = "cancelled"
         await self.repository.update_outfit_plan(plan)
-        return wear_history
+        return WearHistoryResult(
+            wear_history_id=wear_history.id,
+            worn_date=wear_history.worn_date,
+        )
 
 
 class GetOutfitCalendar:
