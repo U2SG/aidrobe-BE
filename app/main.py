@@ -26,6 +26,7 @@ from app.presentation.api.v1.routers import (
     packing_list,
     recommendations,
     settings,
+    shopping,
     style,
     uploads,
     wardrobe,
@@ -100,6 +101,7 @@ def create_app() -> FastAPI:
     app.include_router(outfit_visual.router)
     app.include_router(ootd_posters.router)
     app.include_router(packing_list.router)
+    app.include_router(shopping.router)
     app.include_router(admin.router)
     app.include_router(account.router)
     return app
