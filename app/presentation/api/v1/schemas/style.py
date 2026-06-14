@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AddInspirationRequest(BaseModel):
@@ -48,6 +48,13 @@ class PdfStyleSourceRequest(BaseModel):
     file_url: str = Field(min_length=1, max_length=1024)
     input_type: str = Field(default="pdf_magazine", pattern="^pdf_magazine$")
     title: str | None = Field(default=None, max_length=255)
+
+    @field_validator("file_url")
+    @classmethod
+    def validate_file_url_scheme(cls, v: str | None) -> str | None:
+        if v is not None and not v.startswith(("http://", "https://")):
+            raise ValueError("file_url must be http or https")
+        return v
 
 
 class PdfStyleSourceResponse(BaseModel):

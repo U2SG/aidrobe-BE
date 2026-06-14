@@ -8,9 +8,10 @@ class AddPdfStyleSource:
     """M19 — create the parent `UserStyleProfile` row for a PDF magazine ingest.
 
     The row's id is the user-visible `source_id`; the PDF URL is stored in
-    `source_url`. Per-page child rows are created later by `pdf_worker`. The row
-    is persisted regardless of the feature flag (exposure is gated at the
-    router) so flipping the flag back is a clean rollback."""
+    `source_url`. Per-page child rows are created later by `pdf_worker`.
+    Note: this use-case is only called when the router has already confirmed
+    ENABLE_PDF_STYLE_INGEST=true — the flag gates the entire request, so no row
+    is created when the flag is off."""
 
     def __init__(self, repository: SqlAlchemyStyleRepository) -> None:
         self.repository = repository

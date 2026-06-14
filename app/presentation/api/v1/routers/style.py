@@ -109,11 +109,13 @@ async def add_pdf_source(
 ) -> ResponseModel[PdfStyleSourceResponse]:
     """M19 — async PDF / magazine multi-page style ingest.
 
-    The parent row is always persisted; the async ingest is gated by
-    `ENABLE_PDF_STYLE_INGEST` (kill switch — default off so a bad rollout can't
-    burn rasterize/storage cost). `estimated_pages` is best-effort 0 at enqueue:
-    the real count is only known once the worker downloads and rasterizes the
-    PDF, and blocking the request on an OSS fetch would defeat the async design.
+    `ENABLE_PDF_STYLE_INGEST` is an upload-ingest kill switch (default off).
+    Flag=off → gate-and-reject (no row created). Convention: data-always-persists
+    applies to user-triggered flags (ENABLE_TODAY_REFRESH etc.), not to this
+    upload-ingest kill-switch where creating a row with no processing is meaningless.
+    `estimated_pages` is best-effort 0 at enqueue: the real count is only known
+    once the worker downloads and rasterizes the PDF, and blocking the request on
+    an OSS fetch would defeat the async design.
     """
     if not settings.ENABLE_PDF_STYLE_INGEST:
         raise FriendlyException(

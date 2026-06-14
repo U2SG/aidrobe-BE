@@ -93,11 +93,26 @@ async def enqueue_pdf_ingest(
     )
 
 
+MAX_PDF_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
 async def _download_pdf(url: str) -> bytes:
+    from app.infrastructure.importers.link_parser import _is_safe_url
+
+    if not _is_safe_url(url):
+        raise ValueError(f"unsafe file_url blocked: {url}")
+
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return resp.content
+        async with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in resp.aiter_bytes(chunk_size=65536):
+                total += len(chunk)
+                if total > MAX_PDF_BYTES:
+                    raise ValueError(f"PDF exceeds size limit ({MAX_PDF_BYTES // 1024 // 1024} MB)")
+                chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _rasterize_pdf(pdf_bytes: bytes, *, dpi: int = RENDER_DPI) -> list[bytes]:
