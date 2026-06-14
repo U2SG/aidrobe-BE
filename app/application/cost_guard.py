@@ -57,6 +57,7 @@ def _limit_for(settings: Settings, job_type: str) -> int | None:
         "llm_ask": settings.LLM_DAILY_TOKEN_LIMIT,
         "ocr_receipt": settings.OCR_DAILY_CALL_LIMIT,
         "tryon": settings.TRYON_DAILY_CALL_LIMIT,
+        "ootd_poster": settings.OOTD_POSTER_DAILY_CALL_LIMIT,
     }.get(job_type)
 
 
@@ -219,7 +220,7 @@ async def cost_summary_today(
     render a stable list."""
     settings = get_settings()
     out: dict[str, dict[str, int]] = {}
-    for job_type in ("llm_ask", "ocr_receipt", "tryon"):
+    for job_type in ("llm_ask", "ocr_receipt", "tryon", "ootd_poster"):
         limit = _limit_for(settings, job_type)
         used = await usage_today(session, user_id, job_type)
         out[job_type] = {
