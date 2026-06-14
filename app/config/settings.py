@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     QWEN_API_KEY: str | None = None
     QWEN_VISION_MODEL: str = "qwen-vl-max"
     QWEN_VISION_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    # wanx image edit (V4 OOTD poster) — async ImageSynthesis API, same
+    # DashScope key as vision. Background-only mask repaint keeps the
+    # subject (person + clothes) pixel-locked.
+    QWEN_IMAGEEDIT_MODEL: str = "wanx2.1-imageedit"
+    QWEN_IMAGEEDIT_BASE_URL: str = (
+        "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2image/image-synthesis"
+    )
+    QWEN_TASK_POLL_BASE_URL: str = "https://dashscope.aliyuncs.com/api/v1/tasks"
+    IMAGEEDIT_TIMEOUT_SECONDS: float = 60.0
     # M18 — OCR pipeline for receipt / order-screenshot / shopping-email imports.
     # Mirrors VISION_PROVIDER: "fake" (default, no key) or "qwen" (Qwen-VL OCR).
     OCR_PROVIDER: str = "fake"
@@ -96,6 +105,10 @@ class Settings(BaseSettings):
     # to roll back scoring).
     ENABLE_TODAY_CONTEXT: bool = False
     ENABLE_TODAY_REFRESH: bool = False
+    # M15 Ask Aidrobe (LLM Q&A). Off by default; data persists regardless of
+    # the flag, the flag only gates endpoint exposure (503 when off). Pair
+    # with LLM_PROVIDER (qwen/openai) and ENABLE_COST_GUARD for quotas.
+    ENABLE_ASK_AIDROBE: bool = False
     # Total daily_recommendations rows allowed per (user, date), inclusive
     # of the original background-generated rev-1. Enforced when
     # ENABLE_TODAY_REFRESH=True.
@@ -151,6 +164,39 @@ class Settings(BaseSettings):
     LLM_DAILY_TOKEN_LIMIT: int = 50_000
     OCR_DAILY_CALL_LIMIT: int = 100
     TRYON_DAILY_CALL_LIMIT: int = 5
+    OOTD_POSTER_DAILY_CALL_LIMIT: int = 5
+
+    # OOTD poster (V4): LLM-generated stylized poster from a user's real
+    # wear selfie. Background-only repaint via wanx mask edit; clothes stay
+    # pixel-locked. Off by default; each call requires explicit user consent
+    # (body image leaves to a third-party model). Data persists regardless of
+    # the flag; the flag only gates exposure.
+    ENABLE_OOTD_POSTER: bool = False
+
+    # V4 Outfit Calendar — plan/calendar endpoints. Off by default; plans
+    # persist regardless of the flag, the flag only gates exposure.
+    ENABLE_OUTFIT_CALENDAR: bool = False
+
+    # M16 Travel Packing List — generate/edit endpoints. Off by default;
+    # lists persist regardless of the flag, the flag only gates exposure.
+    ENABLE_PACKING_LIST: bool = False
+
+    # V4 M21 — half-year / annual wardrobe report (Spotify-Wrapped style).
+    # Pure aggregation over existing wear/item data; off by default. The flag
+    # only gates exposure of GET /v1/insights/reports/{period} (503 when off).
+    ENABLE_WARDROBE_REPORT: bool = False
+
+    # V4 M17 Shopping Sense-Check — purchase evaluation endpoints. Off by
+    # default; sense-check history persists regardless of the flag, the flag
+    # only gates exposure.
+    ENABLE_SENSE_CHECK: bool = False
+
+    # V4 M19 — PDF / magazine multi-page style ingest. When False, POST
+    # /v1/style/sources returns 503 (kill switch). The parent row is still
+    # persisted regardless; only the async rasterize/ingest is gated so a bad
+    # rollout can't burn poppler/storage cost. Requires the poppler system
+    # binary (pdf2image dep) on the worker host to actually run.
+    ENABLE_PDF_STYLE_INGEST: bool = False
 
     # M18 — receipt / order-screenshot / shopping-email import pipeline.
     # When False, POST /v1/import-tasks with receipt input_types returns 400.

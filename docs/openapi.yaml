@@ -1230,6 +1230,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/style/sources:
+    post:
+      tags:
+      - style
+      summary: Add Pdf Source
+      description: 'M19 — async PDF / magazine multi-page style ingest.
+
+
+        The parent row is always persisted; the async ingest is gated by
+
+        `ENABLE_PDF_STYLE_INGEST` (kill switch — default off so a bad rollout can''t
+
+        burn rasterize/storage cost). `estimated_pages` is best-effort 0 at enqueue:
+
+        the real count is only known once the worker downloads and rasterizes the
+
+        PDF, and blocking the request on an OSS fetch would defeat the async design.'
+      operationId: add_pdf_source_v1_style_sources_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PdfStyleSourceRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_PdfStyleSourceResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/style/inspirations/{inspiration_id}:
     delete:
       tags:
@@ -1557,6 +1611,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/insights/reports/{period}:
+    get:
+      tags:
+      - insights
+      summary: Wardrobe Period Report
+      description: 'Spotify-Wrapped-style half-year / annual report. ``period`` like
+        ``2026-H1``.
+
+
+        Off by default; returns 503 when ``ENABLE_WARDROBE_REPORT`` is false. Malformed
+
+        period → 422 (VALIDATION_ERROR) from the aggregation layer.'
+      operationId: wardrobe_period_report_v1_insights_reports__period__get
+      parameters:
+      - name: period
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Period
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WardrobeReportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/outfit-history:
     get:
       tags:
@@ -1655,7 +1758,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OutfitCalendarResponse'
+                $ref: '#/components/schemas/app__presentation__api__v1__schemas__outfit_history__OutfitCalendarResponse'
         '422':
           description: Validation Error
           content:
@@ -1754,6 +1857,190 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-plans/calendar:
+    get:
+      tags:
+      - outfit-plan
+      summary: Get Calendar
+      operationId: get_calendar_v1_outfit_plans_calendar_get
+      parameters:
+      - name: start
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Start
+      - name: end
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: End
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/app__presentation__api__v1__schemas__outfit_plan__OutfitCalendarResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-plans:
+    post:
+      tags:
+      - outfit-plan
+      summary: Create Plan
+      operationId: create_plan_v1_outfit_plans_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOutfitPlanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutfitPlanResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-plans/{outfit_plan_id}:
+    patch:
+      tags:
+      - outfit-plan
+      summary: Update Plan
+      operationId: update_plan_v1_outfit_plans__outfit_plan_id__patch
+      parameters:
+      - name: outfit_plan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Outfit Plan Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOutfitPlanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutfitPlanResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-plans/{outfit_plan_id}/wear:
+    post:
+      tags:
+      - outfit-plan
+      summary: Mark Worn
+      operationId: mark_worn_v1_outfit_plans__outfit_plan_id__wear_post
+      parameters:
+      - name: outfit_plan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Outfit Plan Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WearPlanResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/outfit-visual-assets/{asset_id}:
     get:
       tags:
@@ -1834,6 +2121,98 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WardrobeItemImagesResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/shopping/sense-check:
+    post:
+      tags:
+      - shopping
+      summary: Sense Check
+      operationId: sense_check_v1_shopping_sense_check_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SenseCheckRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SenseCheckResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/shopping/history:
+    get:
+      tags:
+      - shopping
+      summary: History
+      operationId: history_v1_shopping_history_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Offset
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SenseCheckHistoryResponse'
         '422':
           description: Validation Error
           content:
@@ -2231,6 +2610,57 @@ components:
       required:
       - items
       title: BatchInspirationResponse
+    CalendarCell:
+      properties:
+        kind:
+          type: string
+          title: Kind
+        outfit:
+          anyOf:
+          - $ref: '#/components/schemas/OutfitSummary'
+          - type: 'null'
+        wear_history_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Wear History Id
+        ootd_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ootd Image Url
+        outfit_plan_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Outfit Plan Id
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      type: object
+      required:
+      - kind
+      title: CalendarCell
+    CalendarDayResponse:
+      properties:
+        date:
+          type: string
+          format: date
+          title: Date
+        cells:
+          items:
+            $ref: '#/components/schemas/CalendarCell'
+          type: array
+          title: Cells
+      type: object
+      required:
+      - date
+      - cells
+      title: CalendarDayResponse
     CandidateItem:
       properties:
         title:
@@ -2434,6 +2864,21 @@ components:
       - input_type
       - source_type
       title: CreateImportTaskRequest
+    CreateOutfitPlanRequest:
+      properties:
+        outfit_id:
+          type: string
+          format: uuid
+          title: Outfit Id
+        planned_date:
+          type: string
+          format: date
+          title: Planned Date
+      type: object
+      required:
+      - outfit_id
+      - planned_date
+      title: CreateOutfitPlanRequest
     DataExportResponse:
       properties:
         job_id:
@@ -2953,18 +3398,6 @@ components:
       - wear_history_id
       - ootd_image_url
       title: OotdUploadResponse
-    OutfitCalendarResponse:
-      properties:
-        dates:
-          items:
-            type: string
-            format: date
-          type: array
-          title: Dates
-      type: object
-      required:
-      - dates
-      title: OutfitCalendarResponse
     OutfitHistoryEntry:
       properties:
         wear_history_id:
@@ -3081,6 +3514,30 @@ components:
       - limit
       - offset
       title: OutfitHistoryResponse
+    OutfitPlanResponse:
+      properties:
+        outfit_plan_id:
+          type: string
+          format: uuid
+          title: Outfit Plan Id
+        outfit_id:
+          type: string
+          format: uuid
+          title: Outfit Id
+        planned_date:
+          type: string
+          format: date
+          title: Planned Date
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - outfit_plan_id
+      - outfit_id
+      - planned_date
+      - status
+      title: OutfitPlanResponse
     OutfitResponse:
       properties:
         outfit_id:
@@ -3235,6 +3692,46 @@ components:
       - asset_id
       - generation_status
       title: OutfitVisualAssetResponse
+    PdfStyleSourceRequest:
+      properties:
+        file_url:
+          type: string
+          maxLength: 1024
+          minLength: 1
+          title: File Url
+        input_type:
+          type: string
+          pattern: ^pdf_magazine$
+          title: Input Type
+          default: pdf_magazine
+        title:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Title
+      type: object
+      required:
+      - file_url
+      title: PdfStyleSourceRequest
+    PdfStyleSourceResponse:
+      properties:
+        source_id:
+          type: string
+          format: uuid
+          title: Source Id
+        status:
+          type: string
+          title: Status
+          default: queued
+        estimated_pages:
+          type: integer
+          title: Estimated Pages
+          default: 0
+      type: object
+      required:
+      - source_id
+      title: PdfStyleSourceResponse
     PresignUploadRequest:
       properties:
         file_name:
@@ -3324,6 +3821,150 @@ components:
       required:
       - refresh_token
       title: RefreshTokenRequest
+    ReportCostPerWear:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          type: string
+          title: Title
+        purchase_price:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Purchase Price
+        wear_count:
+          type: integer
+          title: Wear Count
+        cost_per_wear:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Cost Per Wear
+      type: object
+      required:
+      - item_id
+      - title
+      - purchase_price
+      - wear_count
+      - cost_per_wear
+      title: ReportCostPerWear
+    ReportIdleItem:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          type: string
+          title: Title
+        category:
+          type: string
+          title: Category
+        cover_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cover Image Url
+        last_worn:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Worn
+        idle_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Idle Days
+      type: object
+      required:
+      - item_id
+      - title
+      - category
+      title: ReportIdleItem
+    ReportOutfitCombo:
+      properties:
+        outfit_id:
+          type: string
+          format: uuid
+          title: Outfit Id
+        title:
+          type: string
+          title: Title
+        wear_count:
+          type: integer
+          title: Wear Count
+      type: object
+      required:
+      - outfit_id
+      - title
+      - wear_count
+      title: ReportOutfitCombo
+    ReportStyleTrend:
+      properties:
+        period:
+          type: string
+          title: Period
+        prev_period:
+          type: string
+          title: Prev Period
+        current:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Current
+        previous:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Previous
+        rising:
+          items:
+            type: string
+          type: array
+          title: Rising
+        fading:
+          items:
+            type: string
+          type: array
+          title: Fading
+      type: object
+      required:
+      - period
+      - prev_period
+      - current
+      - previous
+      - rising
+      - fading
+      title: ReportStyleTrend
+    ReportTopItem:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          type: string
+          title: Title
+        category:
+          type: string
+          title: Category
+        cover_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cover Image Url
+        wear_count:
+          type: integer
+          title: Wear Count
+      type: object
+      required:
+      - item_id
+      - title
+      - category
+      - wear_count
+      title: ReportTopItem
     ResponseModel_AuthTokenResponse_:
       properties:
         code:
@@ -3611,6 +4252,22 @@ components:
           - type: 'null'
       type: object
       title: ResponseModel[OutfitResponse]
+    ResponseModel_PdfStyleSourceResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/PdfStyleSourceResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[PdfStyleSourceResponse]
     ResponseModel_PresignUploadResponse_:
       properties:
         code:
@@ -3723,6 +4380,125 @@ components:
           - type: 'null'
       type: object
       title: ResponseModel[WearOutfitResponse]
+    SenseCheckHistoryItem:
+      properties:
+        sense_check_id:
+          type: string
+          format: uuid
+          title: Sense Check Id
+        verdict:
+          type: string
+          title: Verdict
+        reason:
+          type: string
+          title: Reason
+        image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Url
+        source_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Url
+        similar_items:
+          items:
+            $ref: '#/components/schemas/SimilarItemResponse'
+          type: array
+          title: Similar Items
+        wardrobe_gap:
+          items:
+            type: string
+          type: array
+          title: Wardrobe Gap
+        outfit_potential:
+          type: integer
+          title: Outfit Potential
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - sense_check_id
+      - verdict
+      - reason
+      - image_url
+      - source_url
+      - similar_items
+      - wardrobe_gap
+      - outfit_potential
+      - created_at
+      title: SenseCheckHistoryItem
+    SenseCheckHistoryResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/SenseCheckHistoryItem'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: SenseCheckHistoryResponse
+    SenseCheckRequest:
+      properties:
+        image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Url
+        source_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Url
+      type: object
+      title: SenseCheckRequest
+    SenseCheckResponse:
+      properties:
+        verdict:
+          type: string
+          title: Verdict
+        reason:
+          type: string
+          title: Reason
+        similar_items:
+          items:
+            $ref: '#/components/schemas/SimilarItemResponse'
+          type: array
+          title: Similar Items
+        wardrobe_gap:
+          items:
+            type: string
+          type: array
+          title: Wardrobe Gap
+        outfit_potential:
+          type: integer
+          title: Outfit Potential
+      type: object
+      required:
+      - verdict
+      - reason
+      - similar_items
+      - wardrobe_gap
+      - outfit_potential
+      title: SenseCheckResponse
+    SimilarItemResponse:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        similarity:
+          type: number
+          title: Similarity
+      type: object
+      required:
+      - item_id
+      - similarity
+      title: SimilarItemResponse
     StsTokenRequest:
       properties:
         bucket_alias:
@@ -3940,6 +4716,21 @@ components:
           title: Comfort Score
       type: object
       title: UpdateFitRequest
+    UpdateOutfitPlanRequest:
+      properties:
+        planned_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Planned Date
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      type: object
+      title: UpdateOutfitPlanRequest
     UpdateStyleTagsRequest:
       properties:
         tags:
@@ -4298,6 +5089,77 @@ components:
       - offset
       - total
       title: WardrobeListResponse
+    WardrobeReportResponse:
+      properties:
+        period:
+          type: string
+          title: Period
+        label:
+          type: string
+          title: Label
+        start_date:
+          type: string
+          format: date
+          title: Start Date
+        end_date:
+          type: string
+          format: date
+          title: End Date
+        is_empty:
+          type: boolean
+          title: Is Empty
+        total_wears:
+          type: integer
+          title: Total Wears
+        top_items:
+          items:
+            $ref: '#/components/schemas/ReportTopItem'
+          type: array
+          title: Top Items
+        top_combos:
+          items:
+            $ref: '#/components/schemas/ReportOutfitCombo'
+          type: array
+          title: Top Combos
+        color_palette:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Color Palette
+        style_keywords:
+          items:
+            type: string
+          type: array
+          title: Style Keywords
+        style_trend:
+          anyOf:
+          - $ref: '#/components/schemas/ReportStyleTrend'
+          - type: 'null'
+        highest_cost_per_wear:
+          anyOf:
+          - $ref: '#/components/schemas/ReportCostPerWear'
+          - type: 'null'
+        longest_idle_item:
+          anyOf:
+          - $ref: '#/components/schemas/ReportIdleItem'
+          - type: 'null'
+        recommendation_adoption_rate:
+          type: number
+          title: Recommendation Adoption Rate
+      type: object
+      required:
+      - period
+      - label
+      - start_date
+      - end_date
+      - is_empty
+      - total_wears
+      - top_items
+      - top_combos
+      - color_palette
+      - style_keywords
+      - recommendation_adoption_rate
+      title: WardrobeReportResponse
     WearHistoryEntry:
       properties:
         worn_date:
@@ -4337,6 +5199,30 @@ components:
       required:
       - success
       title: WearOutfitResponse
+    WearPlanResponse:
+      properties:
+        outfit_plan_id:
+          type: string
+          format: uuid
+          title: Outfit Plan Id
+        wear_history_id:
+          type: string
+          format: uuid
+          title: Wear History Id
+        worn_date:
+          type: string
+          format: date
+          title: Worn Date
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - outfit_plan_id
+      - wear_history_id
+      - worn_date
+      - status
+      title: WearPlanResponse
     WeatherContextResponse:
       properties:
         temperature_c:
@@ -4358,3 +5244,26 @@ components:
       - rain_probability
       - condition
       title: WeatherContextResponse
+    app__presentation__api__v1__schemas__outfit_history__OutfitCalendarResponse:
+      properties:
+        dates:
+          items:
+            type: string
+            format: date
+          type: array
+          title: Dates
+      type: object
+      required:
+      - dates
+      title: OutfitCalendarResponse
+    app__presentation__api__v1__schemas__outfit_plan__OutfitCalendarResponse:
+      properties:
+        days:
+          items:
+            $ref: '#/components/schemas/CalendarDayResponse'
+          type: array
+          title: Days
+      type: object
+      required:
+      - days
+      title: OutfitCalendarResponse

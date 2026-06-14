@@ -19,9 +19,11 @@ from app.infrastructure.persistence.repositories.user_repo import SqlAlchemyUser
 from app.infrastructure.push.apns_provider import ApnsProvider
 from app.infrastructure.storage.local_storage import LocalObjectStorage
 from app.infrastructure.storage.s3_storage import S3ObjectStorage
+from app.infrastructure.vision.fake_image_gen import FakeImageGeneration
 from app.infrastructure.vision.fake_vision import FakeVision
 from app.infrastructure.vision.qwen_vision import QwenVision
 from app.infrastructure.vision.rate_limit import InMemoryVisionRateLimiter
+from app.infrastructure.vision.wanx_image_gen import WanxImageGeneration
 from app.infrastructure.weather.openweather import OpenWeatherProvider
 from app.infrastructure.weather.qweather import QWeatherProvider
 
@@ -71,6 +73,14 @@ def vision_service() -> FakeVision | QwenVision:
     if settings.VISION_PROVIDER == "qwen":
         return QwenVision(settings)
     raise ValueError(f"Unsupported vision provider: {settings.VISION_PROVIDER}")
+
+
+def image_generation_service() -> FakeImageGeneration | WanxImageGeneration:
+    # Reuse the vision provider switch: qwen → wanx image edit, else fake.
+    settings = get_settings()
+    if settings.VISION_PROVIDER == "qwen":
+        return WanxImageGeneration(settings)
+    return FakeImageGeneration()
 
 
 def ocr_service() -> OcrPort:

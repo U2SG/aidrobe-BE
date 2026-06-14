@@ -14,15 +14,20 @@ from app.jobs.scheduler import create_scheduler
 from app.presentation.api.v1.routers import (
     account,
     admin,
+    ask,
     auth,
     fit,
     health,
     import_tasks,
     insights,
+    ootd_posters,
     outfit_history,
+    outfit_plan,
     outfit_visual,
+    packing_list,
     recommendations,
     settings,
+    shopping,
     style,
     uploads,
     wardrobe,
@@ -93,9 +98,14 @@ def create_app() -> FastAPI:
     app.include_router(style.router)
     app.include_router(insights.router)
     app.include_router(outfit_history.router)
+    app.include_router(outfit_plan.router)
     app.include_router(outfit_visual.router)
+    app.include_router(ootd_posters.router)
+    app.include_router(packing_list.router)
+    app.include_router(shopping.router)
     app.include_router(admin.router)
     app.include_router(account.router)
+    app.include_router(ask.router)
     return app
 
 

@@ -128,6 +128,40 @@ class OutfitFeedback(UUIDPrimaryKeyMixin, Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class OutfitPlan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """V4 Outfit Calendar — a planned wear of an existing outfit on a date.
+
+    A day can hold multiple plans (different outfits). `status` soft-cancels
+    (planned → cancelled) rather than deleting, so the calendar can distinguish
+    a never-planned slot from a cancelled one. Marking a plan worn delegates to
+    WearOutfit (which lands WearHistory) and then cancels this row — the
+    calendar's worn cells derive from WearHistory, planned cells from
+    OutfitPlan(status=planned).
+    """
+
+    __tablename__ = "outfit_plan"
+    __table_args__ = (
+        Index("ix_outfit_plan_user_date", "user_id", "planned_date"),
+        UniqueConstraint(
+            "user_id",
+            "outfit_id",
+            "planned_date",
+            name="uq_outfit_plan_user_outfit_date",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    outfit_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("outfits.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    planned_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="planned", server_default="planned"
+    )
+
+
 class WearHistory(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "wear_history"
     __table_args__ = (
