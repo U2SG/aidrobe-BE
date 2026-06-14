@@ -29,8 +29,8 @@ class PackingList(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     destination: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    days: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
-    scenes: Mapped[JsonDict | list[str] | None] = mapped_column(JSONB, nullable=True)
+    days: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    scenes: Mapped[JsonDict | list[str]] = mapped_column(JSONB, nullable=False)
     departure_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     # [{item_id, day, scene, notes}]
     items: Mapped[JsonDict | list[JsonDict] | None] = mapped_column(JSONB, nullable=True)

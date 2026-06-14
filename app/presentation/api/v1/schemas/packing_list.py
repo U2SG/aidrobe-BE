@@ -2,8 +2,9 @@
 
 import uuid
 from datetime import date
+from typing import Annotated
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PackingItem(BaseModel):
@@ -15,7 +16,7 @@ class PackingItem(BaseModel):
 
 class CreatePackingListRequest(BaseModel):
     destination: str | None = None
-    days: int
+    days: Annotated[int, Field(ge=1, le=90)]
     scenes: list[str]
     weather_hint: str | None = None
     departure_date: date | None = None

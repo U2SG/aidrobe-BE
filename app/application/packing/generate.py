@@ -66,9 +66,10 @@ class GeneratePackingList:
 
         candidates = await self.repository.list_candidate_items(user_id)
 
-        # Skip items worn in the last 7 days (relative to now — the spec's
-        # "recently worn" is about real recent use, not the future trip date).
-        since = date.today() - timedelta(days=RECENT_WEAR_DAYS)
+        # Skip items worn in the 7 days before departure — anchored to the trip,
+        # not today, so items packed for a future trip are still available now.
+        anchor = departure_date if departure_date is not None else date.today()
+        since = anchor - timedelta(days=RECENT_WEAR_DAYS)
         recently_worn = await self.repository.recent_worn_item_ids(user_id, since)
 
         by_category: dict[str, list[WardrobeItem]] = {}

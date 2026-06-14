@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.models.packing_list import PackingList
@@ -20,6 +20,7 @@ class SqlAlchemyPackingListRepository:
         return packing_list
 
     async def update(self, packing_list: PackingList) -> PackingList:
+        packing_list.updated_at = func.now()
         await self.session.flush()
         return packing_list
 

@@ -33,8 +33,8 @@ def upgrade() -> None:
         sa.Column("id", sa.UUID(as_uuid=True), nullable=False),
         sa.Column("user_id", sa.UUID(as_uuid=True), nullable=False),
         sa.Column("destination", sa.String(length=120), nullable=True),
-        sa.Column("days", sa.SmallInteger(), nullable=True),
-        sa.Column("scenes", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column("days", sa.SmallInteger(), nullable=False),
+        sa.Column("scenes", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("departure_date", sa.Date(), nullable=True),
         sa.Column("items", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column(
