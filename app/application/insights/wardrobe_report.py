@@ -194,6 +194,7 @@ async def _top_items(
             WearHistory.user_id == user_id,
             WearHistory.worn_date >= w.start,
             WearHistory.worn_date <= w.end,
+            WardrobeItem.deleted_at.is_(None),
         )
         .group_by(
             WardrobeItem.id,
@@ -254,6 +255,7 @@ async def _color_palette(
             WearHistory.user_id == user_id,
             WearHistory.worn_date >= w.start,
             WearHistory.worn_date <= w.end,
+            WardrobeItem.deleted_at.is_(None),
         )
         .group_by(WardrobeItem.color_main)
         .order_by(cnt.desc(), WardrobeItem.color_main)
@@ -280,6 +282,7 @@ async def _style_tag_counts(
             WearHistory.worn_date >= start,
             WearHistory.worn_date <= end,
             WardrobeItem.style_tags.isnot(None),
+            WardrobeItem.deleted_at.is_(None),
         )
     )
     counter: Counter[str] = Counter()
