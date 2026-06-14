@@ -2,6 +2,8 @@ import uuid
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.infrastructure.importers.link_parser import is_safe_url
+
 
 class CreateOotdPosterRequest(BaseModel):
     # Either an explicit selfie URL or a wear-history row to pull it from.
@@ -10,8 +12,8 @@ class CreateOotdPosterRequest(BaseModel):
     @field_validator("ootd_image_url")
     @classmethod
     def validate_url_scheme(cls, v: str | None) -> str | None:
-        if v is not None and not v.startswith(("http://", "https://")):
-            raise ValueError("ootd_image_url must be http or https")
+        if v is not None and not is_safe_url(v):
+            raise ValueError("ootd_image_url must be a safe http or https URL")
         return v
     wear_history_id: uuid.UUID | None = None
     template_id: str = Field(default="minimal", pattern="^(minimal|studio|street)$")
