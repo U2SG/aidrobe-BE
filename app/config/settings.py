@@ -171,6 +171,11 @@ class Settings(BaseSettings):
     # lists persist regardless of the flag, the flag only gates exposure.
     ENABLE_PACKING_LIST: bool = False
 
+    # V4 M21 — half-year / annual wardrobe report (Spotify-Wrapped style).
+    # Pure aggregation over existing wear/item data; off by default. The flag
+    # only gates exposure of GET /v1/insights/reports/{period} (503 when off).
+    ENABLE_WARDROBE_REPORT: bool = False
+
     # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
     # every authenticated user is admin (DX); empty in prod means the admin
     # surface is locked off. This is intentional so a misconfigured prod
