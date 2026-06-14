@@ -13,6 +13,7 @@ dependencies = [
     "fastapi[standard]>=0.115.0",
     "httpx[http2]>=0.27.0",
     "open-clip-torch>=2.24.0",
+    "pdf2image>=1.17.0",
     "pillow>=10.0.0",
     "pyjwt[crypto]>=2.8.0",
     "pydantic-settings>=2.4.0",
