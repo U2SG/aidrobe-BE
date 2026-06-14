@@ -7,6 +7,7 @@ from app.infrastructure.persistence.models.image_job import ImageProcessingJob
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.operation_log import OperationLog
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
+from app.infrastructure.persistence.models.packing_list import PackingList
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
@@ -14,6 +15,7 @@ from app.infrastructure.persistence.models.recommendation import (
     OutfitItem,
     WearHistory,
 )
+from app.infrastructure.persistence.models.shopping import ShoppingSenseCheck
 from app.infrastructure.persistence.models.style import UserStyleProfile
 from app.infrastructure.persistence.models.user import User, UserSession, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
@@ -32,6 +34,8 @@ __all__ = [
     "Outfit",
     "OutfitFeedback",
     "OutfitItem",
+    "PackingList",
+    "ShoppingSenseCheck",
     "User",
     "UserSession",
     "UserSettings",
