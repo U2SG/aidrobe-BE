@@ -24,7 +24,7 @@ import httpx
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.importers.link_parser import BROWSER_HEADERS
+from app.infrastructure.importers.link_parser import BROWSER_HEADERS, is_safe_url
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.workers._visual_asset_runtime import (
     VisualAssetSnapshot,
@@ -73,6 +73,8 @@ async def enqueue_ootd_poster(
 
 
 async def _download_bytes(url: str) -> bytes:
+    if not is_safe_url(url):
+        raise ValueError(f"unsafe url blocked: {url}")
     async with httpx.AsyncClient(timeout=30, headers=BROWSER_HEADERS) as client:
         resp = await client.get(url, follow_redirects=True)
         resp.raise_for_status()
