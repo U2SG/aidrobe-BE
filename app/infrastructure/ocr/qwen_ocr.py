@@ -1,6 +1,6 @@
 import base64
 import json
-from typing import Any, cast
+from typing import Any
 
 import httpx
 
@@ -97,7 +97,9 @@ class QwenOcr:
         text = content.strip()
         if text.startswith("```"):
             text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        data = cast(dict[str, Any], json.loads(text))
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            raise ValueError(f"OCR response must be a JSON object, got {type(data).__name__}")
         if "title" not in data:
             raise ValueError("OCR response missing title")
         return data
