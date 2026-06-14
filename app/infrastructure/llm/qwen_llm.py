@@ -1,9 +1,12 @@
 from typing import Any
 
 import httpx
+import structlog
 
 from app.application.ports.llm import LlmAnswer
 from app.config.settings import Settings
+
+logger = structlog.get_logger(__name__)
 
 
 class QwenLlm:
@@ -29,6 +32,9 @@ class QwenLlm:
         return str(response.json()["choices"][0]["message"]["content"])
 
     async def ask(self, system_prompt: str, question: str) -> LlmAnswer:
+        if not self.settings.QWEN_API_KEY:
+            return LlmAnswer(text="", tokens_used=0)
+
         payload = {
             "model": self.settings.QWEN_LLM_MODEL,
             "messages": [
@@ -38,16 +44,20 @@ class QwenLlm:
             "temperature": 0.4,
         }
         headers = {"Authorization": f"Bearer {self.settings.QWEN_API_KEY}"}
-        async with httpx.AsyncClient(timeout=self.settings.LLM_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                self.settings.QWEN_LLM_BASE_URL,
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-        data = response.json()
-        text = str(data["choices"][0]["message"]["content"])
-        return LlmAnswer(text=text, tokens_used=_extract_total_tokens(data))
+        try:
+            async with httpx.AsyncClient(timeout=self.settings.LLM_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    self.settings.QWEN_LLM_BASE_URL,
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+            data = response.json()
+            text = str(data["choices"][0]["message"]["content"])
+            return LlmAnswer(text=text, tokens_used=_extract_total_tokens(data))
+        except Exception as exc:
+            logger.warning("qwen_llm_ask_failed", error=str(exc))
+            return LlmAnswer(text="", tokens_used=0)
 
 
 def _extract_total_tokens(data: dict[str, Any]) -> int:

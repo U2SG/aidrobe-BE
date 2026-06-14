@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import DateTime, ForeignKey, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
@@ -24,7 +25,7 @@ class AskSession(UUIDPrimaryKeyMixin, Base):
     )
     question: Mapped[str] = mapped_column(Text, nullable=False)
     answer: Mapped[str | None] = mapped_column(Text, nullable=True)
-    item_refs: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    item_refs: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
     context: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
     tokens_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

@@ -34,7 +34,7 @@ router = APIRouter(prefix="/v1/ask", tags=["ask"])
 def _gate() -> None:
     if not get_settings().ENABLE_ASK_AIDROBE:
         raise FriendlyException(
-            error_codes.FORBIDDEN,
+            error_codes.INTERNAL_ERROR,
             "Ask Aidrobe is not enabled",
             status_code=503,
         )

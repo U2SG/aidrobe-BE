@@ -61,14 +61,18 @@ class OpenAiLlm:
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            response = await client.post(self.RESPONSES_URL, headers=headers, json=payload)
-            response.raise_for_status()
-        data = response.json()
-        return LlmAnswer(
-            text=_extract_output_text(data).strip(),
-            tokens_used=_extract_total_tokens(data),
-        )
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(self.RESPONSES_URL, headers=headers, json=payload)
+                response.raise_for_status()
+            data = response.json()
+            return LlmAnswer(
+                text=_extract_output_text(data).strip(),
+                tokens_used=_extract_total_tokens(data),
+            )
+        except Exception as exc:
+            logger.warning("openai_llm_ask_failed", error=str(exc))
+            return LlmAnswer(text="", tokens_used=0)
 
 
 def _extract_output_text(data: dict[str, Any]) -> str:
