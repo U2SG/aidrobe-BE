@@ -28,6 +28,7 @@ from app.application.ports.vision import VisionPort, VisionResult
 from app.common import error_codes
 from app.common.enums import Category, ItemStatus
 from app.common.exceptions import FriendlyException
+from app.infrastructure.importers.link_parser import _is_safe_url
 from app.infrastructure.persistence.models.embedding import ItemEmbedding
 from app.infrastructure.persistence.models.shopping import ShoppingSenseCheck
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -86,13 +87,32 @@ class SenseCheck:
         image_url: str | None = None,
         source_url: str | None = None,
     ) -> tuple[SenseCheckResult, ShoppingSenseCheck]:
-        analyze_target = image_url or source_url
-        if analyze_target is None:
+        if image_url is None and source_url is None:
             raise FriendlyException(
                 error_codes.VALIDATION_ERROR,
                 "image_url or source_url is required",
                 status_code=422,
             )
+        if image_url is not None:
+            if not _is_safe_url(image_url):
+                raise FriendlyException(error_codes.VALIDATION_ERROR, "Unsafe URL", status_code=400)
+            analyze_target: str = image_url
+        else:
+            assert source_url is not None
+            if not _is_safe_url(source_url):
+                raise FriendlyException(error_codes.VALIDATION_ERROR, "Unsafe URL", status_code=400)
+            from app.config.settings import get_settings
+            from app.infrastructure.importers.router import RoutedLinkParser
+
+            parser = RoutedLinkParser(get_settings())
+            extracted = await parser.extract_image_url(source_url)
+            if not extracted:
+                raise FriendlyException(
+                    error_codes.VALIDATION_ERROR,
+                    "Cannot extract image from URL",
+                    status_code=400,
+                )
+            analyze_target = extracted
         try:
             vision_result = await self.vision.analyze_image(analyze_target)
         except (ValueError, RuntimeError) as exc:
@@ -170,6 +190,7 @@ class SenseCheck:
                 WardrobeItem.category == candidate.category,
                 WardrobeItem.status == ItemStatus.WEARABLE.value,
                 WardrobeItem.deleted_at.is_(None),
+                WardrobeItem.id != anchor_id,
             )
             .order_by("dist")
             .limit(k)
