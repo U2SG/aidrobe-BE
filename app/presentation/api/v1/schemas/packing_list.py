@@ -12,6 +12,7 @@ class PackingItem(BaseModel):
     day: int
     scene: str
     notes: str = ""
+    packed: bool = False
 
 
 class CreatePackingListRequest(BaseModel):

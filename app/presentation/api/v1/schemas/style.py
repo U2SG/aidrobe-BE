@@ -69,3 +69,7 @@ class UpdateStyleTagsRequest(BaseModel):
     tags: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(
         min_length=1, max_length=20
     )
+
+
+class StyleTagsResponse(BaseModel):
+    tags: list[str]

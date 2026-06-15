@@ -110,7 +110,7 @@ class SenseCheck:
                 raise FriendlyException(
                     error_codes.VALIDATION_ERROR,
                     "Cannot extract image from URL",
-                    status_code=400,
+                    status_code=422,
                 )
             analyze_target = extracted
         try:

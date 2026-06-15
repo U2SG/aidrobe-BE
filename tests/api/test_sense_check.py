@@ -47,6 +47,19 @@ def _enable_flag(monkeypatch: pytest.MonkeyPatch) -> None:
         "get_settings",
         lambda: Settings(APP_ENV="dev", ENABLE_SENSE_CHECK=True),
     )
+    # _is_safe_url does a real DNS lookup; test URLs like http://x/shirt.jpg
+    # resolve to gaierror → False. Bypass in tests that need the full pipeline.
+    monkeypatch.setattr("app.application.shopping.sense_check._is_safe_url", lambda _url: True)
+
+
+def _disable_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Force flag off regardless of .env (ENABLE_SENSE_CHECK=true in dev .env
+    # pollutes the lru_cached get_settings() and breaks flag-off assertions).
+    monkeypatch.setattr(
+        shopping,
+        "get_settings",
+        lambda: Settings(APP_ENV="dev", ENABLE_SENSE_CHECK=False),
+    )
 
 
 def _client(app: FastAPI) -> AsyncClient:
@@ -81,7 +94,8 @@ async def _add_item(
     return item
 
 
-async def test_flag_off_returns_503(db_session: AsyncSession) -> None:
+async def test_flag_off_returns_503(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    _disable_flag(monkeypatch)
     app = _build_app(db_session)
     async with _client(app) as client:
         resp = await client.post(
@@ -220,7 +234,8 @@ async def test_sense_check_persists_and_history_returns_it(
     assert row.verdict == post.json()["verdict"]
 
 
-async def test_history_flag_off_returns_503(db_session: AsyncSession) -> None:
+async def test_history_flag_off_returns_503(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    _disable_flag(monkeypatch)
     app = _build_app(db_session)
     async with _client(app) as client:
         resp = await client.get(

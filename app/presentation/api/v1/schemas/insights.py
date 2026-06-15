@@ -104,6 +104,7 @@ class WardrobeReportResponse(BaseModel):
     end_date: date
     is_empty: bool
     total_wears: int
+    prev_total_wears: int
     top_items: list[ReportTopItem]
     top_combos: list[ReportOutfitCombo]
     color_palette: dict[str, int]

@@ -61,20 +61,23 @@ async def _expand_short_links(source_url: str, client: httpx.AsyncClient) -> str
 
 
 async def route_extract_image_url(source_url: str, settings: Settings) -> str | None:
-    async with httpx.AsyncClient(
-        timeout=settings.LINK_PARSE_TIMEOUT_SECONDS,
-        follow_redirects=False,
-        headers=BROWSER_HEADERS,
-    ) as client:
-        expanded_url = await _expand_short_links(source_url, client)
-        if expanded_url is None:
-            return None
+    try:
+        async with httpx.AsyncClient(
+            timeout=settings.LINK_PARSE_TIMEOUT_SECONDS,
+            follow_redirects=False,
+            headers=BROWSER_HEADERS,
+        ) as client:
+            expanded_url = await _expand_short_links(source_url, client)
+            if expanded_url is None:
+                return None
 
-        adapter = _adapter_for_url(expanded_url)
-        if adapter is not None:
-            return await adapter.extract_image_url(expanded_url, client)
+            adapter = _adapter_for_url(expanded_url)
+            if adapter is not None:
+                return await adapter.extract_image_url(expanded_url, client)
 
-    return await HtmlLinkParser(settings).extract_image_url(expanded_url)
+        return await HtmlLinkParser(settings).extract_image_url(expanded_url)
+    except (httpx.RequestError, httpx.HTTPStatusError):
+        return None
 
 
 class RoutedLinkParser:

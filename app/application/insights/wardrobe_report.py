@@ -13,6 +13,7 @@ Aggregation pushes all filtering/grouping into SQL; nothing pulls the full row
 set into Python to filter there.
 """
 
+import asyncio
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
@@ -151,6 +152,7 @@ class WardrobeReport:
     end_date: date
     is_empty: bool
     total_wears: int
+    prev_total_wears: int = 0
     top_items: list[TopItem] = field(default_factory=list)
     top_combos: list[OutfitCombo] = field(default_factory=list)
     color_palette: dict[str, int] = field(default_factory=dict)
@@ -161,14 +163,16 @@ class WardrobeReport:
     recommendation_adoption_rate: float = 0.0
 
 
-async def _total_wears(session: AsyncSession, user_id: uuid.UUID, w: PeriodWindow) -> int:
+async def _count_wears(
+    session: AsyncSession, user_id: uuid.UUID, start: date, end: date
+) -> int:
     result = await session.execute(
         select(func.count())
         .select_from(WearHistory)
         .where(
             WearHistory.user_id == user_id,
-            WearHistory.worn_date >= w.start,
-            WearHistory.worn_date <= w.end,
+            WearHistory.worn_date >= start,
+            WearHistory.worn_date <= end,
         )
     )
     return int(result.scalar_one() or 0)
@@ -451,7 +455,10 @@ async def build_report(
     """
     w = parse_period(period)
 
-    total_wears = await _total_wears(session, user_id, w)
+    total_wears, prev_total_wears = await asyncio.gather(
+        _count_wears(session, user_id, w.start, w.end),
+        _count_wears(session, user_id, w.prev_start, w.prev_end),
+    )
     if total_wears == 0:
         return WardrobeReport(
             period=w.period,
@@ -460,6 +467,7 @@ async def build_report(
             end_date=w.end,
             is_empty=True,
             total_wears=0,
+            prev_total_wears=prev_total_wears,
             style_trend=await _style_trend(session, user_id, w),
             highest_cost_per_wear=await _highest_cost_per_wear(session, user_id),
             longest_idle_item=await _longest_idle_item(session, user_id, w),
@@ -476,6 +484,7 @@ async def build_report(
         end_date=w.end,
         is_empty=False,
         total_wears=total_wears,
+        prev_total_wears=prev_total_wears,
         top_items=await _top_items(session, user_id, w),
         top_combos=await _top_combos(session, user_id, w),
         color_palette=await _color_palette(session, user_id, w),

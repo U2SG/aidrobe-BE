@@ -60,10 +60,8 @@ class SqlAlchemyStyleRepository:
         await self.session.flush()
         return True
 
-    async def upsert_style_tags(
-        self, user_id: uuid.UUID, tags: list[str]
-    ) -> UserStyleProfile:
-        existing = cast(
+    async def _get_style_tag_profile(self, user_id: uuid.UUID) -> UserStyleProfile | None:
+        return cast(
             UserStyleProfile | None,
             await self.session.scalar(
                 select(UserStyleProfile).where(
@@ -72,6 +70,18 @@ class SqlAlchemyStyleRepository:
                 )
             ),
         )
+
+    async def get_style_tags(self, user_id: uuid.UUID) -> list[str]:
+        profile = await self._get_style_tag_profile(user_id)
+        if not profile or not profile.style_tags:
+            return []
+        raw = profile.style_tags.get("tags")
+        return raw if isinstance(raw, list) else []
+
+    async def upsert_style_tags(
+        self, user_id: uuid.UUID, tags: list[str]
+    ) -> UserStyleProfile:
+        existing = await self._get_style_tag_profile(user_id)
         if existing is not None:
             existing.style_tags = {"tags": tags}
             await self.session.flush()

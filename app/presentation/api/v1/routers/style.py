@@ -30,6 +30,7 @@ from app.presentation.api.v1.schemas.style import (
     InspirationResponse,
     PdfStyleSourceRequest,
     PdfStyleSourceResponse,
+    StyleTagsResponse,
     UpdateStyleTagsRequest,
 )
 
@@ -176,6 +177,19 @@ async def delete_inspiration(
         invalidate_daily_recommendation_cache, redis_client, current_user.id
     )
     return ResponseModel(data=None)
+
+
+@router.get(
+    "/tags",
+    response_model=ResponseModel[StyleTagsResponse],
+)
+async def get_style_tags(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[StyleTagsResponse]:
+    repo = SqlAlchemyStyleRepository(session)
+    tags = await repo.get_style_tags(current_user.id)
+    return ResponseModel(data=StyleTagsResponse(tags=tags))
 
 
 @router.patch(

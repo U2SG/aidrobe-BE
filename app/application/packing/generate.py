@@ -98,6 +98,7 @@ class GeneratePackingList:
                             "day": day,
                             "scene": scene,
                             "notes": note,
+                            "packed": False,
                         }
                     )
 
