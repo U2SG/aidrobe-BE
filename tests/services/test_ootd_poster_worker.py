@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
 from app.infrastructure.persistence.models.user import User
-from app.infrastructure.workers import ootd_poster_worker
+from app.infrastructure.workers import _visual_asset_runtime, ootd_poster_worker
 from app.infrastructure.workers.job_runtime import JOB_STATUS_QUEUED, JOB_STATUS_SUCCEEDED
 from app.infrastructure.workers.ootd_poster_worker import (
     JOB_TYPE,
@@ -36,7 +36,7 @@ async def patched_session_factory(
 ) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     engine = create_async_engine(postgres_url, future=True)
     factory: async_sessionmaker[AsyncSession] = async_sessionmaker(engine, expire_on_commit=False)
-    monkeypatch.setattr(ootd_poster_worker, "AsyncSessionLocal", factory)
+    monkeypatch.setattr(_visual_asset_runtime, "AsyncSessionLocal", factory)
     try:
         yield factory
     finally:

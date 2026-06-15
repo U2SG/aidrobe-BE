@@ -35,6 +35,14 @@ def _build_app(session: AsyncSession) -> FastAPI:
     return app
 
 
+def _bypass_url_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    # is_safe_url does a real DNS lookup; 'https://x/selfie.jpg' fails gaierror
+    # → 422 before any flag/consent logic runs. Bypass in tests.
+    monkeypatch.setattr(
+        "app.presentation.api.v1.schemas.ootd_posters.is_safe_url", lambda _: True
+    )
+
+
 def _enable_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     # Router calls get_settings() directly (lru-cached, bypasses dep override).
     monkeypatch.setattr(
@@ -42,6 +50,18 @@ def _enable_flag(monkeypatch: pytest.MonkeyPatch) -> None:
         "get_settings",
         lambda: Settings(APP_ENV="dev", ENABLE_OOTD_POSTER=True),
     )
+    _bypass_url_validation(monkeypatch)
+
+
+def _disable_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Force flag off regardless of .env (ENABLE_OOTD_POSTER=true in dev .env
+    # pollutes the lru_cached get_settings() and breaks flag-off assertions).
+    monkeypatch.setattr(
+        ootd_posters,
+        "get_settings",
+        lambda: Settings(APP_ENV="dev", ENABLE_OOTD_POSTER=False),
+    )
+    _bypass_url_validation(monkeypatch)
 
 
 async def _post(app: FastAPI, headers: dict[str, str], json: dict[str, object]):
@@ -50,7 +70,10 @@ async def _post(app: FastAPI, headers: dict[str, str], json: dict[str, object]):
         return await client.post("/v1/ootd-posters", headers=headers, json=json)
 
 
-async def test_flag_off_returns_503(db_session: AsyncSession) -> None:
+async def test_flag_off_returns_503(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _disable_flag(monkeypatch)
     app = _build_app(db_session)
     resp = await _post(
         app,
