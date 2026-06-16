@@ -93,7 +93,10 @@ class WorkerSettings:
             cron(drain_embedding_jobs, second={0, 30}, name="embedding_drain"),
             cron(drain_outfit_board_jobs, second={0, 30}, name="outfit_board_drain"),
             cron(drain_ootd_poster_jobs, second={0, 30}, name="ootd_poster_drain"),
-            cron(drain_cutout_jobs, second={0, 30}, name="cutout_drain"),
+            # Tight cadence (every 5s): the cutout is a user-visible "polishing"
+            # state, so trim queue-wait before the ~30s gpt-image-2 gen. claim_one
+            # is a cheap FOR UPDATE SKIP LOCKED query, so polling often is fine.
+            cron(drain_cutout_jobs, second=set(range(0, 60, 5)), name="cutout_drain"),
             # PDF ingest is heavy (download + rasterize N pages) and drains one
             # at a time; a coarser cadence is plenty.
             cron(drain_pdf_ingest_jobs, second={0}, name="pdf_ingest_drain"),
