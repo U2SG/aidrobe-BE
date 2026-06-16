@@ -10,6 +10,10 @@ except ImportError:
 from app.application.fit_profile.build_fit_profile import build_all_fit_profiles
 from app.config.settings import get_settings
 from app.infrastructure.persistence.session import AsyncSessionLocal
+from app.infrastructure.workers.cutout_worker import (
+    drain_cutout_jobs,
+    reconcile_dead_cutout_items,
+)
 from app.infrastructure.workers.embedding_worker import drain_embedding_jobs
 from app.infrastructure.workers.image_worker import process_image_job
 from app.infrastructure.workers.import_worker import process_import_task
@@ -70,11 +74,13 @@ class WorkerSettings:
         drain_embedding_jobs,
         drain_outfit_board_jobs,
         drain_ootd_poster_jobs,
+        drain_cutout_jobs,
         drain_pdf_ingest_jobs,
         drain_user_purge_jobs,
         recover_async_job_leases,
         reconcile_dead_outfit_board_assets,
         reconcile_dead_ootd_poster_assets,
+        reconcile_dead_cutout_items,
     ]
     # async_jobs queues drain on a fixed cadence rather than via arq enqueue —
     # producers only write the row, so cron is the trigger. Keep drain ticks
@@ -87,6 +93,7 @@ class WorkerSettings:
             cron(drain_embedding_jobs, second={0, 30}, name="embedding_drain"),
             cron(drain_outfit_board_jobs, second={0, 30}, name="outfit_board_drain"),
             cron(drain_ootd_poster_jobs, second={0, 30}, name="ootd_poster_drain"),
+            cron(drain_cutout_jobs, second={0, 30}, name="cutout_drain"),
             # PDF ingest is heavy (download + rasterize N pages) and drains one
             # at a time; a coarser cadence is plenty.
             cron(drain_pdf_ingest_jobs, second={0}, name="pdf_ingest_drain"),
@@ -104,6 +111,11 @@ class WorkerSettings:
                 reconcile_dead_ootd_poster_assets,
                 minute={6, 21, 36, 51},
                 name="ootd_poster_reconcile_dead_assets",
+            ),
+            cron(
+                reconcile_dead_cutout_items,
+                minute={7, 22, 37, 52},
+                name="cutout_reconcile_dead_items",
             ),
             # Purge cadence is hourly: grace boundary is days, so finer-grain
             # ticking just wastes claim_one queries.

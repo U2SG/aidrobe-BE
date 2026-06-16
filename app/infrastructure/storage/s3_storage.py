@@ -56,6 +56,10 @@ class S3ObjectStorage:
         )
         return self._file_url(key)
 
+    async def get_object(self, key: str) -> bytes:
+        resp = self.client.get_object(Bucket=self.bucket, Key=key)
+        return resp["Body"].read()  # type: ignore[no-any-return]
+
     def sign_render_url(
         self,
         key: str,

@@ -173,6 +173,23 @@ class Settings(BaseSettings):
     # the flag; the flag only gates exposure.
     ENABLE_OOTD_POSTER: bool = False
 
+    # V4 item cutout — gpt-image-2 product-shot extraction on import. Async via
+    # job_runtime (job_type "cutout"); off by default. Data (the item + its
+    # original image) persists regardless; the flag gates the cutout enqueue +
+    # spend, so flipping back to False is a clean rollback (items just keep the
+    # original photo as cover). Provider mirrors the vision switch: "fake" (no
+    # key, returns the source unchanged) or "openai" (gpt-image-2 images/edits).
+    ENABLE_ITEM_CUTOUT: bool = False
+    IMAGE_CUTOUT_PROVIDER: str = "fake"
+    OPENAI_IMAGE_MODEL: str = "gpt-image-2"
+    # low is the cost/quality sweet spot (~$0.024/img, ~35s) — medium/high add
+    # marginal polish at 4x/14x the cost. See docs + the cutout bake-off.
+    IMAGE_CUTOUT_QUALITY: str = "low"
+    IMAGE_CUTOUT_TIMEOUT_SECONDS: float = 180.0
+    # Per-user-per-day call cap (call-count quota, like tryon/ootd). Enforced
+    # only when ENABLE_COST_GUARD=True.
+    ITEM_CUTOUT_DAILY_LIMIT: int = 50
+
     # V4 Outfit Calendar — plan/calendar endpoints. Off by default; plans
     # persist regardless of the flag, the flag only gates exposure.
     ENABLE_OUTFIT_CALENDAR: bool = False

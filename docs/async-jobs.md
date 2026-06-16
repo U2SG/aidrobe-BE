@@ -35,6 +35,7 @@ the existing job rather than creating a second one.
 | `ocr_receipt`  | `ocr:{upload_id}` *(planned)*             | Each upload yields exactly one OCR run. |
 | `pdf_ingest`   | `pdf:{upload_id}` *(planned)*             | Same as OCR. |
 | `tryon`        | `tryon:{user_id}:{outfit_id}:{body_hash}` *(planned)* | Re-running with the same body image + outfit returns existing. |
+| `cutout`       | `cutout:{item_id}`                        | One product-shot cutout per item. Re-confirming the same item reuses the existing job (no double gpt-image-2 spend). |
 | `user_purge`   | `user_purge:{user_id}`                    | Account deletion runs once per user. |
 
 Keep keys ≤ 128 chars (the column limit). Use lowercase. Don't put PII into

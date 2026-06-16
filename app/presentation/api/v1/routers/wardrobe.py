@@ -52,6 +52,7 @@ def item_response(item: WardrobeItem) -> WardrobeItemResponse:
         status=item.status,
         cover_image_url=item.cover_image_url,
         original_image_url=item.original_image_url,
+        cutout_status=item.cutout_status,
         location=item.location,
         size_label=item.size_label,
         size_region=item.size_region,

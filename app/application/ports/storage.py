@@ -29,6 +29,15 @@ class ObjectStoragePort(Protocol):
         """Upload bytes directly and return the public file URL."""
         ...
 
+    async def get_object(self, key: str) -> bytes:
+        """Read object bytes straight from storage by key.
+
+        Used by internal pipelines (e.g. the cutout worker) that need the
+        source image and already hold the object key — reading by key avoids
+        an HTTP round-trip and the SSRF guard that (correctly) blocks our own
+        private-network storage host."""
+        ...
+
     def sign_render_url(
         self,
         key: str,

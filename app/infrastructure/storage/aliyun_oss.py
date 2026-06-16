@@ -91,6 +91,10 @@ class AliyunOssStorage:
         )
         return self._public_url(key)
 
+    async def get_object(self, key: str) -> bytes:
+        # Sync SDK call; async for port-parity (see put_object note).
+        return self._bucket.get_object(key).read()  # type: ignore[attr-defined,no-any-return]
+
     def _public_url(self, key: str) -> str:
         if self.settings.ALIYUN_OSS_PUBLIC_BASE_URL:
             base = self.settings.ALIYUN_OSS_PUBLIC_BASE_URL.rstrip("/")
