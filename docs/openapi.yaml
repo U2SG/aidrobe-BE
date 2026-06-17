@@ -1238,15 +1238,20 @@ paths:
       description: 'M19 — async PDF / magazine multi-page style ingest.
 
 
-        The parent row is always persisted; the async ingest is gated by
+        `ENABLE_PDF_STYLE_INGEST` is an upload-ingest kill switch (default off).
 
-        `ENABLE_PDF_STYLE_INGEST` (kill switch — default off so a bad rollout can''t
+        Flag=off → gate-and-reject (no row created). Convention: data-always-persists
 
-        burn rasterize/storage cost). `estimated_pages` is best-effort 0 at enqueue:
+        applies to user-triggered flags (ENABLE_TODAY_REFRESH etc.), not to this
 
-        the real count is only known once the worker downloads and rasterizes the
+        upload-ingest kill-switch where creating a row with no processing is meaningless.
 
-        PDF, and blocking the request on an OSS fetch would defeat the async design.'
+        `estimated_pages` is best-effort 0 at enqueue: the real count is only known
+
+        once the worker downloads and rasterizes the PDF, and blocking the request
+        on
+
+        an OSS fetch would defeat the async design.'
       operationId: add_pdf_source_v1_style_sources_post
       parameters:
       - name: Authorization
@@ -1328,6 +1333,41 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1/style/tags:
+    get:
+      tags:
+      - style
+      summary: Get Style Tags
+      operationId: get_style_tags_v1_style_tags_get
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_StyleTagsResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     patch:
       tags:
       - style
@@ -1758,7 +1798,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/app__presentation__api__v1__schemas__outfit_history__OutfitCalendarResponse'
+                $ref: '#/components/schemas/OutfitCalendarResponse'
         '422':
           description: Validation Error
           content:
@@ -1900,7 +1940,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/app__presentation__api__v1__schemas__outfit_plan__OutfitCalendarResponse'
+                $ref: '#/components/schemas/OutfitPlanCalendarResponse'
         '422':
           description: Validation Error
           content:
@@ -2121,6 +2161,219 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WardrobeItemImagesResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/ootd-posters:
+    post:
+      tags:
+      - ootd-posters
+      summary: Create Ootd Poster
+      operationId: create_ootd_poster_v1_ootd_posters_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOotdPosterRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateOotdPosterResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/packing-lists:
+    post:
+      tags:
+      - packing-list
+      summary: Create Packing List
+      operationId: create_packing_list_v1_packing_lists_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePackingListRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PackingListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - packing-list
+      summary: List Packing Lists
+      operationId: list_packing_lists_v1_packing_lists_get
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PackingListResponse'
+                title: Response List Packing Lists V1 Packing Lists Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/packing-lists/{packing_list_id}:
+    get:
+      tags:
+      - packing-list
+      summary: Get Packing List
+      operationId: get_packing_list_v1_packing_lists__packing_list_id__get
+      parameters:
+      - name: packing_list_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Packing List Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PackingListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      tags:
+      - packing-list
+      summary: Update Packing List
+      operationId: update_packing_list_v1_packing_lists__packing_list_id__patch
+      parameters:
+      - name: packing_list_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Packing List Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePackingListRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PackingListResponse'
         '422':
           description: Validation Error
           content:
@@ -2428,6 +2681,104 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/ask:
+    post:
+      tags:
+      - ask
+      summary: Ask
+      operationId: ask_v1_ask_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AskRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AskResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/ask/history:
+    get:
+      tags:
+      - ask
+      summary: Ask History
+      operationId: ask_history_v1_ask_history_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AskHistoryItem'
+                title: Response Ask History V1 Ask History Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AddInspirationRequest:
@@ -2558,6 +2909,93 @@ components:
       required:
       - id_token
       title: AppleLoginRequest
+    AskContext:
+      properties:
+        date:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Date
+        scene:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Scene
+        time_left_minutes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Time Left Minutes
+      type: object
+      title: AskContext
+    AskHistoryItem:
+      properties:
+        ask_session_id:
+          type: string
+          format: uuid
+          title: Ask Session Id
+        question:
+          type: string
+          title: Question
+        answer:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Answer
+        item_refs:
+          items:
+            type: string
+          type: array
+          title: Item Refs
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - ask_session_id
+      - question
+      - created_at
+      title: AskHistoryItem
+    AskRequest:
+      properties:
+        question:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Question
+        context:
+          anyOf:
+          - $ref: '#/components/schemas/AskContext'
+          - type: 'null'
+      type: object
+      required:
+      - question
+      title: AskRequest
+    AskResponse:
+      properties:
+        ask_session_id:
+          type: string
+          format: uuid
+          title: Ask Session Id
+        answer:
+          type: string
+          title: Answer
+        item_refs:
+          items:
+            type: string
+          type: array
+          title: Item Refs
+        tokens_used:
+          type: integer
+          title: Tokens Used
+      type: object
+      required:
+      - ask_session_id
+      - answer
+      - item_refs
+      - tokens_used
+      title: AskResponse
     AuthTokenResponse:
       properties:
         user_id:
@@ -2864,6 +3302,49 @@ components:
       - input_type
       - source_type
       title: CreateImportTaskRequest
+    CreateOotdPosterRequest:
+      properties:
+        ootd_image_url:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Ootd Image Url
+        wear_history_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Wear History Id
+        template_id:
+          type: string
+          pattern: ^(minimal|studio|street)$
+          title: Template Id
+          default: minimal
+        consent:
+          type: boolean
+          title: Consent
+          default: false
+      type: object
+      title: CreateOotdPosterRequest
+    CreateOotdPosterResponse:
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          title: Asset Id
+        generation_status:
+          type: string
+          title: Generation Status
+        disclaimer:
+          type: string
+          title: Disclaimer
+      type: object
+      required:
+      - asset_id
+      - generation_status
+      - disclaimer
+      title: CreateOotdPosterResponse
     CreateOutfitPlanRequest:
       properties:
         outfit_id:
@@ -2879,6 +3360,39 @@ components:
       - outfit_id
       - planned_date
       title: CreateOutfitPlanRequest
+    CreatePackingListRequest:
+      properties:
+        destination:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Destination
+        days:
+          type: integer
+          maximum: 90.0
+          minimum: 1.0
+          title: Days
+        scenes:
+          items:
+            type: string
+          type: array
+          title: Scenes
+        weather_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Weather Hint
+        departure_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Departure Date
+      type: object
+      required:
+      - days
+      - scenes
+      title: CreatePackingListRequest
     DataExportResponse:
       properties:
         job_id:
@@ -3398,6 +3912,18 @@ components:
       - wear_history_id
       - ootd_image_url
       title: OotdUploadResponse
+    OutfitCalendarResponse:
+      properties:
+        dates:
+          items:
+            type: string
+            format: date
+          type: array
+          title: Dates
+      type: object
+      required:
+      - dates
+      title: OutfitCalendarResponse
     OutfitHistoryEntry:
       properties:
         wear_history_id:
@@ -3514,6 +4040,17 @@ components:
       - limit
       - offset
       title: OutfitHistoryResponse
+    OutfitPlanCalendarResponse:
+      properties:
+        days:
+          items:
+            $ref: '#/components/schemas/CalendarDayResponse'
+          type: array
+          title: Days
+      type: object
+      required:
+      - days
+      title: OutfitPlanCalendarResponse
     OutfitPlanResponse:
       properties:
         outfit_plan_id:
@@ -3692,6 +4229,74 @@ components:
       - asset_id
       - generation_status
       title: OutfitVisualAssetResponse
+    PackingItem:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        day:
+          type: integer
+          title: Day
+        scene:
+          type: string
+          title: Scene
+        notes:
+          type: string
+          title: Notes
+          default: ''
+        packed:
+          type: boolean
+          title: Packed
+          default: false
+      type: object
+      required:
+      - item_id
+      - day
+      - scene
+      title: PackingItem
+    PackingListResponse:
+      properties:
+        packing_list_id:
+          type: string
+          format: uuid
+          title: Packing List Id
+        destination:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Destination
+        days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Days
+        scenes:
+          items:
+            type: string
+          type: array
+          title: Scenes
+        departure_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Departure Date
+        items:
+          items:
+            $ref: '#/components/schemas/PackingItem'
+          type: array
+          title: Items
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - packing_list_id
+      - scenes
+      - items
+      - status
+      title: PackingListResponse
     PdfStyleSourceRequest:
       properties:
         file_url:
@@ -4300,6 +4905,22 @@ components:
           - type: 'null'
       type: object
       title: ResponseModel[StsTokenResponse]
+    ResponseModel_StyleTagsResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/StyleTagsResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[StyleTagsResponse]
     ResponseModel_TodayRecommendationResponse_:
       properties:
         code:
@@ -4575,6 +5196,17 @@ components:
       required:
       - template_id
       title: StyleContextResponse
+    StyleTagsResponse:
+      properties:
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+      type: object
+      required:
+      - tags
+      title: StyleTagsResponse
     StyleTrendEntry:
       properties:
         year_month:
@@ -4731,6 +5363,22 @@ components:
           title: Status
       type: object
       title: UpdateOutfitPlanRequest
+    UpdatePackingListRequest:
+      properties:
+        items:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PackingItem'
+            type: array
+          - type: 'null'
+          title: Items
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      type: object
+      title: UpdatePackingListRequest
     UpdateStyleTagsRequest:
       properties:
         tags:
@@ -4960,6 +5608,10 @@ components:
           - type: string
           - type: 'null'
           title: Original Image Url
+        cutout_status:
+          type: string
+          title: Cutout Status
+          default: skipped
         location:
           anyOf:
           - type: string
@@ -5111,6 +5763,9 @@ components:
         total_wears:
           type: integer
           title: Total Wears
+        prev_total_wears:
+          type: integer
+          title: Prev Total Wears
         top_items:
           items:
             $ref: '#/components/schemas/ReportTopItem'
@@ -5154,6 +5809,7 @@ components:
       - end_date
       - is_empty
       - total_wears
+      - prev_total_wears
       - top_items
       - top_combos
       - color_palette
@@ -5237,6 +5893,36 @@ components:
         condition:
           type: string
           title: Condition
+        humidity:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Humidity
+        wind_dir:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Wind Dir
+        wind_scale:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Wind Scale
+        wind_speed:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Wind Speed
+        icon:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Icon
+        location_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Location Name
       type: object
       required:
       - temperature_c
@@ -5244,26 +5930,3 @@ components:
       - rain_probability
       - condition
       title: WeatherContextResponse
-    app__presentation__api__v1__schemas__outfit_history__OutfitCalendarResponse:
-      properties:
-        dates:
-          items:
-            type: string
-            format: date
-          type: array
-          title: Dates
-      type: object
-      required:
-      - dates
-      title: OutfitCalendarResponse
-    app__presentation__api__v1__schemas__outfit_plan__OutfitCalendarResponse:
-      properties:
-        days:
-          items:
-            $ref: '#/components/schemas/CalendarDayResponse'
-          type: array
-          title: Days
-      type: object
-      required:
-      - days
-      title: OutfitCalendarResponse
