@@ -1,3 +1,4 @@
+import dataclasses
 import uuid
 from datetime import UTC, date, datetime, time
 from typing import Annotated, Any
@@ -23,6 +24,7 @@ from app.application.recommendations.feedback_tags import get_tags_for_scene
 from app.application.recommendations.get_today import GetTodayRecommendation
 from app.application.recommendations.style_context import build_style_context
 from app.application.wardrobe.submit_fit_feedback import SubmitFitFeedback
+from app.bootstrap.container import weather_service
 from app.common import error_codes
 from app.common.category_to_role import map_category_to_role
 from app.common.enums import RecommendationStatus, TimeSensitivity
@@ -251,6 +253,36 @@ def _build_context_response(raw: object) -> TodayContextResponse | None:
     )
 
 
+async def _backfill_weather_if_missing(
+    data: TodayRecommendationResponse, location: str | None
+) -> None:
+    """When today's context has no weather but the user has set a location,
+    fetch it live (Redis-cached ~1h, so cheap) and backfill the RESPONSE only.
+
+    The persisted snapshot stays as 'what the engine saw' — this just lets a
+    freshly-set location surface weather immediately, instead of waiting for
+    tomorrow's cron or burning a /today/refresh quota slot."""
+    if not get_settings().ENABLE_TODAY_CONTEXT or not location:
+        return
+    if data.context is not None and data.context.weather is not None:
+        return
+    service = weather_service()
+    if service is None:
+        return
+    try:
+        info = await service.get_weather(location)
+    except Exception as exc:
+        logger.warning("today_weather_backfill_failed", error=str(exc))
+        return
+    weather = WeatherContextResponse(**dataclasses.asdict(info))
+    if data.context is None:
+        data.context = TodayContextResponse(
+            weather=weather, fetched_at=datetime.now(UTC).isoformat()
+        )
+    else:
+        data.context.weather = weather
+
+
 def _select_outfits_for_remaining_time(
     outfits: list[Outfit], departure_time: time | None
 ) -> list[Outfit]:
@@ -319,7 +351,10 @@ async def get_today_recommendation(
         cached = None
     if cached is not None:
         payload = cached.decode() if isinstance(cached, bytes) else cached
-        return ResponseModel[TodayRecommendationResponse].model_validate_json(payload)
+        response = ResponseModel[TodayRecommendationResponse].model_validate_json(payload)
+        if response.data is not None:
+            await _backfill_weather_if_missing(response.data, settings.location)
+        return response
 
     repository = SqlAlchemyRecommendationRepository(session)
     had_cache = await repository.get_daily(current_user.id, today) is not None
@@ -334,7 +369,8 @@ async def get_today_recommendation(
     style_ctx = StyleContextResponse(**style_ctx_data)
     today_data = await today_response(daily, session, today, settings.departure_time, scene)
     today_data.style_context = style_ctx
-    response: ResponseModel[TodayRecommendationResponse] = ResponseModel(data=today_data)
+    await _backfill_weather_if_missing(today_data, settings.location)
+    response = ResponseModel(data=today_data)
     try:
         await redis_client.set(
             cache_key,

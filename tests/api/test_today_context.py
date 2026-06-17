@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.weather import WeatherInfo
@@ -174,7 +175,7 @@ async def test_today_response_exposes_context_when_flag_on(
 
 
 async def test_today_response_handles_legacy_rows_without_context(
-    db_session: AsyncSession, patched_settings_in_router: Any
+    db_session: AsyncSession, patched_settings_in_router: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A daily row written before Phase D landed has context_json=NULL.
     The flag-on path must not raise on those rows."""
@@ -191,6 +192,11 @@ async def test_today_response_handles_legacy_rows_without_context(
     )
     await db_session.commit()
 
+    # No weather provider → the live backfill is a no-op, so this exercises the
+    # legacy-row presentation path in isolation.
+    monkeypatch.setattr(
+        "app.presentation.api.v1.routers.recommendations.weather_service", lambda: None
+    )
     patched_settings_in_router(ENABLE_TODAY_CONTEXT=True)
     app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_TODAY_CONTEXT=True))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
@@ -229,7 +235,7 @@ async def test_generator_persists_null_context_when_weather_provider_raises(
 
 
 async def test_today_response_drops_malformed_weather_chunk(
-    db_session: AsyncSession, patched_settings_in_router: Any
+    db_session: AsyncSession, patched_settings_in_router: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If a future schema change leaves persisted weather in an old shape, the
     presentation layer drops the malformed sub-field instead of 500-ing."""
@@ -249,6 +255,10 @@ async def test_today_response_drops_malformed_weather_chunk(
     )
     await db_session.commit()
 
+    # No provider → dropped weather stays dropped (no live backfill in this test).
+    monkeypatch.setattr(
+        "app.presentation.api.v1.routers.recommendations.weather_service", lambda: None
+    )
     patched_settings_in_router(ENABLE_TODAY_CONTEXT=True)
     app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_TODAY_CONTEXT=True))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
@@ -261,3 +271,63 @@ async def test_today_response_drops_malformed_weather_chunk(
     assert body["context"]["weather"] is None  # malformed chunk dropped
     assert body["context"]["scene"] == "commute"
     assert body["context"]["fetched_at"] == "2026-05-07T00:00:00+00:00"
+
+
+async def test_today_backfills_weather_when_snapshot_missing_it(
+    db_session: AsyncSession, patched_settings_in_router: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Snapshot has no weather (e.g. generated before the user set a location),
+    but the user now has a location → GET /today fetches it live and backfills
+    the response, so weather shows immediately without waiting for cron or
+    spending a /today/refresh slot."""
+    user_id = await _seed_user_and_items(db_session)  # location="Beijing"
+    repo = SqlAlchemyRecommendationRepository(db_session)
+    # Generate WITHOUT a weather port → context_json is NULL.
+    await RecommendationGenerator(repo).generate_for_user(user_id, date.today(), "manual")
+
+    monkeypatch.setattr(
+        "app.presentation.api.v1.routers.recommendations.weather_service",
+        lambda: _StaticWeather(),
+    )
+    patched_settings_in_router(ENABLE_TODAY_CONTEXT=True)
+    app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_TODAY_CONTEXT=True))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.get(
+            "/v1/recommendations/today", headers={"X-User-Id": str(user_id)}
+        )
+    assert resp.status_code == 200
+    weather = resp.json()["data"]["context"]["weather"]
+    assert weather is not None
+    assert weather["temperature_c"] == 18.5
+    assert weather["condition"] == "cloudy"
+
+
+async def test_today_no_weather_backfill_without_location(
+    db_session: AsyncSession, patched_settings_in_router: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No location set → nothing to query, so the backfill is skipped even
+    though a provider is available (context stays None for a null snapshot)."""
+    user_id = await _seed_user_and_items(db_session)
+    settings_row = await db_session.scalar(
+        select(UserSettings).where(UserSettings.user_id == user_id)
+    )
+    assert settings_row is not None
+    settings_row.location = None
+    await db_session.flush()
+    repo = SqlAlchemyRecommendationRepository(db_session)
+    await RecommendationGenerator(repo).generate_for_user(user_id, date.today(), "manual")
+
+    # Provider IS available; if the backfill ignored the missing location it
+    # would populate weather and fail the assertion below.
+    monkeypatch.setattr(
+        "app.presentation.api.v1.routers.recommendations.weather_service",
+        lambda: _StaticWeather(),
+    )
+    patched_settings_in_router(ENABLE_TODAY_CONTEXT=True)
+    app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_TODAY_CONTEXT=True))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.get(
+            "/v1/recommendations/today", headers={"X-User-Id": str(user_id)}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["context"] is None
