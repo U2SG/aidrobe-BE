@@ -75,6 +75,13 @@ class WeatherContextResponse(BaseModel):
     feels_like_c: float
     rain_probability: float
     condition: str
+    # New (QWeather); optional + default None so legacy snapshots still decode.
+    humidity: int | None = None
+    wind_dir: str | None = None
+    wind_scale: str | None = None
+    wind_speed: float | None = None
+    icon: str | None = None
+    location_name: str | None = None
 
 
 class TodayContextResponse(BaseModel):

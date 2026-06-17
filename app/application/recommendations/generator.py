@@ -247,6 +247,12 @@ def _build_context_snapshot(
             "feels_like_c": weather.feels_like_c,
             "rain_probability": weather.rain_probability,
             "condition": weather.condition,
+            "humidity": weather.humidity,
+            "wind_dir": weather.wind_dir,
+            "wind_scale": weather.wind_scale,
+            "wind_speed": weather.wind_speed,
+            "icon": weather.icon,
+            "location_name": weather.location_name,
         }
     if scene is not None:
         snapshot["scene"] = scene
