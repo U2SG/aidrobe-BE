@@ -118,7 +118,7 @@ def weather_service() -> WeatherPort | None:
     if settings.WEATHER_PROVIDER == "none":
         return None
     if settings.WEATHER_PROVIDER == "qweather":
-        return QWeatherProvider(settings)
+        return QWeatherProvider(settings, get_redis_client())
     if settings.WEATHER_PROVIDER == "openweather":
         return OpenWeatherProvider(settings, get_redis_client())
     raise ValueError(f"Unsupported weather provider: {settings.WEATHER_PROVIDER}")
