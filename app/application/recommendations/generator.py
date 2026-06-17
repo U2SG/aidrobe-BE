@@ -1,3 +1,4 @@
+import dataclasses
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -242,18 +243,7 @@ def _build_context_snapshot(
         return None
     snapshot: dict[str, Any] = {"fetched_at": datetime.now(UTC).isoformat()}
     if weather is not None:
-        snapshot["weather"] = {
-            "temperature_c": weather.temperature_c,
-            "feels_like_c": weather.feels_like_c,
-            "rain_probability": weather.rain_probability,
-            "condition": weather.condition,
-            "humidity": weather.humidity,
-            "wind_dir": weather.wind_dir,
-            "wind_scale": weather.wind_scale,
-            "wind_speed": weather.wind_speed,
-            "icon": weather.icon,
-            "location_name": weather.location_name,
-        }
+        snapshot["weather"] = dataclasses.asdict(weather)
     if scene is not None:
         snapshot["scene"] = scene
     return snapshot

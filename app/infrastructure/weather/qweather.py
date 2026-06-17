@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from dataclasses import asdict
 from typing import Any
 
 import httpx
@@ -141,11 +142,12 @@ class QWeatherProvider:
                 )
                 response.raise_for_status()
             hourly = response.json().get("hourly") or []
-            pops = [_opt_float(hour.get("pop")) for hour in hourly[:_POP_WINDOW_HOURS]]
-            values = [p for p in pops if p is not None]
-            if not values:
-                return 0.0
-            return _clamp_probability(max(values) / 100.0)
+            values = [
+                pop
+                for pop in (_opt_float(hour.get("pop")) for hour in hourly[:_POP_WINDOW_HOURS])
+                if pop is not None
+            ]
+            return _clamp_probability(max(values) / 100.0) if values else 0.0
         except Exception as exc:
             logger.warning("qweather_pop_fetch_failed", error=str(exc))
             return 0.0
@@ -155,38 +157,13 @@ class QWeatherProvider:
         if cached is None:
             return None
         try:
-            data = json.loads(cached)
-            return WeatherInfo(
-                temperature_c=float(data["temperature_c"]),
-                feels_like_c=float(data["feels_like_c"]),
-                rain_probability=float(data["rain_probability"]),
-                condition=str(data["condition"]),
-                humidity=data.get("humidity"),
-                wind_dir=data.get("wind_dir"),
-                wind_scale=data.get("wind_scale"),
-                wind_speed=data.get("wind_speed"),
-                icon=data.get("icon"),
-                location_name=data.get("location_name"),
-            )
+            return WeatherInfo(**json.loads(cached))
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             logger.warning("weather_cache_payload_invalid", cache_key=cache_key)
             return None
 
     async def _set_cached(self, cache_key: str, weather: WeatherInfo) -> None:
-        payload = json.dumps(
-            {
-                "temperature_c": weather.temperature_c,
-                "feels_like_c": weather.feels_like_c,
-                "rain_probability": weather.rain_probability,
-                "condition": weather.condition,
-                "humidity": weather.humidity,
-                "wind_dir": weather.wind_dir,
-                "wind_scale": weather.wind_scale,
-                "wind_speed": weather.wind_speed,
-                "icon": weather.icon,
-                "location_name": weather.location_name,
-            }
-        )
+        payload = json.dumps(asdict(weather))
         await self._safe_redis_set(cache_key, payload, self.settings.WEATHER_CACHE_TTL_SECONDS)
 
     async def _safe_redis_get(self, cache_key: str) -> str | None:
