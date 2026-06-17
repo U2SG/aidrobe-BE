@@ -8,7 +8,11 @@ services:
       DATABASE_URL: postgresql+asyncpg://aidrobe:aidrobe@postgres:5432/aidrobe
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT_URL: http://minio:9000
-      S3_PUBLIC_BASE_URL: http://localhost:9000/aidrobe
+      # Host the CLIENT reaches (on-device over LAN/Tailscale, browser, ...).
+      # It's baked into image URLs, so it must resolve from the client — set
+      # S3_PUBLIC_BASE_URL in .env (e.g. a Tailscale IP) for device testing.
+      # Was hardcoded to localhost, which broke on-device images on recreate.
+      S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-http://localhost:9000/aidrobe}
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,6 +42,30 @@ services:
       REDIS_URL: redis://redis:6379/0
     depends_on:
       postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # arq worker — drains the async-jobs queues (embedding, outfit_board,
+  # ootd_poster, cutout, user_purge) via worker_main's cron ticks + the
+  # lease-recovery / dead-letter reconcile sweeps. Without this service those
+  # jobs only ever enqueue and never run. Container-internal addresses;
+  # ARQ_REDIS_URL points at the redis service (the .env value is host-oriented
+  # for running arq directly on the host).
+  worker:
+    build: .
+    command: arq app.infrastructure.workers.worker_main.WorkerSettings
+    env_file: .env
+    environment:
+      ENABLE_SCHEDULER: "false"
+      DATABASE_URL: postgresql+asyncpg://aidrobe:aidrobe@postgres:5432/aidrobe
+      REDIS_URL: redis://redis:6379/0
+      ARQ_REDIS_URL: redis://redis:6379/1
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-http://localhost:9000/aidrobe}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
 
