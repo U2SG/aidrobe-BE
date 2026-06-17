@@ -115,6 +115,21 @@ class ImageType(StrEnum):
     STANDARD = "standard"
 
 
+class CutoutStatus(StrEnum):
+    """Lifecycle of an item's gpt-image-2 product-shot cutout.
+
+    `skipped` is the default/rollback state (cutout feature off or no source) —
+    the item just shows its original photo. `queued` → `ready`/`failed` is the
+    async-job arc; `failed` is set by the dead-letter reconcile so the client
+    stops polling.
+    """
+
+    SKIPPED = "skipped"
+    QUEUED = "queued"
+    READY = "ready"
+    FAILED = "failed"
+
+
 class LearnStatus(StrEnum):
     QUEUED = "queued"
     PROCESSING = "processing"

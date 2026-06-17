@@ -34,6 +34,9 @@ class LocalObjectStorage:
         dest.write_bytes(data)
         return f"{self.base_url}/files/{key}"
 
+    async def get_object(self, key: str) -> bytes:
+        return (self.storage_root / key).read_bytes()
+
     def sign_render_url(
         self,
         key: str,

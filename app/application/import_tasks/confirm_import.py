@@ -2,10 +2,12 @@ import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 
+from app.application.cost_guard import assert_within_quota
 from app.application.recommendations.background import schedule_today_recompute
 from app.common import error_codes
-from app.common.enums import ImageType, ImportStatus, ItemStatus
+from app.common.enums import CutoutStatus, ImageType, ImportStatus, ItemStatus
 from app.common.exceptions import FriendlyException
+from app.config.settings import get_settings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.repositories.import_task_repo import (
     SqlAlchemyImportTaskRepository,
@@ -15,6 +17,7 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
 )
 from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
+from app.infrastructure.workers.cutout_worker import enqueue_item_cutout
 
 
 class ConfirmImageImportTask:
@@ -101,6 +104,25 @@ class ConfirmImageImportTask:
                     created_at=now,
                 )
             )
+
+        # V4 — kick off the async product-shot cutout. Best-effort: a blown
+        # daily quota just leaves the item on its original photo (skipped),
+        # never blocks the import. Gated by the flag; data already persisted.
+        if get_settings().ENABLE_ITEM_CUTOUT and original_image_url:
+            session = self.wardrobe_repository.session
+            try:
+                await assert_within_quota(session, user_id, "cutout")
+                item.cutout_status = CutoutStatus.QUEUED.value
+                await enqueue_item_cutout(
+                    session,
+                    item_id=item.id,
+                    user_id=user_id,
+                    source_url=original_image_url,
+                    category=category,
+                )
+            except FriendlyException:
+                # quota exhausted (429) — leave cutout_status='skipped'.
+                pass
 
         task.task_status = ImportStatus.COMPLETED.value
         await self.import_task_repository.flush()

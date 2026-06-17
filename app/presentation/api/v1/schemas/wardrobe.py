@@ -32,6 +32,10 @@ class WardrobeItemResponse(BaseModel):
     status: WardrobeItemStatus
     cover_image_url: str | None = None
     original_image_url: str | None = None
+    # V4 item cutout lifecycle: skipped | queued | ready | failed. When `ready`,
+    # cover_image_url is the product-shot cutout; while `queued` the client can
+    # poll + show a "polishing" placeholder.
+    cutout_status: str = "skipped"
     location: str | None = None
     size_label: str | None = None
     size_region: str | None = None

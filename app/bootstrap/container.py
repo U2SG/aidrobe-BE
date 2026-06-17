@@ -9,6 +9,7 @@ except ImportError:
     create_pool = None
 
 from app.application.ports.embedding import EmbeddingPort
+from app.application.ports.image_cutout import ImageCutoutPort
 from app.application.ports.llm import LlmPort
 from app.application.ports.ocr import OcrPort
 from app.application.ports.weather import WeatherPort
@@ -81,6 +82,19 @@ def image_generation_service() -> FakeImageGeneration | WanxImageGeneration:
     if settings.VISION_PROVIDER == "qwen":
         return WanxImageGeneration(settings)
     return FakeImageGeneration()
+
+
+def image_cutout_service() -> ImageCutoutPort:
+    """V4 item cutout provider. ``fake`` (default, no key, returns the source
+    unchanged) or ``openai`` (gpt-image-2 product-shot). Lazy-imported so the
+    httpx adapter is only loaded when selected."""
+    from app.infrastructure.vision.fake_image_cutout import FakeImageCutout
+    from app.infrastructure.vision.openai_image_cutout import OpenAIImageCutout
+
+    settings = get_settings()
+    if settings.IMAGE_CUTOUT_PROVIDER == "openai":
+        return OpenAIImageCutout(settings)
+    return FakeImageCutout()
 
 
 def ocr_service() -> OcrPort:
