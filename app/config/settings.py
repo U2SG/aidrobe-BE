@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     QWEN_LLM_MODEL: str = "qwen-turbo"
     QWEN_LLM_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     LLM_TIMEOUT_SECONDS: float = 3.0
+    # Ask answers a free-form question over up to _MAX_ITEMS wardrobe items
+    # (plus a JSON-output instruction), so it needs a far more generous budget
+    # than the short, template-shaped `polish_reason` call that uses
+    # LLM_TIMEOUT_SECONDS. Used by the providers' `ask` path only.
+    LLM_ASK_TIMEOUT_SECONDS: float = 12.0
     EMBEDDING_PROVIDER: str = "fake"
     CLIP_EMBEDDING_API_KEY: str | None = None
     CLIP_EMBEDDING_BASE_URL: str = "https://api.openai.com/v1/embeddings"
