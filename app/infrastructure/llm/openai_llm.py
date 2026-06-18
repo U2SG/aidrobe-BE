@@ -15,7 +15,9 @@ class NoOpLlm:
     async def polish_reason(self, prompt: str) -> str:
         return ""
 
-    async def ask(self, system_prompt: str, question: str) -> LlmAnswer:
+    async def ask(
+        self, system_prompt: str, question: str, *, json_mode: bool = False
+    ) -> LlmAnswer:
         # No provider configured — empty text signals the caller to 503.
         return LlmAnswer(text="", tokens_used=0)
 
@@ -52,15 +54,21 @@ class OpenAiLlm:
             logger.warning("openai_llm_polish_failed", error=str(exc))
             return ""
 
-    async def ask(self, system_prompt: str, question: str) -> LlmAnswer:
+    async def ask(
+        self, system_prompt: str, question: str, *, json_mode: bool = False
+    ) -> LlmAnswer:
         if not self.api_key:
             return LlmAnswer(text="", tokens_used=0)
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "instructions": system_prompt,
             "input": question,
         }
+        if json_mode:
+            # Responses API JSON mode — hard-constrain the output to an object
+            # so structured parsing isn't at the mercy of prompt adherence.
+            payload["text"] = {"format": {"type": "json_object"}}
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         try:

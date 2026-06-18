@@ -114,12 +114,13 @@ class Settings(BaseSettings):
     # the flag, the flag only gates endpoint exposure (503 when off). Pair
     # with LLM_PROVIDER (qwen/openai) and ENABLE_COST_GUARD for quotas.
     ENABLE_ASK_AIDROBE: bool = False
-    # When on, Ask asks the LLM for structured JSON ({answer, referenced_items})
-    # and `item_refs` becomes the server-validated subset the model actually
-    # cited (positions intersected with the candidate set). Off = legacy
-    # behavior: `item_refs` lists every item fed to the prompt. Off is a clean
-    # rollback.
-    ENABLE_ASK_STRUCTURED_OUTPUT: bool = False
+    # When on (default), Ask requests structured JSON ({answer,
+    # referenced_items}) under provider JSON mode and `item_refs` becomes the
+    # server-validated subset the model actually cited (positions intersected
+    # with the candidate set) — trustworthy by default. Requires a configured
+    # LLM provider (else Ask 503s regardless). Off = legacy behavior:
+    # `item_refs` lists every item fed to the prompt; set False to roll back.
+    ENABLE_ASK_STRUCTURED_OUTPUT: bool = True
     # Total daily_recommendations rows allowed per (user, date), inclusive
     # of the original background-generated rev-1. Enforced when
     # ENABLE_TODAY_REFRESH=True.

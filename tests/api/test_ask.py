@@ -29,12 +29,16 @@ class _FakeLlm:
         self._text = text
         self._tokens = tokens
         self.last_system_prompt: str | None = None
+        self.last_json_mode: bool | None = None
 
     async def polish_reason(self, prompt: str) -> str:
         return ""
 
-    async def ask(self, system_prompt: str, question: str) -> LlmAnswer:
+    async def ask(
+        self, system_prompt: str, question: str, *, json_mode: bool = False
+    ) -> LlmAnswer:
         self.last_system_prompt = system_prompt
+        self.last_json_mode = json_mode
         return LlmAnswer(text=self._text, tokens_used=self._tokens)
 
 
@@ -114,11 +118,20 @@ async def test_ask_returns_503_when_flag_off(db_session: AsyncSession) -> None:
     assert resp.status_code == 503
 
 
-async def test_ask_happy_path(
-    db_session: AsyncSession, patch_router_settings
+async def test_ask_happy_path_legacy_refs(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Legacy path (structured OFF): item_refs lists every fed item."""
     user_id = await _seed_user_and_items(db_session)
     patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    legacy = Settings(
+        APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=False
+    )
+    monkeypatch.setattr(
+        "app.application.ask.answer_question.get_settings", lambda: legacy
+    )
     app = _build_app(
         db_session,
         Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
@@ -134,7 +147,7 @@ async def test_ask_happy_path(
     body = resp.json()
     assert body["answer"] == "建议搭配白衬衫和黑裤子。"
     assert body["tokens_used"] == 42
-    # v1: references the items fed into the prompt (both wearable items).
+    # legacy: references the items fed into the prompt (both wearable items).
     assert len(body["item_refs"]) == 2
     assert uuid.UUID(body["ask_session_id"])
 
@@ -289,6 +302,7 @@ async def test_ask_structured_validates_item_refs(
     body = resp.json()
     assert body["answer"] == "穿白衬衫吧"  # unwrapped from the JSON envelope
     assert len(body["item_refs"]) == 1  # only the in-range position survives
+    assert llm.last_json_mode is True  # provider constrained to JSON mode
 
 
 async def test_ask_structured_parse_failure_keeps_text_drops_refs(

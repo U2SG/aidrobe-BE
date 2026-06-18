@@ -137,16 +137,13 @@ def context_for_prompt(ctx: WardrobeContext) -> dict[str, Any]:
 
 def context_snapshot(ctx: WardrobeContext) -> dict[str, Any]:
     """Versioned snapshot persisted (nested under "snapshot") on
-    ask_sessions.context for explainability."""
+    ask_sessions.context for explainability — the prompt context plus
+    snapshot-only metadata (built from context_for_prompt so the two stay in
+    sync when a dimension is added)."""
     return {
+        **context_for_prompt(ctx),
         "snapshot_version": SNAPSHOT_VERSION,
-        "scope": ctx.scope,
         "focused_item_id": ctx.focused_item_id,
         "locale": ctx.locale,
-        "wardrobe_summary": ctx.wardrobe_summary,
-        "style_profile": ctx.style_profile,
-        "fit_preferences": ctx.fit_preferences,
-        "recent_categories": ctx.recent_categories,
-        "departure_time": ctx.departure_time,
         "candidate_item_ids": ctx.candidate_item_ids,
     }
