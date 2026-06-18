@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     ENABLE_ASK_STRUCTURED_OUTPUT: bool = True
     # Total daily_recommendations rows allowed per (user, date), inclusive
     # of the original background-generated rev-1. Enforced when
-    # ENABLE_TODAY_REFRESH=True.
+    # ENABLE_TODAY_REFRESH=True. Set <= 0 to disable the cap entirely.
     TODAY_REFRESH_DAILY_LIMIT: int = 3
 
     # Phase E — PIPL-aware account deletion + cost guard.
