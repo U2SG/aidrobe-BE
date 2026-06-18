@@ -14,11 +14,11 @@ images, titles, or the raw user_id.
 from __future__ import annotations
 
 import json
-import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,7 +40,7 @@ _MAX_ITEMS = 80
 _PROJECTED_TOKENS = 1_500
 _JOB_TYPE = "llm_ask"
 
-_logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Locale-keyed system preambles. Default (and any unknown locale) falls back
 # to Chinese to preserve the pre-locale behavior. Match on the language
@@ -150,7 +150,7 @@ def _parse_structured(text: str, item_count: int) -> tuple[str, list[int]] | Non
     else is a hallucinated reference and is dropped."""
     try:
         data = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:  # JSONDecodeError is a ValueError subclass
         return None
     if not isinstance(data, dict):
         return None
@@ -249,9 +249,7 @@ async def answer_question(
             # error, which surfaces above as empty text). Stay honest: keep the
             # raw text as the answer but emit no item_refs rather than risk
             # surfacing items the model never cited.
-            _logger.warning(
-                "ask structured-output parse failed; emitting no item_refs"
-            )
+            logger.warning("ask.structured_output.parse_failed")
             item_refs = []
         else:
             answer_text, indices = parsed
