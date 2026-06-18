@@ -56,8 +56,10 @@ async def refresh_today_recommendation(
 
     today = datetime.now(UTC).date()
     used = await repository.count_revisions_for_date(user_id, today)
-    limit = max(1, settings.TODAY_REFRESH_DAILY_LIMIT)
-    if used >= limit:
+    # <= 0 means "no daily limit" (testing-phase escape hatch); any positive
+    # value caps total daily revisions.
+    limit = settings.TODAY_REFRESH_DAILY_LIMIT
+    if limit > 0 and used >= limit:
         logger.warning(
             "today_refresh_rate_limited",
             user_id=str(user_id),
