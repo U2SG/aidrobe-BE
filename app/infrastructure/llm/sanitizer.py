@@ -31,7 +31,7 @@ import base64
 import hashlib
 import hmac
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from app.config.settings import get_settings
 
@@ -92,7 +92,7 @@ def hash_user_token(user_id: uuid.UUID) -> str:
 def sanitize_for_llm(payload: dict[str, Any]) -> dict[str, Any]:
     """Return a NEW dict containing only whitelisted fields. Lists/dicts
     are recursed into (so a list of items has each item filtered)."""
-    return _filter(payload)
+    return cast(dict[str, Any], _filter(payload))
 
 
 def _filter(value: Any) -> Any:

@@ -1,7 +1,7 @@
 """Tests for V3 M12: wardrobe insights endpoints."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -42,7 +42,7 @@ async def seed_wardrobe(session: AsyncSession, user_id: uuid.UUID) -> list[Wardr
             category="outerwear",
             color_main="gray",
             wear_count=0,
-            created_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            created_at=datetime(2020, 1, 1, tzinfo=UTC),
         ),
     ]
     for i in items:

@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import date
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
@@ -27,10 +27,10 @@ router = APIRouter(prefix="/v1/outfit-history", tags=["outfit-history"])
 
 @router.get("", response_model=OutfitHistoryListResponse)
 async def list_outfit_history(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db),
-    current_user: Any = Depends(get_current_user),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> OutfitHistoryListResponse:
     offset = (page - 1) * page_size
 
@@ -96,10 +96,10 @@ async def list_outfit_history(
 # /calendar must be registered before /{worn_date} to avoid path parameter shadowing
 @router.get("/calendar", response_model=OutfitCalendarResponse)
 async def get_outfit_calendar(
-    year: int | None = Query(None),
-    month: int | None = Query(None),
-    db: AsyncSession = Depends(get_db),
-    current_user: Any = Depends(get_current_user),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+    year: Annotated[int | None, Query()] = None,
+    month: Annotated[int | None, Query()] = None,
 ) -> OutfitCalendarResponse:
     stmt = select(WearHistory.worn_date).where(WearHistory.user_id == current_user.id)
     if year is not None:
@@ -116,8 +116,8 @@ async def get_outfit_calendar(
 @router.get("/{worn_date}", response_model=OutfitHistoryEntry)
 async def get_outfit_history_by_date(
     worn_date: date,
-    db: AsyncSession = Depends(get_db),
-    current_user: Any = Depends(get_current_user),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
 ) -> OutfitHistoryEntry:
     result = await db.execute(
         select(WearHistory).where(
@@ -153,8 +153,8 @@ async def get_outfit_history_by_date(
 async def upload_ootd(
     wear_history_id: uuid.UUID,
     body: OotdUploadRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: Any = Depends(get_current_user),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
 ) -> OotdUploadResponse:
     result = await db.execute(
         select(WearHistory).where(

@@ -8,8 +8,9 @@ Create Date: 2026-05-05
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
+
+from alembic import op
 
 revision: str = "0013_wardrobe_extended_fields"
 down_revision: str | None = "0012_enable_pgvector"

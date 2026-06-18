@@ -85,8 +85,8 @@ class RembgImageProcessor:
             resp.raise_for_status()
             raw_bytes = resp.content
 
-        img = Image.open(io.BytesIO(raw_bytes))
-        img = ImageOps.exif_transpose(img)
+        opened = Image.open(io.BytesIO(raw_bytes))
+        img = ImageOps.exif_transpose(opened) or opened
 
         # convert to RGB for JPEG output
         rgb = img.convert("RGB")

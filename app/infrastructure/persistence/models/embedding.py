@@ -50,12 +50,12 @@ def _maybe_create_vector_extension(*args: Any, **kw: Any) -> None:
     if conn is None:
         return
     try:
-        conn.execute(cast(Any, DDL("SAVEPOINT _vec_ext")))
-        conn.execute(cast(Any, DDL("CREATE EXTENSION IF NOT EXISTS vector")))
-        conn.execute(cast(Any, DDL("RELEASE SAVEPOINT _vec_ext")))
+        conn.execute(cast(Any, DDL("SAVEPOINT _vec_ext")))  # type: ignore[no-untyped-call]
+        conn.execute(cast(Any, DDL("CREATE EXTENSION IF NOT EXISTS vector")))  # type: ignore[no-untyped-call]
+        conn.execute(cast(Any, DDL("RELEASE SAVEPOINT _vec_ext")))  # type: ignore[no-untyped-call]
     except Exception:
         try:
-            conn.execute(cast(Any, DDL("ROLLBACK TO SAVEPOINT _vec_ext")))
+            conn.execute(cast(Any, DDL("ROLLBACK TO SAVEPOINT _vec_ext")))  # type: ignore[no-untyped-call]
         except Exception:
             pass
 

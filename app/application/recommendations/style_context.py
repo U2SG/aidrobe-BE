@@ -2,6 +2,7 @@
 
 import uuid
 from collections import Counter
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +21,7 @@ _DEFAULT_TEMPLATE = "general_v1"
 
 async def build_style_context(
     user_id: uuid.UUID, session: AsyncSession
-) -> dict:
+) -> dict[str, Any]:
     result = await session.execute(
         select(UserStyleProfile).where(
             UserStyleProfile.user_id == user_id,
@@ -29,9 +30,9 @@ async def build_style_context(
     )
     profiles = list(result.scalars().all())
 
-    tag_counter: Counter = Counter()
+    tag_counter: Counter[str] = Counter()
     for p in profiles:
-        tags = p.style_tags or []
+        tags: Any = p.style_tags or []
         if isinstance(tags, list):
             tag_counter.update(tags)
 
@@ -55,7 +56,13 @@ async def build_style_context(
             template_id = tmpl
 
     # tag hit rate (0–1): how many top tags matched the winning template
-    hit_rate = best_overlap / len(_TEMPLATE_RULES[[t for _, t in _TEMPLATE_RULES].index(template_id)][0]) if best_overlap > 0 else 0.0
+    if best_overlap > 0:
+        winning_tags = _TEMPLATE_RULES[
+            [t for _, t in _TEMPLATE_RULES].index(template_id)
+        ][0]
+        hit_rate = best_overlap / len(winning_tags)
+    else:
+        hit_rate = 0.0
     # data confidence (0–1): saturates at 10 learned signals
     data_confidence = min(1.0, total_signals / 10)
     confidence = round(hit_rate * data_confidence, 3)

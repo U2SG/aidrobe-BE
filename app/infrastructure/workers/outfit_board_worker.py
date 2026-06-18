@@ -103,7 +103,7 @@ async def _download_image(url: str) -> Image.Image | None:
 def _paste_item(canvas: Image.Image, item_img: Image.Image, box: tuple[int, int, int, int]) -> None:
     x, y, w, h = box
     item_img = item_img.copy()
-    item_img.thumbnail((w, h), Image.LANCZOS)
+    item_img.thumbnail((w, h), Image.Resampling.LANCZOS)
     px = x + (w - item_img.width) // 2
     py = y + (h - item_img.height) // 2
     if item_img.mode == "RGBA":

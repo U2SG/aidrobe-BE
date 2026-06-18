@@ -403,13 +403,14 @@ async def refresh_today(
     # build the response without triggering lazy loads when Pydantic
     # walks the relationship tree (those would raise MissingGreenlet
     # in async/sync mixed FastAPI serialization).
-    daily = await repository.get_daily(current_user.id, daily.recommendation_date)
-    if daily is None:  # pragma: no cover — refresh just wrote it
+    refreshed = await repository.get_daily(current_user.id, daily.recommendation_date)
+    if refreshed is None:  # pragma: no cover — refresh just wrote it
         raise FriendlyException(
             error_codes.INTERNAL_ERROR,
             "refresh succeeded but row vanished",
             status_code=500,
         )
+    daily = refreshed
 
     # Drop any stale /today cache for this user so the next GET reads the
     # new revision rather than serving the prior cached payload.
