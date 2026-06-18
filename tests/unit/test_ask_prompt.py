@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import uuid
 
-from app.application.ask.answer_question import _build_system_prompt, _preamble_for
+from app.application.ask.answer_question import (
+    _build_system_prompt,
+    _parse_structured,
+    _preamble_for,
+)
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 
@@ -65,3 +69,42 @@ def test_focus_clause_added_only_when_focused() -> None:
     assert "FIRST item" in focused
     # Locale-aware: Chinese focus clause for a Chinese locale.
     assert "第 1 件" in _build_system_prompt(uuid.uuid4(), [], "zh-CN", focused=True)
+
+
+def test_structured_instruction_added_only_when_structured() -> None:
+    plain = _build_system_prompt(uuid.uuid4(), [], "en", structured=False)
+    structured = _build_system_prompt(uuid.uuid4(), [], "en", structured=True)
+    assert "referenced_items" not in plain
+    assert "referenced_items" in structured
+
+
+def test_parse_structured_maps_valid_positions_to_indices() -> None:
+    assert _parse_structured('{"answer": "hi", "referenced_items": [1, 3]}', 3) == (
+        "hi",
+        [0, 2],
+    )
+
+
+def test_parse_structured_drops_hallucinated_dupe_and_nonint_positions() -> None:
+    # 1 valid; dup 1 dropped; 0 and 4 out of range; "2" non-int; true is bool.
+    answer, indices = _parse_structured(  # type: ignore[misc]
+        '{"answer": "x", "referenced_items": [1, 1, 0, 4, "2", true, 2]}', 3
+    )
+    assert answer == "x"
+    assert indices == [0, 1]
+
+
+def test_parse_structured_defaults_missing_refs_to_empty() -> None:
+    assert _parse_structured('{"answer": "none"}', 3) == ("none", [])
+    assert _parse_structured('{"answer": "none", "referenced_items": []}', 3) == (
+        "none",
+        [],
+    )
+
+
+def test_parse_structured_returns_none_on_bad_shape() -> None:
+    assert _parse_structured("not json", 3) is None
+    assert _parse_structured('["a", "b"]', 3) is None  # not a dict
+    assert _parse_structured('{"referenced_items": [1]}', 3) is None  # no answer
+    assert _parse_structured('{"answer": 5, "referenced_items": [1]}', 3) is None
+    assert _parse_structured('{"answer": "x", "referenced_items": "1"}', 3) is None

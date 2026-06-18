@@ -18,6 +18,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +27,7 @@ from app.application.ports.llm import LlmPort
 from app.common import error_codes
 from app.common.enums import ItemStatus
 from app.common.exceptions import FriendlyException
+from app.config.settings import get_settings
 from app.infrastructure.llm.sanitizer import hash_user_token, sanitize_for_llm
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -37,6 +39,8 @@ _MAX_ITEMS = 80
 # provider hasn't answered yet (DB-aggregate path reads this as the delta).
 _PROJECTED_TOKENS = 1_500
 _JOB_TYPE = "llm_ask"
+
+logger = structlog.get_logger(__name__)
 
 # Locale-keyed system preambles. Default (and any unknown locale) falls back
 # to Chinese to preserve the pre-locale behavior. Match on the language
@@ -60,6 +64,23 @@ _DEFAULT_LANG = "zh"
 _FOCUS_CLAUSE: dict[str, str] = {
     "zh": "用户希望围绕列表中第 1 件单品来搭配，请优先考虑它。\n",
     "en": "The user wants to build an outfit around the FIRST item in the list; prioritize it.\n",
+}
+
+
+# Appended when ENABLE_ASK_STRUCTURED_OUTPUT is on. Asks for a strict JSON
+# envelope so the server can validate which items the model actually cited.
+# `referenced_items` are 1-based positions into the items list above.
+_STRUCTURED_INSTRUCTION: dict[str, str] = {
+    "zh": (
+        '\n请只返回一个 JSON 对象，不要包含任何其它文字：'
+        '{"answer": "你的中文建议", "referenced_items": [引用到的单品在上面列表中的序号，从 1 开始]}。'
+        "若没有引用任何单品，referenced_items 返回空数组。"
+    ),
+    "en": (
+        "\nRespond with a single JSON object and nothing else: "
+        '{"answer": "your advice in English", "referenced_items": [1-based positions '
+        "of the items above you reference]}. If you reference no item, return an empty array."
+    ),
 }
 
 
@@ -100,6 +121,7 @@ def _build_system_prompt(
     locale: str | None,
     *,
     focused: bool = False,
+    structured: bool = False,
 ) -> str:
     # Items are already field-sanitized by `_item_to_sanitized`; build the
     # final payload directly and attach the opaque user token. Do NOT re-run
@@ -113,7 +135,38 @@ def _build_system_prompt(
         "items": [_item_to_sanitized(i) for i in items],
         "usr": hash_user_token(user_id),
     }
-    return preamble + json.dumps(payload, ensure_ascii=False)
+    prompt = preamble + json.dumps(payload, ensure_ascii=False)
+    if structured:
+        prompt += _STRUCTURED_INSTRUCTION[lang]
+    return prompt
+
+
+def _parse_structured(text: str, item_count: int) -> tuple[str, list[int]] | None:
+    """Parse the structured-output envelope.
+
+    Returns (answer_text, validated 0-based item indices) or None when the
+    response isn't the expected JSON shape. Positions are 1-based in the
+    prompt; only those that land inside [1, item_count] survive — anything
+    else is a hallucinated reference and is dropped."""
+    try:
+        data = json.loads(text)
+    except ValueError:  # JSONDecodeError is a ValueError subclass
+        return None
+    if not isinstance(data, dict):
+        return None
+    answer = data.get("answer")
+    refs = data.get("referenced_items", [])
+    if not isinstance(answer, str) or not isinstance(refs, list):
+        return None
+    seen: set[int] = set()
+    indices: list[int] = []
+    for pos in refs:
+        if isinstance(pos, bool) or not isinstance(pos, int):
+            continue
+        if 1 <= pos <= item_count and pos not in seen:
+            seen.add(pos)
+            indices.append(pos - 1)
+    return answer, indices
 
 
 async def answer_question(
@@ -169,8 +222,13 @@ async def answer_question(
         items = [focused_item] + [i for i in items if i.id != focused_item.id]
         items = items[:_MAX_ITEMS]
 
+    structured = get_settings().ENABLE_ASK_STRUCTURED_OUTPUT
     system_prompt = _build_system_prompt(
-        user_id, items, locale, focused=focused_item is not None
+        user_id,
+        items,
+        locale,
+        focused=focused_item is not None,
+        structured=structured,
     )
     answer = await llm.ask(system_prompt, question)
 
@@ -182,9 +240,23 @@ async def answer_question(
             status_code=503,
         )
 
-    # v1 simplification: reference every item we fed the prompt rather than
-    # parsing free-text citations (brittle, untestable with a fake LLM).
-    item_refs = [str(i.id) for i in items]
+    answer_text = answer.text
+    item_refs: list[str]
+    if structured:
+        parsed = _parse_structured(answer.text, len(items))
+        if parsed is None:
+            # The model ignored the JSON contract (distinct from a provider
+            # error, which surfaces above as empty text). Stay honest: keep the
+            # raw text as the answer but emit no item_refs rather than risk
+            # surfacing items the model never cited.
+            logger.warning("ask.structured_output.parse_failed")
+            item_refs = []
+        else:
+            answer_text, indices = parsed
+            item_refs = [str(items[i].id) for i in indices]
+    else:
+        # Legacy behavior (flag off): reference every item fed to the prompt.
+        item_refs = [str(i.id) for i in items]
     tokens_used = answer.tokens_used
 
     # Record cost on async_jobs — the cost-guard ground truth. Inline work,
@@ -193,7 +265,7 @@ async def answer_question(
     ask_row = await ask_repo.create(
         user_id=user_id,
         question=question,
-        answer=answer.text,
+        answer=answer_text,
         item_refs=item_refs,
         context=context,
         tokens_used=tokens_used,
@@ -213,7 +285,7 @@ async def answer_question(
 
     return AskResult(
         ask_session_id=ask_row.id,
-        answer=answer.text,
+        answer=answer_text,
         item_refs=item_refs,
         tokens_used=tokens_used,
     )
