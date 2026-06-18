@@ -7,7 +7,7 @@ import structlog
 from fastapi import APIRouter, Depends, Query
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.outfits.feedback import FeedbackOutfit
@@ -27,7 +27,7 @@ from app.application.wardrobe.submit_fit_feedback import SubmitFitFeedback
 from app.bootstrap.container import weather_service
 from app.common import error_codes
 from app.common.category_to_role import map_category_to_role
-from app.common.enums import RecommendationStatus, TimeSensitivity
+from app.common.enums import ItemStatus, RecommendationStatus, TimeSensitivity
 from app.common.exceptions import FriendlyException
 from app.common.i18n import I18nMessage
 from app.common.season import current_season
@@ -190,6 +190,36 @@ async def _enrich_outfits(
     return enriched
 
 
+async def _coverage_gap_hint(session: AsyncSession, user_id: uuid.UUID) -> str | None:
+    """Detect a wardrobe shape that blocks combinations despite having items —
+    e.g. several tops but no bottoms (or vice versa). Returns a nudge to fill the
+    missing category, or None when the wardrobe is balanced enough to combine."""
+    rows = (
+        await session.execute(
+            select(WardrobeItem.category, func.count())
+            .where(
+                WardrobeItem.user_id == user_id,
+                WardrobeItem.status == ItemStatus.WEARABLE.value,
+                WardrobeItem.fit_status != "no_longer_fits",
+                WardrobeItem.deleted_at.is_(None),
+            )
+            .group_by(WardrobeItem.category)
+        )
+    ).all()
+    counts = {category: count for category, count in rows}
+    tops = counts.get("top", 0)
+    bottoms = counts.get("bottom", 0)
+    dresses = counts.get("dress", 0)
+    # A lone dress can still produce one look, so only nudge when the unpaired
+    # side has real depth (>=2) and dresses can't already cover the gap.
+    if dresses < 2:
+        if tops >= 2 and bottoms == 0:
+            return f"再加一件下装，你的 {tops} 件上装就能搭出更多套"
+        if bottoms >= 2 and tops == 0:
+            return f"再加一件上装，你的 {bottoms} 件下装就能搭出更多套"
+    return None
+
+
 async def today_response(
     daily: DailyRecommendation,
     session: AsyncSession,
@@ -200,6 +230,11 @@ async def today_response(
     guidance = None
     if daily.status == RecommendationStatus.INSUFFICIENT_ITEMS.value:
         guidance = "再加一件下装就能搭"
+    elif daily.status == RecommendationStatus.READY.value:
+        # "ready" can still hide a structural gap: e.g. 5 tops but 0 bottoms only
+        # yields a single dress-based outfit. The client's insufficient-items
+        # banner never fires here, so surface a hint to unlock more combinations.
+        guidance = await _coverage_gap_hint(session, daily.user_id)
     outfits = sorted(daily.outfits, key=lambda o: o.rank_order)
     selected_outfits = _select_outfits_for_remaining_time(outfits, departure_time)
     selected_outfits = _select_outfits_for_scene(selected_outfits, scene)

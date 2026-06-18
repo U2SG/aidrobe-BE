@@ -74,6 +74,47 @@ async def test_existing_ready_recommendation_returns_immediately(db_session: Asy
     assert response.json()["data"]["outfits"]
 
 
+async def seed_tops_only_recommendation(session: AsyncSession, user_id: uuid.UUID) -> None:
+    session.add(User(id=user_id))
+    await session.flush()
+    for title, color in [("White shirt", "white"), ("Blue shirt", "blue"), ("Gray shirt", "gray")]:
+        session.add(
+            WardrobeItem(
+                user_id=user_id,
+                title=title,
+                category=Category.TOP.value,
+                color_main=color,
+                status=ItemStatus.WEARABLE.value,
+            )
+        )
+    await session.flush()
+    await RecommendationGenerator(SqlAlchemyRecommendationRepository(session)).generate_for_user(
+        user_id, date.today(), "manual"
+    )
+
+
+async def test_ready_with_only_tops_surfaces_coverage_gap_hint(db_session: AsyncSession) -> None:
+    # Tops but no bottoms: still "ready" (one stacked look), yet the wardrobe is
+    # structurally unable to combine. The insufficient-items banner never fires
+    # here, so the response must carry a nudge to add the missing category.
+    user_id = uuid.uuid4()
+    await seed_tops_only_recommendation(db_session, user_id)
+    app = build_recommendations_app(db_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            "/v1/recommendations/today", headers={"X-User-Id": str(user_id)}
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "ready"
+    assert data["guidance_text"]
+    assert "下装" in data["guidance_text"]
+
+
 async def test_missing_today_returns_insufficient_not_generating(db_session: AsyncSession) -> None:
     user_id = uuid.uuid4()
     app = build_recommendations_app(db_session)
