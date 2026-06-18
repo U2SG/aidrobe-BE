@@ -34,8 +34,9 @@ def build_history_app(session: AsyncSession) -> FastAPI:
 async def seed_wear_history(
     session: AsyncSession, user_id: uuid.UUID, worn_date: date
 ) -> WearHistory:
-    from app.infrastructure.persistence.models.recommendation import DailyRecommendation
     from sqlalchemy import select as sa_select
+
+    from app.infrastructure.persistence.models.recommendation import DailyRecommendation
 
     # Only add User if not already present (multiple calls with same user_id)
     existing = await session.scalar(sa_select(User).where(User.id == user_id))

@@ -204,14 +204,16 @@ async def main() -> None:
         "img{max-width:240px;max-height:320px;background:#fff;border:1px solid #eee}",
         "th{padding:8px}.cap{font-size:12px;color:#555;max-width:240px}</style>",
         "<h2>cutout compare — rembg(cloth_seg) vs wanx(description_edit)</h2>",
-        "<table><tr><th>category</th><th>original</th><th>A · rembg cloth_seg</th><th>B · wanx description_edit</th></tr>",
+        "<table><tr><th>category</th><th>original</th>"
+        "<th>A · rembg cloth_seg</th><th>B · wanx description_edit</th></tr>",
     ]
     for category, path, a_cell, b_cell in rows:
         html.append(
             f"<tr><td><b>{category}</b></td>"
             f"<td><img src='../in/{os.path.basename(path)}'><div class='cap'>original</div></td>"
             f"<td>{'<img src=' + rel(a_cell[0]) + '>' if a_cell[0] else '—'}<div class='cap'>{a_cell[1]}</div></td>"
-            f"<td>{'<img src=' + rel(b_cell[0]) + '>' if b_cell[0] else '—'}<div class='cap'>{b_cell[1]}</div></td></tr>"
+            f"<td>{'<img src=' + rel(b_cell[0]) + '>' if b_cell[0] else '—'}"
+            f"<div class='cap'>{b_cell[1]}</div></td></tr>"
         )
     html.append("</table>")
     with open(f"{OUT}/compare.html", "w", encoding="utf-8") as f:
