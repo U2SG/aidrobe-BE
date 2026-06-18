@@ -56,3 +56,12 @@ def test_build_prompt_feeds_wardrobe_and_hides_titles() -> None:
 def test_build_prompt_honors_locale() -> None:
     assert _build_system_prompt(uuid.uuid4(), [], "en").startswith("You are Aidrobe")
     assert _build_system_prompt(uuid.uuid4(), [], "zh-CN").startswith("你是 Aidrobe")
+
+
+def test_focus_clause_added_only_when_focused() -> None:
+    plain = _build_system_prompt(uuid.uuid4(), [], "en", focused=False)
+    focused = _build_system_prompt(uuid.uuid4(), [], "en", focused=True)
+    assert "FIRST item" not in plain
+    assert "FIRST item" in focused
+    # Locale-aware: Chinese focus clause for a Chinese locale.
+    assert "第 1 件" in _build_system_prompt(uuid.uuid4(), [], "zh-CN", focused=True)

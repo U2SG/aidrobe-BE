@@ -55,10 +55,21 @@ _PREAMBLES: dict[str, str] = {
 }
 _DEFAULT_LANG = "zh"
 
+# Appended when the caller scoped the Ask to one item; that item is placed
+# first in the candidate list, so the clause refers to position #1.
+_FOCUS_CLAUSE: dict[str, str] = {
+    "zh": "用户希望围绕列表中第 1 件单品来搭配，请优先考虑它。\n",
+    "en": "The user wants to build an outfit around the FIRST item in the list; prioritize it.\n",
+}
+
+
+def _resolve_lang(locale: str | None) -> str:
+    lang = (locale or "").split("-", 1)[0].lower()
+    return lang if lang in _PREAMBLES else _DEFAULT_LANG
+
 
 def _preamble_for(locale: str | None) -> str:
-    lang = (locale or "").split("-", 1)[0].lower()
-    return _PREAMBLES.get(lang, _PREAMBLES[_DEFAULT_LANG])
+    return _PREAMBLES[_resolve_lang(locale)]
 
 
 @dataclass(frozen=True)
@@ -84,17 +95,25 @@ def _item_to_sanitized(item: WardrobeItem) -> dict[str, Any]:
 
 
 def _build_system_prompt(
-    user_id: uuid.UUID, items: list[WardrobeItem], locale: str | None
+    user_id: uuid.UUID,
+    items: list[WardrobeItem],
+    locale: str | None,
+    *,
+    focused: bool = False,
 ) -> str:
     # Items are already field-sanitized by `_item_to_sanitized`; build the
     # final payload directly and attach the opaque user token. Do NOT re-run
     # the container through `sanitize_for_llm` — its whitelist has no "items"
     # key, so a second pass would silently strip the entire wardrobe.
+    lang = _resolve_lang(locale)
+    preamble = _PREAMBLES[lang]
+    if focused:
+        preamble += _FOCUS_CLAUSE[lang]
     payload = {
         "items": [_item_to_sanitized(i) for i in items],
         "usr": hash_user_token(user_id),
     }
-    return _preamble_for(locale) + json.dumps(payload, ensure_ascii=False)
+    return preamble + json.dumps(payload, ensure_ascii=False)
 
 
 async def answer_question(
@@ -105,8 +124,26 @@ async def answer_question(
     context: dict[str, Any] | None,
     llm: LlmPort,
     locale: str | None = None,
+    focused_item_id: uuid.UUID | None = None,
 ) -> AskResult:
-    # Quota first — refuses BEFORE any LLM spend. DB-aggregate path (no
+    # Validate the focused item before any quota/LLM work. Per repo convention
+    # a non-owned (or soft-deleted) resource returns 404 — never reveal that
+    # someone else's item exists.
+    focused_item: WardrobeItem | None = None
+    if focused_item_id is not None:
+        focused_item = await session.get(WardrobeItem, focused_item_id)
+        if (
+            focused_item is None
+            or focused_item.user_id != user_id
+            or focused_item.deleted_at is not None
+        ):
+            raise FriendlyException(
+                error_codes.NOT_FOUND,
+                "Item not found",
+                status_code=404,
+            )
+
+    # Quota next — refuses BEFORE any LLM spend. DB-aggregate path (no
     # redis_client) so tests are deterministic; no-op when ENABLE_COST_GUARD
     # is off.
     await assert_within_quota(
@@ -125,7 +162,16 @@ async def answer_question(
         )
     )
 
-    system_prompt = _build_system_prompt(user_id, items, locale)
+    if focused_item is not None:
+        # Guarantee the focused item is present and first, even if it's not
+        # wearable or fell outside the wearable-items limit. Dedupe so it
+        # isn't listed twice.
+        items = [focused_item] + [i for i in items if i.id != focused_item.id]
+        items = items[:_MAX_ITEMS]
+
+    system_prompt = _build_system_prompt(
+        user_id, items, locale, focused=focused_item is not None
+    )
     answer = await llm.ask(system_prompt, question)
 
     if not answer.text:
