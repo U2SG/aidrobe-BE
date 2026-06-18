@@ -31,11 +31,13 @@ class QwenLlm:
             response.raise_for_status()
         return str(response.json()["choices"][0]["message"]["content"])
 
-    async def ask(self, system_prompt: str, question: str) -> LlmAnswer:
+    async def ask(
+        self, system_prompt: str, question: str, *, json_mode: bool = False
+    ) -> LlmAnswer:
         if not self.settings.QWEN_API_KEY:
             return LlmAnswer(text="", tokens_used=0)
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.settings.QWEN_LLM_MODEL,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -43,6 +45,9 @@ class QwenLlm:
             ],
             "temperature": 0.4,
         }
+        if json_mode:
+            # OpenAI-compatible JSON mode — constrain output to a JSON object.
+            payload["response_format"] = {"type": "json_object"}
         headers = {"Authorization": f"Bearer {self.settings.QWEN_API_KEY}"}
         try:
             async with httpx.AsyncClient(
