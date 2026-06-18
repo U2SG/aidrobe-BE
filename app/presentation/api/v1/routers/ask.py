@@ -55,6 +55,7 @@ async def ask(
         question=payload.question,
         context=context,
         llm=llm,
+        locale=payload.locale,
     )
     return AskResponse(
         ask_session_id=result.ask_session_id,

@@ -38,10 +38,27 @@ _MAX_ITEMS = 80
 _PROJECTED_TOKENS = 1_500
 _JOB_TYPE = "llm_ask"
 
-_SYSTEM_PREAMBLE = (
-    "你是 Aidrobe 的穿搭助理。基于用户提供的衣橱结构化数据回答穿搭问题，"
-    "建议要具体、可执行，只用中文回答。以下是用户的衣橱（已脱敏，仅含结构化属性）：\n"
-)
+# Locale-keyed system preambles. Default (and any unknown locale) falls back
+# to Chinese to preserve the pre-locale behavior. Match on the language
+# subtag only ("en-US" -> "en") so client BCP-47 variants all resolve.
+_PREAMBLES: dict[str, str] = {
+    "zh": (
+        "你是 Aidrobe 的穿搭助理。基于用户提供的衣橱结构化数据回答穿搭问题，"
+        "建议要具体、可执行，只用中文回答。以下是用户的衣橱（已脱敏，仅含结构化属性）：\n"
+    ),
+    "en": (
+        "You are Aidrobe's styling assistant. Answer styling questions using the "
+        "user's structured wardrobe data. Be specific and actionable, and respond "
+        "only in English. The wardrobe (sanitized, structured attributes only) "
+        "follows:\n"
+    ),
+}
+_DEFAULT_LANG = "zh"
+
+
+def _preamble_for(locale: str | None) -> str:
+    lang = (locale or "").split("-", 1)[0].lower()
+    return _PREAMBLES.get(lang, _PREAMBLES[_DEFAULT_LANG])
 
 
 @dataclass(frozen=True)
@@ -66,7 +83,9 @@ def _item_to_sanitized(item: WardrobeItem) -> dict[str, Any]:
     return sanitize_for_llm(raw)
 
 
-def _build_system_prompt(user_id: uuid.UUID, items: list[WardrobeItem]) -> str:
+def _build_system_prompt(
+    user_id: uuid.UUID, items: list[WardrobeItem], locale: str | None
+) -> str:
     # Items are already field-sanitized by `_item_to_sanitized`; build the
     # final payload directly and attach the opaque user token. Do NOT re-run
     # the container through `sanitize_for_llm` — its whitelist has no "items"
@@ -75,7 +94,7 @@ def _build_system_prompt(user_id: uuid.UUID, items: list[WardrobeItem]) -> str:
         "items": [_item_to_sanitized(i) for i in items],
         "usr": hash_user_token(user_id),
     }
-    return _SYSTEM_PREAMBLE + json.dumps(payload, ensure_ascii=False)
+    return _preamble_for(locale) + json.dumps(payload, ensure_ascii=False)
 
 
 async def answer_question(
@@ -85,6 +104,7 @@ async def answer_question(
     question: str,
     context: dict[str, Any] | None,
     llm: LlmPort,
+    locale: str | None = None,
 ) -> AskResult:
     # Quota first — refuses BEFORE any LLM spend. DB-aggregate path (no
     # redis_client) so tests are deterministic; no-op when ENABLE_COST_GUARD
@@ -105,7 +125,7 @@ async def answer_question(
         )
     )
 
-    system_prompt = _build_system_prompt(user_id, items)
+    system_prompt = _build_system_prompt(user_id, items, locale)
     answer = await llm.ask(system_prompt, question)
 
     if not answer.text:

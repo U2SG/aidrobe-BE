@@ -5038,6 +5038,18 @@
                 "type": "null"
               }
             ]
+          },
+          "locale": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 16
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locale"
           }
         },
         "type": "object",
