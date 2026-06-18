@@ -45,7 +45,9 @@ class QwenLlm:
         }
         headers = {"Authorization": f"Bearer {self.settings.QWEN_API_KEY}"}
         try:
-            async with httpx.AsyncClient(timeout=self.settings.LLM_TIMEOUT_SECONDS) as client:
+            async with httpx.AsyncClient(
+                timeout=self.settings.LLM_ASK_TIMEOUT_SECONDS
+            ) as client:
                 response = await client.post(
                     self.settings.QWEN_LLM_BASE_URL,
                     headers=headers,

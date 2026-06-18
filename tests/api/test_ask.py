@@ -377,8 +377,8 @@ async def test_ask_429_when_quota_exhausted(
     Seed enough llm_ask token cost for today to exceed a small limit, then
     the next ask must 429 before any LLM spend."""
     user_id = await _seed_user_and_items(db_session)
-    # Pre-existing usage today: 900 tokens against a 1000 limit; projected
-    # cost of the next ask (1500) blows the budget.
+    # Pre-existing usage today: 900 tokens against a 1000 limit; the projected
+    # cost of the next ask (base + per-item) pushes past the budget.
     db_session.add(
         AsyncJob(
             job_type="llm_ask",

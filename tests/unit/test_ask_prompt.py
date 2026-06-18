@@ -5,9 +5,11 @@ from __future__ import annotations
 import uuid
 
 from app.application.ask.answer_question import (
+    _BASE_PROJECTED_TOKENS,
     _build_system_prompt,
     _parse_structured,
     _preamble_for,
+    _project_tokens,
 )
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
@@ -100,6 +102,12 @@ def test_parse_structured_defaults_missing_refs_to_empty() -> None:
         "none",
         [],
     )
+
+
+def test_project_tokens_scales_with_item_count() -> None:
+    assert _project_tokens(0) == _BASE_PROJECTED_TOKENS
+    # More candidate items -> a larger pre-call reservation.
+    assert _project_tokens(80) > _project_tokens(10) > _project_tokens(0)
 
 
 def test_parse_structured_returns_none_on_bad_shape() -> None:

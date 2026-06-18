@@ -35,10 +35,17 @@ from app.infrastructure.persistence.repositories.ask_repo import SqlAlchemyAskRe
 
 # Cap the number of items injected so the prompt stays lightweight and cheap.
 _MAX_ITEMS = 80
-# Projected token cost used for the pre-call quota reservation when the
-# provider hasn't answered yet (DB-aggregate path reads this as the delta).
-_PROJECTED_TOKENS = 1_500
+# Pre-call quota reservation. The real cost is recorded post-call from the
+# provider's token count; this is only the admission estimate, so it scales
+# with the prompt size (preamble + question + N sanitized items) instead of a
+# flat guess that under-counts a full wardrobe.
+_BASE_PROJECTED_TOKENS = 400
+_TOKENS_PER_ITEM = 25
 _JOB_TYPE = "llm_ask"
+
+
+def _project_tokens(item_count: int) -> int:
+    return _BASE_PROJECTED_TOKENS + item_count * _TOKENS_PER_ITEM
 
 logger = structlog.get_logger(__name__)
 
@@ -196,13 +203,6 @@ async def answer_question(
                 status_code=404,
             )
 
-    # Quota next — refuses BEFORE any LLM spend. DB-aggregate path (no
-    # redis_client) so tests are deterministic; no-op when ENABLE_COST_GUARD
-    # is off.
-    await assert_within_quota(
-        session, user_id, _JOB_TYPE, cost_tokens=_PROJECTED_TOKENS
-    )
-
     items = list(
         await session.scalars(
             select(WardrobeItem)
@@ -221,6 +221,14 @@ async def answer_question(
         # isn't listed twice.
         items = [focused_item] + [i for i in items if i.id != focused_item.id]
         items = items[:_MAX_ITEMS]
+
+    # Quota — refuses BEFORE any LLM spend (the item fetch above is a cheap DB
+    # read, not spend). Projecting from the assembled candidate count keeps the
+    # reservation honest as the prompt grows. DB-aggregate path (no
+    # redis_client) so tests are deterministic; no-op when ENABLE_COST_GUARD off.
+    await assert_within_quota(
+        session, user_id, _JOB_TYPE, cost_tokens=_project_tokens(len(items))
+    )
 
     structured = get_settings().ENABLE_ASK_STRUCTURED_OUTPUT
     system_prompt = _build_system_prompt(

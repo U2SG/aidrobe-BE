@@ -29,6 +29,8 @@ class OpenAiLlm:
         self.api_key = settings.OPENAI_API_KEY
         self.model = settings.OPENAI_LLM_MODEL
         self.timeout_seconds = settings.LLM_TIMEOUT_SECONDS
+        # Ask carries a much larger prompt than polish_reason — give it room.
+        self.ask_timeout_seconds = settings.LLM_ASK_TIMEOUT_SECONDS
 
     async def polish_reason(self, prompt: str) -> str:
         if not self.api_key:
@@ -62,7 +64,7 @@ class OpenAiLlm:
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            async with httpx.AsyncClient(timeout=self.ask_timeout_seconds) as client:
                 response = await client.post(self.RESPONSES_URL, headers=headers, json=payload)
                 response.raise_for_status()
             data = response.json()
