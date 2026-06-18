@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -43,8 +43,8 @@ class WardrobeItemImagesResponse(BaseModel):
 )
 async def get_outfit_visual_asset(
     asset_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: Any = Depends(get_current_user),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
 ) -> OutfitVisualAssetResponse:
     from app.infrastructure.persistence.repositories.outfit_visual_repo import (
         SqlAlchemyOutfitVisualRepository,
@@ -134,8 +134,8 @@ def _resolve_render_url(object_key: str | None, fallback_url: str | None) -> str
 )
 async def get_item_images(
     item_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: Any = Depends(get_current_user),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
 ) -> WardrobeItemImagesResponse:
     from sqlalchemy import select
 

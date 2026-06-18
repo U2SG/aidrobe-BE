@@ -1,7 +1,7 @@
 """Wardrobe insights query functions — M12."""
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import case, func, select
@@ -12,7 +12,7 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 
 async def get_summary(user_id: uuid.UUID, session: AsyncSession) -> dict:
-    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=60)
+    cutoff = datetime.now(tz=UTC) - timedelta(days=60)
 
     row = await session.execute(
         select(
@@ -99,7 +99,7 @@ async def get_top_items(user_id: uuid.UUID, session: AsyncSession, limit: int = 
 async def get_idle_items(
     user_id: uuid.UUID, session: AsyncSession, threshold_days: int = 60
 ) -> list:
-    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=threshold_days)
+    cutoff = datetime.now(tz=UTC) - timedelta(days=threshold_days)
     result = await session.execute(
         select(WardrobeItem)
         .where(

@@ -1,0 +1,11 @@
+<!doctype html><meta charset='utf-8'><title>cutout compare</title>
+<style>body{font-family:system-ui;background:#fafafa;color:#0a0a0a;margin:24px}
+table{border-collapse:collapse}td{border:1px solid #ddd;padding:8px;vertical-align:top;text-align:center}
+img{max-width:240px;max-height:320px;background:#fff;border:1px solid #eee}
+th{padding:8px}.cap{font-size:12px;color:#555;max-width:240px}</style>
+<h2>cutout compare — rembg(cloth_seg) vs wanx(description_edit)</h2>
+<table><tr><th>category</th><th>original</th><th>A · rembg cloth_seg</th><th>B · wanx description_edit</th></tr>
+<tr><td><b>top</b></td><td><img src='../in/d5a7fd26_top-selfie.jpg'><div class='cap'>original</div></td><td><img src=d5a7fd26_top-selfie__A_rembg.png><div class='cap'>6.7s · mask 0.0921 · cloth_seg row 0 (upper)</div></td><td><img src=d5a7fd26_top-selfie__B_wanx.png><div class='cap'>22.4s · ok</div></td></tr>
+<tr><td><b>dress</b></td><td><img src='../in/63e7de37_wardrobe-1781528482276.jpg'><div class='cap'>original</div></td><td><img src=63e7de37_wardrobe-1781528482276__A_rembg.png><div class='cap'>4.1s · mask 0.1165 · cloth_seg row 2 (full)</div></td><td><img src=63e7de37_wardrobe-1781528482276__B_wanx.png><div class='cap'>26.9s · ok</div></td></tr>
+<tr><td><b>shoes</b></td><td><img src='../in/dd1be4aa_wardrobe-1781531506616.jpg'><div class='cap'>original</div></td><td><img src=dd1be4aa_wardrobe-1781531506616__A_rembg.png><div class='cap'>6.4s · mask 0.0177 · cloth_seg row 2 (full)</div></td><td><img src=dd1be4aa_wardrobe-1781531506616__B_wanx.png><div class='cap'>29.7s · ok</div></td></tr>
+</table>
