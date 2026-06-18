@@ -11,6 +11,11 @@ from app.application.ask.answer_question import (
     _preamble_for,
     _project_tokens,
 )
+from app.application.ask.wardrobe_context import (
+    WardrobeContext,
+    context_snapshot,
+    summarize_wardrobe,
+)
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 
@@ -35,6 +40,27 @@ def _items() -> list[WardrobeItem]:
     ]
 
 
+def _ctx(
+    *,
+    locale: str = "zh",
+    scope: str = "wardrobe",
+    items: list[WardrobeItem] | None = None,
+    style_tags: list[str] | None = None,
+) -> WardrobeContext:
+    items = items or []
+    return WardrobeContext(
+        scope=scope,
+        focused_item_id=None,
+        locale=locale,
+        wardrobe_summary=summarize_wardrobe(items),
+        style_profile={"style_tags": style_tags or [], "preferred_colors": []},
+        fit_preferences={},
+        recent_categories=[],
+        departure_time=None,
+        candidate_item_ids=[str(i.id) for i in items],
+    )
+
+
 def test_preamble_defaults_to_chinese() -> None:
     assert _preamble_for(None).startswith("你是 Aidrobe")
     assert _preamble_for("").startswith("你是 Aidrobe")
@@ -49,7 +75,8 @@ def test_preamble_matches_language_subtag() -> None:
 
 
 def test_build_prompt_feeds_wardrobe_and_hides_titles() -> None:
-    prompt = _build_system_prompt(uuid.uuid4(), _items(), None)
+    items = _items()
+    prompt = _build_system_prompt(uuid.uuid4(), items, _ctx(items=items))
     # Sanitized structured attributes reach the prompt...
     assert '"category": "top"' in prompt
     assert '"color_main": "white"' in prompt
@@ -60,24 +87,73 @@ def test_build_prompt_feeds_wardrobe_and_hides_titles() -> None:
 
 
 def test_build_prompt_honors_locale() -> None:
-    assert _build_system_prompt(uuid.uuid4(), [], "en").startswith("You are Aidrobe")
-    assert _build_system_prompt(uuid.uuid4(), [], "zh-CN").startswith("你是 Aidrobe")
+    assert _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en")).startswith(
+        "You are Aidrobe"
+    )
+    assert _build_system_prompt(uuid.uuid4(), [], _ctx(locale="zh")).startswith(
+        "你是 Aidrobe"
+    )
 
 
 def test_focus_clause_added_only_when_focused() -> None:
-    plain = _build_system_prompt(uuid.uuid4(), [], "en", focused=False)
-    focused = _build_system_prompt(uuid.uuid4(), [], "en", focused=True)
+    plain = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en", scope="wardrobe"))
+    focused = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en", scope="item"))
     assert "FIRST item" not in plain
     assert "FIRST item" in focused
     # Locale-aware: Chinese focus clause for a Chinese locale.
-    assert "第 1 件" in _build_system_prompt(uuid.uuid4(), [], "zh-CN", focused=True)
+    assert "第 1 件" in _build_system_prompt(
+        uuid.uuid4(), [], _ctx(locale="zh", scope="item")
+    )
 
 
 def test_structured_instruction_added_only_when_structured() -> None:
-    plain = _build_system_prompt(uuid.uuid4(), [], "en", structured=False)
-    structured = _build_system_prompt(uuid.uuid4(), [], "en", structured=True)
+    plain = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en"), structured=False)
+    structured = _build_system_prompt(
+        uuid.uuid4(), [], _ctx(locale="en"), structured=True
+    )
     assert "referenced_items" not in plain
     assert "referenced_items" in structured
+
+
+def test_build_prompt_includes_context_dimensions() -> None:
+    items = _items()
+    ctx = _ctx(items=items, style_tags=["minimal", "commute"])
+    prompt = _build_system_prompt(uuid.uuid4(), items, ctx)
+    # Each context dimension actually reaches the prompt (regression guard
+    # against silently dropping context like the original double-sanitize bug).
+    assert '"wardrobe_summary"' in prompt
+    assert '"style_profile"' in prompt
+    assert "minimal" in prompt  # style tag flows through
+    assert '"fit_preferences"' in prompt
+    assert '"recent_categories"' in prompt
+    assert '"scope"' in prompt
+
+
+def test_summarize_wardrobe_counts_by_category() -> None:
+    summary = summarize_wardrobe(_items())
+    assert summary["total"] == 2
+    assert summary["by_category"] == {"top": 1, "bottom": 1}
+
+
+def test_context_snapshot_is_versioned_and_complete() -> None:
+    snap = context_snapshot(_ctx(items=_items()))
+    assert snap["snapshot_version"] == 1
+    for key in (
+        "scope",
+        "locale",
+        "wardrobe_summary",
+        "style_profile",
+        "fit_preferences",
+        "recent_categories",
+        "candidate_item_ids",
+    ):
+        assert key in snap
+
+
+def test_project_tokens_scales_with_item_count() -> None:
+    assert _project_tokens(0) == _BASE_PROJECTED_TOKENS
+    # More candidate items -> a larger pre-call reservation.
+    assert _project_tokens(80) > _project_tokens(10) > _project_tokens(0)
 
 
 def test_parse_structured_maps_valid_positions_to_indices() -> None:
@@ -102,12 +178,6 @@ def test_parse_structured_defaults_missing_refs_to_empty() -> None:
         "none",
         [],
     )
-
-
-def test_project_tokens_scales_with_item_count() -> None:
-    assert _project_tokens(0) == _BASE_PROJECTED_TOKENS
-    # More candidate items -> a larger pre-call reservation.
-    assert _project_tokens(80) > _project_tokens(10) > _project_tokens(0)
 
 
 def test_parse_structured_returns_none_on_bad_shape() -> None:
