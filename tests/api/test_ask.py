@@ -255,6 +255,75 @@ async def test_ask_locale_switches_preamble_language(
     assert '"category": "top"' in llm.last_system_prompt
 
 
+async def test_ask_structured_validates_item_refs(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With structured output on, item_refs is the validated cited subset and
+    the human answer is unwrapped from the JSON envelope."""
+    user_id = await _seed_user_and_items(db_session)  # 2 wearable items
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    structured = Settings(
+        APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True
+    )
+    monkeypatch.setattr(
+        "app.application.ask.answer_question.get_settings", lambda: structured
+    )
+    # Model cites position 1 (valid) and 9 (hallucinated, out of range).
+    llm = _FakeLlm(
+        text='{"answer": "穿白衬衫吧", "referenced_items": [1, 9]}'
+    )
+    app = _build_app(
+        db_session,
+        Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
+        llm=llm,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "今天穿什么？"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["answer"] == "穿白衬衫吧"  # unwrapped from the JSON envelope
+    assert len(body["item_refs"]) == 1  # only the in-range position survives
+
+
+async def test_ask_structured_parse_failure_keeps_text_drops_refs(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the model ignores the JSON contract, keep its text as the answer but
+    emit no item_refs (stay honest rather than surface uncited items)."""
+    user_id = await _seed_user_and_items(db_session)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    structured = Settings(
+        APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True
+    )
+    monkeypatch.setattr(
+        "app.application.ask.answer_question.get_settings", lambda: structured
+    )
+    llm = _FakeLlm(text="我觉得你可以穿蓝色。")  # free text, not JSON
+    app = _build_app(
+        db_session,
+        Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
+        llm=llm,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "今天穿什么？"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["answer"] == "我觉得你可以穿蓝色。"
+    assert body["item_refs"] == []
+
+
 async def test_ask_503_when_llm_unavailable(
     db_session: AsyncSession, patch_router_settings
 ) -> None:
