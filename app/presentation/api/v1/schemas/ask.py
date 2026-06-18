@@ -15,6 +15,9 @@ class AskContext(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     context: AskContext | None = None
+    # BCP-47-ish locale hint for the answer language (e.g. "zh-CN", "en").
+    # Request-passed only — not persisted on the user. Defaults to Chinese.
+    locale: str | None = Field(default=None, max_length=16)
 
 
 class AskResponse(BaseModel):

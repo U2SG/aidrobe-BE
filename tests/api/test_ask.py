@@ -172,6 +172,31 @@ async def test_ask_feeds_wardrobe_into_prompt(
     assert "usr_" in llm.last_system_prompt
 
 
+async def test_ask_locale_switches_preamble_language(
+    db_session: AsyncSession, patch_router_settings
+) -> None:
+    """A request `locale` flows through to the system-prompt preamble."""
+    user_id = await _seed_user_and_items(db_session)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    llm = _FakeLlm()
+    app = _build_app(
+        db_session,
+        Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
+        llm=llm,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "what should I wear?", "locale": "en-US"},
+        )
+    assert resp.status_code == 200
+    assert llm.last_system_prompt is not None
+    assert llm.last_system_prompt.startswith("You are Aidrobe")
+    # Wardrobe still reaches the prompt regardless of locale.
+    assert '"category": "top"' in llm.last_system_prompt
+
+
 async def test_ask_503_when_llm_unavailable(
     db_session: AsyncSession, patch_router_settings
 ) -> None:
