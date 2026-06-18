@@ -28,11 +28,13 @@ class _FakeLlm:
     def __init__(self, *, text: str = "建议搭配白衬衫和黑裤子。", tokens: int = 42) -> None:
         self._text = text
         self._tokens = tokens
+        self.last_system_prompt: str | None = None
 
     async def polish_reason(self, prompt: str) -> str:
         return ""
 
     async def ask(self, system_prompt: str, question: str) -> LlmAnswer:
+        self.last_system_prompt = system_prompt
         return LlmAnswer(text=self._text, tokens_used=self._tokens)
 
 
@@ -135,6 +137,39 @@ async def test_ask_happy_path(
     # v1: references the items fed into the prompt (both wearable items).
     assert len(body["item_refs"]) == 2
     assert uuid.UUID(body["ask_session_id"])
+
+
+async def test_ask_feeds_wardrobe_into_prompt(
+    db_session: AsyncSession, patch_router_settings
+) -> None:
+    """Regression: the sanitized wardrobe MUST reach the LLM system prompt.
+
+    A previous double-sanitization bug ran the `{"items": [...]}` container
+    through `sanitize_for_llm`, whose whitelist has no "items" key, silently
+    stripping the entire wardrobe so the LLM answered with zero context."""
+    user_id = await _seed_user_and_items(db_session)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    llm = _FakeLlm()
+    app = _build_app(
+        db_session,
+        Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
+        llm=llm,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "今天穿什么？"},
+        )
+    assert resp.status_code == 200
+    assert llm.last_system_prompt is not None
+    # Both seeded items' structured attributes are present in the prompt.
+    assert '"category": "top"' in llm.last_system_prompt
+    assert '"color_main": "white"' in llm.last_system_prompt
+    assert '"category": "bottom"' in llm.last_system_prompt
+    assert '"color_main": "black"' in llm.last_system_prompt
+    # The opaque user token is still attached for cross-turn identity.
+    assert "usr_" in llm.last_system_prompt
 
 
 async def test_ask_503_when_llm_unavailable(

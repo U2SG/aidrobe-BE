@@ -26,7 +26,7 @@ from app.application.ports.llm import LlmPort
 from app.common import error_codes
 from app.common.enums import ItemStatus
 from app.common.exceptions import FriendlyException
-from app.infrastructure.llm.sanitizer import attach_user_token, sanitize_for_llm
+from app.infrastructure.llm.sanitizer import hash_user_token, sanitize_for_llm
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.ask_repo import SqlAlchemyAskRepository
@@ -67,9 +67,14 @@ def _item_to_sanitized(item: WardrobeItem) -> dict[str, Any]:
 
 
 def _build_system_prompt(user_id: uuid.UUID, items: list[WardrobeItem]) -> str:
-    payload = attach_user_token(
-        {"items": [_item_to_sanitized(i) for i in items]}, user_id
-    )
+    # Items are already field-sanitized by `_item_to_sanitized`; build the
+    # final payload directly and attach the opaque user token. Do NOT re-run
+    # the container through `sanitize_for_llm` — its whitelist has no "items"
+    # key, so a second pass would silently strip the entire wardrobe.
+    payload = {
+        "items": [_item_to_sanitized(i) for i in items],
+        "usr": hash_user_token(user_id),
+    }
     return _SYSTEM_PREAMBLE + json.dumps(payload, ensure_ascii=False)
 
 
