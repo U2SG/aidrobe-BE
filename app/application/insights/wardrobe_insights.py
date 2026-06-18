@@ -3,6 +3,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +12,7 @@ from app.infrastructure.persistence.models.recommendation import WearHistory
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 
-async def get_summary(user_id: uuid.UUID, session: AsyncSession) -> dict:
+async def get_summary(user_id: uuid.UUID, session: AsyncSession) -> dict[str, Any]:
     cutoff = datetime.now(tz=UTC) - timedelta(days=60)
 
     row = await session.execute(
@@ -83,7 +84,7 @@ async def get_summary(user_id: uuid.UUID, session: AsyncSession) -> dict:
     }
 
 
-async def get_top_items(user_id: uuid.UUID, session: AsyncSession, limit: int = 10) -> list:
+async def get_top_items(user_id: uuid.UUID, session: AsyncSession, limit: int = 10) -> list[Any]:
     result = await session.execute(
         select(WardrobeItem)
         .where(
@@ -98,7 +99,7 @@ async def get_top_items(user_id: uuid.UUID, session: AsyncSession, limit: int = 
 
 async def get_idle_items(
     user_id: uuid.UUID, session: AsyncSession, threshold_days: int = 60
-) -> list:
+) -> list[Any]:
     cutoff = datetime.now(tz=UTC) - timedelta(days=threshold_days)
     result = await session.execute(
         select(WardrobeItem)
@@ -125,7 +126,7 @@ async def get_color_palette(user_id: uuid.UUID, session: AsyncSession) -> dict[s
     return {row.color_main: row.cnt for row in result.all()}
 
 
-async def get_style_trend(user_id: uuid.UUID, session: AsyncSession) -> list:
+async def get_style_trend(user_id: uuid.UUID, session: AsyncSession) -> list[Any]:
     """Aggregate style_tags by wear month via WearHistory → OutfitItem → WardrobeItem."""
     from collections import Counter
 
@@ -146,7 +147,7 @@ async def get_style_trend(user_id: uuid.UUID, session: AsyncSession) -> list:
     )
     rows = result.all()
 
-    monthly: dict[str, Counter] = {}
+    monthly: dict[str, Counter[str]] = {}
     for year_month, style_tags in rows:
         tags = style_tags if isinstance(style_tags, list) else []
         if year_month not in monthly:
@@ -159,7 +160,7 @@ async def get_style_trend(user_id: uuid.UUID, session: AsyncSession) -> list:
     ]
 
 
-async def get_cost_per_wear(user_id: uuid.UUID, session: AsyncSession) -> list:
+async def get_cost_per_wear(user_id: uuid.UUID, session: AsyncSession) -> list[Any]:
     result = await session.execute(
         select(WardrobeItem)
         .where(

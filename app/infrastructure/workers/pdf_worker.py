@@ -120,7 +120,7 @@ def _rasterize_pdf(pdf_bytes: bytes, *, dpi: int = RENDER_DPI) -> list[bytes]:
     poppler binary, an optional system dep. If it's missing we raise so the
     job retries/dies cleanly rather than taking down import-time."""
     try:
-        from pdf2image import convert_from_bytes  # type: ignore[import-untyped]
+        from pdf2image import convert_from_bytes
     except Exception as exc:  # ImportError or poppler-not-found at import
         raise RuntimeError(f"pdf2image_unavailable: {exc}") from exc
 

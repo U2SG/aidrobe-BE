@@ -113,7 +113,7 @@ async def _by_embedding(
             WardrobeItem.deleted_at.is_(None),
             WardrobeItem.id.notin_(exclude),
         )
-        .order_by(ItemEmbedding.vector.op("<->")(src_vector))  # type: ignore[attr-defined]
+        .order_by(ItemEmbedding.vector.op("<->")(src_vector))
         .limit(k)
     )
     rows = (await session.execute(stmt)).scalars().all()

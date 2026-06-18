@@ -87,7 +87,7 @@ async def usage_today(
     if job_type == "llm_ask":
         # Token quotas count ALL cost-bearing statuses including failed/
         # dead — see docstring rationale.
-        statuses = ("succeeded", "running", "failed", "dead")
+        statuses: tuple[str, ...] = ("succeeded", "running", "failed", "dead")
         return int(
             (
                 await session.execute(

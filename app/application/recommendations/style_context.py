@@ -2,6 +2,7 @@
 
 import uuid
 from collections import Counter
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +21,7 @@ _DEFAULT_TEMPLATE = "general_v1"
 
 async def build_style_context(
     user_id: uuid.UUID, session: AsyncSession
-) -> dict:
+) -> dict[str, Any]:
     result = await session.execute(
         select(UserStyleProfile).where(
             UserStyleProfile.user_id == user_id,
@@ -29,9 +30,9 @@ async def build_style_context(
     )
     profiles = list(result.scalars().all())
 
-    tag_counter: Counter = Counter()
+    tag_counter: Counter[str] = Counter()
     for p in profiles:
-        tags = p.style_tags or []
+        tags: Any = p.style_tags or []
         if isinstance(tags, list):
             tag_counter.update(tags)
 

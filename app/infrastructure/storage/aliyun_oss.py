@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from typing import cast
 
 from app.application.ports.storage import PresignResult
 from app.config.settings import Settings
@@ -133,10 +134,11 @@ class AliyunOssStorage:
         params: dict[str, str] = {}
         if process is not None:
             params["x-oss-process"] = process
-        return self._bucket.sign_url(  # type: ignore[attr-defined]
+        signed = self._bucket.sign_url(  # type: ignore[attr-defined]
             "GET",
             key,
             ttl_seconds,
             slash_safe=True,
             params=params,
         )
+        return cast(str, signed)

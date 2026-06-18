@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 from functools import lru_cache
+from typing import cast
 
 import structlog
 from redis.asyncio import Redis
@@ -15,7 +16,7 @@ logger = structlog.get_logger(__name__)
 @lru_cache
 def _redis_client() -> Redis:
     settings = get_settings()
-    return Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    return cast(Redis, Redis.from_url(settings.REDIS_URL, decode_responses=True))
 
 
 def get_redis_client() -> Redis:

@@ -55,8 +55,8 @@ class ClipEmbedder:
         if self._model is not None:
             return
 
-        import open_clip  # type: ignore[import-not-found]
-        import torch  # type: ignore[import-not-found]
+        import open_clip
+        import torch
 
         model, _, preprocess = open_clip.create_model_and_transforms(
             self.MODEL_NAME,

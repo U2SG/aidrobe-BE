@@ -3,9 +3,9 @@ from urllib.parse import urlparse
 try:
     from arq.connections import RedisSettings
     from arq.cron import cron
-except ImportError:
-    RedisSettings = None
-    cron = None
+except ImportError:  # arq is optional at runtime
+    RedisSettings = None  # type: ignore[assignment, misc]
+    cron = None  # type: ignore[assignment]
 
 from app.application.fit_profile.build_fit_profile import build_all_fit_profiles
 from app.config.settings import get_settings

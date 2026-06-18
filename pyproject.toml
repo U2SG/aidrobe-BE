@@ -86,3 +86,7 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = "rembg.*"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["yaml", "open_clip.*", "aliyunsdkcore.*", "aliyunsdksts.*"]
+ignore_missing_imports = true

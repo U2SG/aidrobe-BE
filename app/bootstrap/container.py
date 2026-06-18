@@ -4,14 +4,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 try:
     from arq.connections import RedisSettings, create_pool
-except ImportError:
-    RedisSettings = None
-    create_pool = None
+except ImportError:  # arq is optional at runtime
+    RedisSettings = None  # type: ignore[assignment, misc]
+    create_pool = None  # type: ignore[assignment]
 
 from app.application.ports.embedding import EmbeddingPort
 from app.application.ports.image_cutout import ImageCutoutPort
 from app.application.ports.llm import LlmPort
 from app.application.ports.ocr import OcrPort
+from app.application.ports.sts_token import StsTokenPort
 from app.application.ports.weather import WeatherPort
 from app.config.settings import get_settings
 from app.infrastructure.cache.client import get_redis_client
@@ -54,7 +55,7 @@ def object_storage() -> LocalObjectStorage | S3ObjectStorage:
     raise ValueError(f"Unsupported storage provider: {settings.STORAGE_PROVIDER}")
 
 
-def sts_provider() -> object:
+def sts_provider() -> StsTokenPort:
     """Phase E5 — STS issuer for client-direct OSS uploads. Returns Fake in
     dev / test (no Aliyun SDK round-trip), real Aliyun provider in prod."""
     settings = get_settings()
