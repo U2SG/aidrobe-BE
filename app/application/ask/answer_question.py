@@ -248,7 +248,7 @@ async def answer_question(
         today=datetime.now(UTC).date(),
     )
     system_prompt = _build_system_prompt(user_id, items, ctx, structured=structured)
-    answer = await llm.ask(system_prompt, question)
+    answer = await llm.ask(system_prompt, question, json_mode=structured)
 
     if not answer.text:
         # Provider not configured (LLM_PROVIDER=none) — degrade gracefully.
