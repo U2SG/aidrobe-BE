@@ -172,6 +172,64 @@ async def test_ask_feeds_wardrobe_into_prompt(
     assert "usr_" in llm.last_system_prompt
 
 
+async def _seed_focused_item(session: AsyncSession, user_id: uuid.UUID) -> uuid.UUID:
+    """Add one distinctive item to an existing user and return its id."""
+    item = WardrobeItem(
+        user_id=user_id,
+        title="Beige trench",
+        category=Category.OUTERWEAR.value,
+        color_main="beige",
+        status=ItemStatus.WEARABLE.value,
+    )
+    session.add(item)
+    await session.flush()
+    return item.id
+
+
+async def test_ask_focused_item_pins_item_and_adds_focus_clause(
+    db_session: AsyncSession, patch_router_settings
+) -> None:
+    user_id = await _seed_user_and_items(db_session)
+    focus_id = await _seed_focused_item(db_session, user_id)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    llm = _FakeLlm()
+    app = _build_app(
+        db_session,
+        Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
+        llm=llm,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "用这件搭一套", "focused_item_id": str(focus_id)},
+        )
+    assert resp.status_code == 200
+    assert llm.last_system_prompt is not None
+    # Focus clause present and the focused item's attribute reaches the prompt.
+    assert "第 1 件" in llm.last_system_prompt
+    assert '"color_main": "beige"' in llm.last_system_prompt
+
+
+async def test_ask_focused_item_404_when_not_owned(
+    db_session: AsyncSession, patch_router_settings
+) -> None:
+    user_id = await _seed_user_and_items(db_session)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    app = _build_app(
+        db_session,
+        Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
+        llm=_FakeLlm(),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "用这件搭一套", "focused_item_id": str(uuid.uuid4())},
+        )
+    assert resp.status_code == 404
+
+
 async def test_ask_locale_switches_preamble_language(
     db_session: AsyncSession, patch_router_settings
 ) -> None:

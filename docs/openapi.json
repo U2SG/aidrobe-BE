@@ -5050,6 +5050,18 @@
               }
             ],
             "title": "Locale"
+          },
+          "focused_item_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Focused Item Id"
           }
         },
         "type": "object",
