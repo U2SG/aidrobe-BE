@@ -46,7 +46,7 @@ class ConfirmImageImportTask:
         purchase_price: Decimal | None = None,
         purchase_date: date | None = None,
     ) -> WardrobeItem:
-        task = await self.import_task_repository.get_for_user(task_id, user_id)
+        task = await self.import_task_repository.get_for_user(task_id, user_id, for_update=True)
         if task is None:
             raise FriendlyException(error_codes.NOT_FOUND, "Import task not found", status_code=404)
         if task.task_status != ImportStatus.WAITING_CONFIRM.value:
