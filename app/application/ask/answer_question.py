@@ -16,12 +16,19 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ask.wardrobe_context import (
+    WardrobeContext,
+    build_wardrobe_context,
+    context_for_prompt,
+    context_snapshot,
+)
 from app.application.cost_guard import assert_within_quota
 from app.application.ports.llm import LlmPort
 from app.common import error_codes
@@ -125,26 +132,27 @@ def _item_to_sanitized(item: WardrobeItem) -> dict[str, Any]:
 def _build_system_prompt(
     user_id: uuid.UUID,
     items: list[WardrobeItem],
-    locale: str | None,
+    ctx: WardrobeContext,
     *,
-    focused: bool = False,
     structured: bool = False,
 ) -> str:
-    # Items are already field-sanitized by `_item_to_sanitized`; build the
+    # Items are already field-sanitized by `_item_to_sanitized`; the context
+    # block is derived/bounded (see wardrobe_context safety story). Build the
     # final payload directly and attach the opaque user token. Do NOT re-run
     # the container through `sanitize_for_llm` — its whitelist has no "items"
     # key, so a second pass would silently strip the entire wardrobe.
-    lang = _resolve_lang(locale)
-    preamble = _PREAMBLES[lang]
-    if focused:
-        preamble += _FOCUS_CLAUSE[lang]
+    lang = ctx.locale  # already resolved to a language subtag
+    preamble = _PREAMBLES.get(lang, _PREAMBLES[_DEFAULT_LANG])
+    if ctx.scope == "item":
+        preamble += _FOCUS_CLAUSE.get(lang, _FOCUS_CLAUSE[_DEFAULT_LANG])
     payload = {
+        "context": context_for_prompt(ctx),
         "items": [_item_to_sanitized(i) for i in items],
         "usr": hash_user_token(user_id),
     }
     prompt = preamble + json.dumps(payload, ensure_ascii=False)
     if structured:
-        prompt += _STRUCTURED_INSTRUCTION[lang]
+        prompt += _STRUCTURED_INSTRUCTION.get(lang, _STRUCTURED_INSTRUCTION[_DEFAULT_LANG])
     return prompt
 
 
@@ -231,13 +239,15 @@ async def answer_question(
     )
 
     structured = get_settings().ENABLE_ASK_STRUCTURED_OUTPUT
-    system_prompt = _build_system_prompt(
+    ctx = await build_wardrobe_context(
+        session,
         user_id,
-        items,
-        locale,
-        focused=focused_item is not None,
-        structured=structured,
+        items=items,
+        focused_item_id=focused_item_id,
+        locale=_resolve_lang(locale),
+        today=datetime.now(UTC).date(),
     )
+    system_prompt = _build_system_prompt(user_id, items, ctx, structured=structured)
     answer = await llm.ask(system_prompt, question)
 
     if not answer.text:
@@ -267,6 +277,11 @@ async def answer_question(
         item_refs = [str(i.id) for i in items]
     tokens_used = answer.tokens_used
 
+    # Persist the context snapshot alongside the client-supplied context
+    # (date/scene/time_left) so the answer stays traceable to the wardrobe
+    # state it was grounded in.
+    persisted_context = {**(context or {}), "snapshot": context_snapshot(ctx)}
+
     # Record cost on async_jobs — the cost-guard ground truth. Inline work,
     # so we write a terminal `succeeded` row directly rather than enqueue.
     ask_repo = SqlAlchemyAskRepository(session)
@@ -275,7 +290,7 @@ async def answer_question(
         question=question,
         answer=answer_text,
         item_refs=item_refs,
-        context=context,
+        context=persisted_context,
         tokens_used=tokens_used,
     )
     session.add(
