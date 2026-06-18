@@ -116,6 +116,26 @@ async def test_three_final_outfits_do_not_repeat_main_item_when_possible() -> No
 
 
 @pytest.mark.asyncio
+async def test_same_top_reused_with_different_bottoms_when_tops_are_scarce() -> None:
+    # One top, two bottoms. The old distinct-main-item rule collapsed this to a
+    # single outfit; the core-combo ladder lets the same top reappear in a
+    # different pairing, so the user still sees more than one look.
+    result = await RecommendationEngine().generate(
+        [
+            EngineItem("1", "White shirt", "top", "white"),
+            EngineItem("2", "Black pants", "bottom", "black"),
+            EngineItem("3", "Beige pants", "bottom", "beige"),
+        ]
+    )
+
+    assert result.status == "ready"
+    assert len(result.outfits) >= 2
+    cores = {tuple(sorted(outfit.item_ids)) for outfit in result.outfits}
+    assert len(cores) == len(result.outfits)  # no two looks share the same core
+    assert all("1" in outfit.item_ids for outfit in result.outfits)  # top reused
+
+
+@pytest.mark.asyncio
 async def test_recent_worn_main_item_is_downgraded() -> None:
     result = await RecommendationEngine().generate(
         [

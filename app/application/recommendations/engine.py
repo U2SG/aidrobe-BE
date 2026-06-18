@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -104,23 +105,40 @@ class RecommendationEngine:
                 guidance_text="再加一件下装就能搭",
             )
 
-        selected: list[EngineOutfit] = []
-        used_main_items: set[str] = set()
-        for outfit_type in [OutfitType.SAFE.value, OutfitType.FAST.value, OutfitType.STYLISH.value]:
-            matching = [
-                candidate
-                for candidate in candidates
-                if candidate.outfit_type == outfit_type
-                and self._main_item(candidate.item_ids, wearable) not in used_main_items
-            ]
-            if not matching:
-                continue
-            best = max(matching, key=lambda candidate: candidate.score_total)
-            selected.append(best)
-            main_item = self._main_item(best.item_ids, wearable)
-            if main_item:
-                used_main_items.add(main_item)
+        # Fill one outfit per type (safe / fast / stylish) via a de-dup *ladder*,
+        # not a hard distinct-main-item rule. The old rule reserved each top for a
+        # single variant, so a small wardrobe (or one dominant top) silently
+        # collapsed to a single outfit. Level 1 still prefers a distinct main item
+        # (most varied); level 2 fills the leftover slots allowing the same top in
+        # a *different core pairing* (same shirt, different trousers). We stop at
+        # the core combo — two variants never differ by shoes/accessory alone.
+        ordered_types = [OutfitType.SAFE.value, OutfitType.FAST.value, OutfitType.STYLISH.value]
+        chosen: dict[str, EngineOutfit] = {}
+        used_main: set[str] = set()
+        used_core: set[tuple[str, ...]] = set()
 
+        def _fill(key_fn: Callable[[EngineOutfit], Any], blocked: set[Any]) -> None:
+            for outfit_type in ordered_types:
+                if outfit_type in chosen:
+                    continue
+                pool = [
+                    candidate
+                    for candidate in candidates
+                    if candidate.outfit_type == outfit_type and key_fn(candidate) not in blocked
+                ]
+                if not pool:
+                    continue
+                best = max(pool, key=lambda candidate: candidate.score_total)
+                chosen[outfit_type] = best
+                main_item = self._main_item(best.item_ids, wearable)
+                if main_item:
+                    used_main.add(main_item)
+                used_core.add(self._core_key(best.item_ids, wearable))
+
+        _fill(lambda candidate: self._main_item(candidate.item_ids, wearable), used_main)
+        _fill(lambda candidate: self._core_key(candidate.item_ids, wearable), used_core)
+
+        selected = [chosen[outfit_type] for outfit_type in ordered_types if outfit_type in chosen]
         if not selected and candidates:
             selected.append(max(candidates, key=lambda candidate: candidate.score_total))
 
@@ -375,6 +393,21 @@ class RecommendationEngine:
             if item.category in {Category.TOP.value, Category.DRESS.value}:
                 return item_id
         return item_ids[0] if item_ids else None
+
+    def _core_key(self, item_ids: list[str], items: list[EngineItem]) -> tuple[str, ...]:
+        """Identity of an outfit's *core* (top + bottom, or a dress) — the pieces
+        that decide whether two variants are genuinely different looks. Shoes,
+        outerwear and accessories are deliberately excluded so that swapping only
+        a bag/shoe does not count as a new outfit."""
+        item_by_id = {item.item_id: item for item in items}
+        core_categories = {Category.TOP.value, Category.BOTTOM.value, Category.DRESS.value}
+        return tuple(
+            sorted(
+                item_id
+                for item_id in item_ids
+                if item_by_id[item_id].category in core_categories
+            )
+        )
 
 
 def _clamp_score(value: float) -> float:
