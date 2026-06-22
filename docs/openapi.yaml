@@ -3232,6 +3232,43 @@ components:
           - type: string
           - type: 'null'
           title: Purchase Date
+        temp_item_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Temp Item Id
+        sub_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sub Category
+        crop_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Crop Image Url
+        cutout_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cutout Image Url
+        bbox:
+          anyOf:
+          - items:
+              type: number
+            type: array
+          - type: 'null'
+          title: Bbox
+        visibility:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Visibility
+        should_import:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Should Import
       type: object
       required:
       - title
@@ -3830,6 +3867,12 @@ components:
           anyOf:
           - $ref: '#/components/schemas/CandidateItem'
           - type: 'null'
+        candidate_items:
+          items:
+            $ref: '#/components/schemas/CandidateItem'
+          type: array
+          title: Candidate Items
+          default: []
         error_code:
           anyOf:
           - type: string

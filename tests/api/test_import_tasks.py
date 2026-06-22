@@ -5,7 +5,10 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.enums import ImportStatus
 from app.config.settings import Settings, get_settings
+from app.infrastructure.persistence.models.import_task import ImportTask
+from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import import_tasks as import_tasks_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
@@ -180,3 +183,153 @@ async def test_missing_or_other_user_task_returns_404(db_session: AsyncSession) 
 
     assert response.status_code == 404
     assert response.json()["code"] == 4041
+
+
+async def _seed_task(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    status: str,
+    candidate_payload: dict[str, object] | None,
+) -> uuid.UUID:
+    session.add(User(id=user_id))
+    await session.flush()
+    task = ImportTask(
+        user_id=user_id,
+        input_type="image",
+        source_type="album",
+        task_status=status,
+        input_payload={"image_url": "https://cdn/x.jpg", "source_url": None, "locale": None},
+        candidate_payload=candidate_payload,
+    )
+    session.add(task)
+    await session.flush()
+    return task.id
+
+
+async def test_legacy_single_payload_maps_to_one_candidate_item(db_session: AsyncSession) -> None:
+    # BE#24 — an old candidate_item-only payload (no nested candidate_items)
+    # maps to candidate_items length 1; candidate_item mirrors it.
+    user_id = uuid.uuid4()
+    task_id = await _seed_task(
+        db_session,
+        user_id,
+        status=ImportStatus.WAITING_CONFIRM.value,
+        candidate_payload={
+            "title": "Black trousers",
+            "category": "bottom",
+            "color_main": "black",
+            "confidence_score": 0.85,
+            "original_image_url": "https://cdn/pants.jpg",
+        },
+    )
+    app = build_import_tasks_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.get(
+            f"/v1/import-tasks/{task_id}", headers={"X-User-Id": str(user_id)}
+        )
+
+    data = response.json()["data"]
+    assert len(data["candidate_items"]) == 1
+    assert data["candidate_items"][0]["title"] == "Black trousers"
+    assert data["candidate_items"][0]["temp_item_id"] is None
+    assert data["candidate_item"]["title"] == "Black trousers"
+
+
+async def test_multi_candidate_payload_returns_both_fields(db_session: AsyncSession) -> None:
+    # BE#24 — a multi-candidate payload returns the full list AND a compat
+    # candidate_item set to the first should_import=True candidate.
+    user_id = uuid.uuid4()
+    task_id = await _seed_task(
+        db_session,
+        user_id,
+        status=ImportStatus.WAITING_CONFIRM.value,
+        candidate_payload={
+            # Top-level single shape kept for confirm_import compat.
+            "title": "White shirt",
+            "category": "top",
+            "color_main": "white",
+            "confidence_score": 0.9,
+            "original_image_url": "https://cdn/look.jpg",
+            "candidate_items": [
+                {
+                    "temp_item_id": "cand-a",
+                    "title": "Black trousers",
+                    "category": "bottom",
+                    "color_main": "black",
+                    "confidence_score": 0.85,
+                    "original_image_url": "https://cdn/look.jpg",
+                    "should_import": False,
+                },
+                {
+                    "temp_item_id": "cand-b",
+                    "title": "White shirt",
+                    "category": "top",
+                    "color_main": "white",
+                    "confidence_score": 0.9,
+                    "original_image_url": "https://cdn/look.jpg",
+                    "should_import": True,
+                },
+            ],
+        },
+    )
+    app = build_import_tasks_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.get(
+            f"/v1/import-tasks/{task_id}", headers={"X-User-Id": str(user_id)}
+        )
+
+    data = response.json()["data"]
+    assert len(data["candidate_items"]) == 2
+    assert {c["temp_item_id"] for c in data["candidate_items"]} == {"cand-a", "cand-b"}
+    # first recommended (should_import) candidate is the compat candidate_item.
+    assert data["candidate_item"]["temp_item_id"] == "cand-b"
+    assert data["candidate_item"]["title"] == "White shirt"
+
+
+async def test_processing_and_failed_return_empty_candidate_items(db_session: AsyncSession) -> None:
+    # BE#24 — in-flight / failed tasks have no candidate payload yet; the list
+    # must be a safe empty array (not null) and candidate_item null.
+    processing_user = uuid.uuid4()
+    processing_task = await _seed_task(
+        db_session,
+        processing_user,
+        status=ImportStatus.PROCESSING.value,
+        candidate_payload=None,
+    )
+    app = build_import_tasks_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.get(
+            f"/v1/import-tasks/{processing_task}",
+            headers={"X-User-Id": str(processing_user)},
+        )
+
+    data = response.json()["data"]
+    assert data["status"] == "processing"
+    assert data["candidate_items"] == []
+    assert data["candidate_item"] is None
+
+
+async def test_vision_worker_writes_length_one_candidate_items(db_session: AsyncSession) -> None:
+    # BE#24 — the live vision flow yields one item: candidate_items length 1,
+    # each carries a stable temp_item_id, and candidate_item mirrors the first.
+    user_id = uuid.uuid4()
+    app = build_import_tasks_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        create_response = await client.post(
+            "/v1/import-tasks",
+            headers={"X-User-Id": str(user_id)},
+            json={
+                "input_type": "image",
+                "source_type": "album",
+                "image_url": "https://cdn/pants.jpg",
+            },
+        )
+        task_id = create_response.json()["data"]["task_id"]
+        data = await wait_for_task_status(client, task_id, user_id, "waiting_confirm")
+
+    candidate_items = data["candidate_items"]
+    assert len(candidate_items) == 1
+    assert candidate_items[0]["temp_item_id"]
+    assert candidate_items[0]["should_import"] is True
+    assert data["candidate_item"]["title"] == candidate_items[0]["title"]
