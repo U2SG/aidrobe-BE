@@ -45,6 +45,9 @@ class UpdateWardrobeItem:
 
         if title is not None:
             item.title = title
+            # A user-supplied rename takes ownership of the display name, so the
+            # provenance flips away from the AI-assigned name (BE#30).
+            item.name_source = "user"
         if category is not None:
             item.category = category
         if color_main is not None:

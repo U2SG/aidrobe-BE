@@ -78,9 +78,11 @@ class ConfirmImageImportTask:
         localized_names = candidate.get("localized_names")
         if not isinstance(localized_names, dict):
             localized_names = None
-        ai_display_name = candidate.get("display_name")
-        # Compare trimmed so trailing/leading whitespace doesn't misclassify an
-        # otherwise-accepted AI name as a user edit.
+        # OCR/receipt candidates carry `title` but no `display_name`; that title
+        # was still pipeline-generated, so fall back to it before deciding the
+        # name was a user edit. Compare trimmed so whitespace alone doesn't flip
+        # an otherwise-accepted AI name to 'user'.
+        ai_display_name = candidate.get("display_name") or candidate.get("title")
         name_source = "ai" if title.strip() == str(ai_display_name or "").strip() else "user"
 
         item = WardrobeItem(
