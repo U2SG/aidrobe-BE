@@ -524,6 +524,91 @@
         }
       }
     },
+    "/v1/import-tasks/{task_id}/confirm-items": {
+      "post": {
+        "tags": [
+          "import-tasks"
+        ],
+        "summary": "Confirm Import Items",
+        "operationId": "confirm_import_items_v1_import_tasks__task_id__confirm_items_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmItemsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_ConfirmItemsResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/import-tasks/{task_id}": {
       "get": {
         "tags": [
@@ -5673,6 +5758,129 @@
         ],
         "title": "ConfirmImportResponse"
       },
+      "ConfirmItemInput": {
+        "properties": {
+          "temp_item_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Temp Item Id"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "category": {
+            "type": "string",
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Category"
+          },
+          "color_main": {
+            "type": "string",
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Color Main"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "size_label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Label"
+          },
+          "fit_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fit Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "temp_item_id",
+          "title",
+          "category",
+          "color_main"
+        ],
+        "title": "ConfirmItemInput",
+        "description": "BE#25 — one candidate (keyed by `temp_item_id`) the client elected to\nimport, carrying its edited form fields. Typed values win over the AI guess."
+      },
+      "ConfirmItemsRequest": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ConfirmItemInput"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "ConfirmItemsRequest"
+      },
+      "ConfirmItemsResponse": {
+        "properties": {
+          "created_items": {
+            "items": {
+              "$ref": "#/components/schemas/ConfirmedItem"
+            },
+            "type": "array",
+            "title": "Created Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created_items"
+        ],
+        "title": "ConfirmItemsResponse"
+      },
+      "ConfirmedItem": {
+        "properties": {
+          "temp_item_id": {
+            "type": "string",
+            "title": "Temp Item Id"
+          },
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "temp_item_id",
+          "item_id"
+        ],
+        "title": "ConfirmedItem"
+      },
       "CostPerWearItem": {
         "properties": {
           "item_id": {
@@ -7777,6 +7985,32 @@
         },
         "type": "object",
         "title": "ResponseModel[ConfirmImportResponse]"
+      },
+      "ResponseModel_ConfirmItemsResponse_": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConfirmItemsResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ResponseModel[ConfirmItemsResponse]"
       },
       "ResponseModel_CostSummaryResponse_": {
         "properties": {

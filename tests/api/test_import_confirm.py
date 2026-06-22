@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.import_task import ImportTask
+from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import import_tasks as import_tasks_router
@@ -182,3 +183,201 @@ async def test_confirm_marks_import_task_completed(db_session: AsyncSession) -> 
     task = await db_session.get(ImportTask, uuid.UUID(task_id))
     assert task is not None
     assert task.task_status == "completed"
+
+
+# --- BE#25 batch confirm-items -------------------------------------------
+
+
+async def seed_multi_candidate_task(
+    session: AsyncSession, user_id: uuid.UUID
+) -> ImportTask:
+    """Seed a waiting_confirm task with two candidates: tmp_1 (raw photo only)
+    and tmp_2 (carrying a crop + cutout url so we can assert image preference).
+
+    Seeds the owning User first — the import-task FK requires it, and unlike the
+    endpoint path nothing has called get_or_create(user_id) yet."""
+    session.add(User(id=user_id))
+    await session.flush()
+    task = ImportTask(
+        user_id=user_id,
+        input_type="image_batch",
+        source_type="album",
+        task_status="waiting_confirm",
+        input_payload={"image_url": "https://cdn/batch.jpg"},
+        candidate_payload={
+            "candidate_items": [
+                {
+                    "temp_item_id": "tmp_1",
+                    "title": "白色衬衫",
+                    "display_name": "白色衬衫",
+                    "canonical_name": "White shirt",
+                    "localized_names": {"en-US": "White shirt", "zh-CN": "白色衬衫"},
+                    "category": "top",
+                    "color_main": "white",
+                    "confidence_score": 0.9,
+                    "original_image_url": "https://cdn/shirt.jpg",
+                    "should_import": True,
+                },
+                {
+                    "temp_item_id": "tmp_2",
+                    "title": "蓝色牛仔裤",
+                    "display_name": "蓝色牛仔裤",
+                    "category": "bottom",
+                    "color_main": "blue",
+                    "confidence_score": 0.8,
+                    "original_image_url": "https://cdn/jeans-orig.jpg",
+                    "crop_image_url": "https://cdn/jeans-crop.jpg",
+                    "cutout_image_url": "https://cdn/jeans-cutout.jpg",
+                    "should_import": True,
+                },
+            ],
+        },
+    )
+    session.add(task)
+    await session.flush()
+    return task
+
+
+async def test_confirm_items_creates_multiple_wardrobe_items(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    task = await seed_multi_candidate_task(db_session, user_id)
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            f"/v1/import-tasks/{task.id}/confirm-items",
+            headers={"X-User-Id": str(user_id)},
+            json={
+                "items": [
+                    {"temp_item_id": "tmp_1", "title": "白色衬衫", "category": "top", "color_main": "white"},
+                    {
+                        "temp_item_id": "tmp_2",
+                        "title": "My jeans",
+                        "category": "bottom",
+                        "color_main": "blue",
+                        "location": "drawer",
+                    },
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    created = response.json()["data"]["created_items"]
+    assert {c["temp_item_id"] for c in created} == {"tmp_1", "tmp_2"}
+
+    by_temp = {c["temp_item_id"]: c["item_id"] for c in created}
+    item1 = await db_session.get(WardrobeItem, uuid.UUID(by_temp["tmp_1"]))
+    item2 = await db_session.get(WardrobeItem, uuid.UUID(by_temp["tmp_2"]))
+    assert item1 is not None and item2 is not None
+    # tmp_1: AI name accepted verbatim -> provenance carried, name_source 'ai'.
+    assert item1.name_source == "ai"
+    assert item1.canonical_name == "White shirt"
+    assert item1.original_image_url == "https://cdn/shirt.jpg"
+    assert item1.cover_image_url == "https://cdn/shirt.jpg"
+    # tmp_2: user-typed title -> 'user'; cover prefers cutout over crop/original.
+    assert item2.name_source == "user"
+    assert item2.location == "drawer"
+    assert item2.original_image_url == "https://cdn/jeans-orig.jpg"
+    assert item2.cover_image_url == "https://cdn/jeans-cutout.jpg"
+
+    # task is now completed
+    await db_session.refresh(task)
+    assert task.task_status == "completed"
+
+
+async def test_confirm_items_image_rows_prefer_cutout_for_standard(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    task = await seed_multi_candidate_task(db_session, user_id)
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            f"/v1/import-tasks/{task.id}/confirm-items",
+            headers={"X-User-Id": str(user_id)},
+            json={"items": [{"temp_item_id": "tmp_2", "title": "Jeans", "category": "bottom", "color_main": "blue"}]},
+        )
+
+    assert response.status_code == 200
+    item_id = uuid.UUID(response.json()["data"]["created_items"][0]["item_id"])
+    images = list(await db_session.scalars(select(WardrobeItemImage).where(WardrobeItemImage.item_id == item_id)))
+    by_type = {img.image_type: img.image_url for img in images}
+    assert by_type == {
+        "original": "https://cdn/jeans-orig.jpg",
+        "standard": "https://cdn/jeans-cutout.jpg",
+    }
+
+
+async def test_confirm_items_empty_list_returns_422(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    task = await seed_multi_candidate_task(db_session, user_id)
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            f"/v1/import-tasks/{task.id}/confirm-items",
+            headers={"X-User-Id": str(user_id)},
+            json={"items": []},
+        )
+    assert response.status_code == 422
+
+
+async def test_confirm_items_unknown_temp_id_rejected(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    task = await seed_multi_candidate_task(db_session, user_id)
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            f"/v1/import-tasks/{task.id}/confirm-items",
+            headers={"X-User-Id": str(user_id)},
+            json={"items": [{"temp_item_id": "nope", "title": "X", "category": "top", "color_main": "white"}]},
+        )
+    assert response.status_code == 422
+    # nothing was created
+    items = list(await db_session.scalars(select(WardrobeItem)))
+    assert items == []
+
+
+async def test_confirm_items_duplicate_temp_id_rejected(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    task = await seed_multi_candidate_task(db_session, user_id)
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            f"/v1/import-tasks/{task.id}/confirm-items",
+            headers={"X-User-Id": str(user_id)},
+            json={
+                "items": [
+                    {"temp_item_id": "tmp_1", "title": "A", "category": "top", "color_main": "white"},
+                    {"temp_item_id": "tmp_1", "title": "B", "category": "top", "color_main": "white"},
+                ]
+            },
+        )
+    assert response.status_code == 422
+    items = list(await db_session.scalars(select(WardrobeItem)))
+    assert items == []
+
+
+async def test_confirm_items_other_user_returns_404(db_session: AsyncSession) -> None:
+    owner_id = uuid.uuid4()
+    other_id = uuid.uuid4()
+    task = await seed_multi_candidate_task(db_session, owner_id)
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            f"/v1/import-tasks/{task.id}/confirm-items",
+            headers={"X-User-Id": str(other_id)},
+            json={"items": [{"temp_item_id": "tmp_1", "title": "X", "category": "top", "color_main": "white"}]},
+        )
+    assert response.status_code == 404
+
+
+async def test_confirm_items_non_waiting_returns_409(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    task = await seed_multi_candidate_task(db_session, user_id)
+    task.task_status = "completed"
+    await db_session.flush()
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            f"/v1/import-tasks/{task.id}/confirm-items",
+            headers={"X-User-Id": str(user_id)},
+            json={"items": [{"temp_item_id": "tmp_1", "title": "X", "category": "top", "color_main": "white"}]},
+        )
+    assert response.status_code == 409
