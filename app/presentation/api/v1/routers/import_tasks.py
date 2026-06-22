@@ -5,7 +5,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, status
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.import_tasks.confirm_import import ConfirmImageImportTask
+from app.application.import_tasks.confirm_import import ConfirmImageImportTask, ConfirmItemInput
 from app.application.import_tasks.create_import import CreateImageImportTask
 from app.common import error_codes
 from app.common.enums import InputType
@@ -31,6 +31,9 @@ from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.import_tasks import (
     CandidateItem,
+    ConfirmedItem,
+    ConfirmItemsRequest,
+    ConfirmItemsResponse,
     CreateImportTaskRequest,
     ImportTaskResponse,
 )
@@ -150,6 +153,51 @@ async def confirm_import_task(
     )
     await invalidate_daily_recommendation_cache(redis_client, current_user.id)
     return ResponseModel(data=ConfirmImportResponse(item_id=item.id))
+
+
+@router.post("/{task_id}/confirm-items", response_model=ResponseModel[ConfirmItemsResponse])
+async def confirm_import_items(
+    task_id: uuid.UUID,
+    payload: ConfirmItemsRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[Redis, Depends(get_redis_client)],
+) -> ResponseModel[ConfirmItemsResponse]:
+    use_case = ConfirmImageImportTask(
+        SqlAlchemyImportTaskRepository(session),
+        SqlAlchemyWardrobeRepository(session),
+        SqlAlchemyRecommendationRepository(session),
+        SqlAlchemyStyleRepository(session),
+    )
+    created = await use_case.confirm_items(
+        task_id=task_id,
+        user_id=current_user.id,
+        items=[
+            ConfirmItemInput(
+                temp_item_id=item.temp_item_id,
+                title=item.title,
+                category=item.category,
+                color_main=item.color_main,
+                location=item.location,
+                size_label=item.size_label,
+                fit_status=item.fit_status,
+            )
+            for item in payload.items
+        ],
+    )
+    operation_log_repo = SqlAlchemyOperationLogRepository(session)
+    for _temp_id, item in created:
+        await operation_log_repo.add(
+            current_user.id,
+            "item_imported",
+            {"category": item.category, "color_main": item.color_main},
+        )
+    await invalidate_daily_recommendation_cache(redis_client, current_user.id)
+    return ResponseModel(
+        data=ConfirmItemsResponse(
+            created_items=[ConfirmedItem(temp_item_id=temp_id, item_id=item.id) for temp_id, item in created]
+        )
+    )
 
 
 @router.get("/{task_id}", response_model=ResponseModel[ImportTaskResponse])

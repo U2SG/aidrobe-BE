@@ -48,6 +48,32 @@ class CandidateItem(BaseModel):
     should_import: bool | None = None
 
 
+class ConfirmItemInput(BaseModel):
+    """BE#25 — one candidate (keyed by `temp_item_id`) the client elected to
+    import, carrying its edited form fields. Typed values win over the AI guess."""
+
+    temp_item_id: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=120)
+    category: str = Field(min_length=1, max_length=32)
+    color_main: str = Field(min_length=1, max_length=32)
+    location: str | None = Field(default=None, max_length=120)
+    size_label: str | None = Field(default=None, max_length=32)
+    fit_status: str | None = None
+
+
+class ConfirmItemsRequest(BaseModel):
+    items: list[ConfirmItemInput] = Field(min_length=1)
+
+
+class ConfirmedItem(BaseModel):
+    temp_item_id: str
+    item_id: UUID
+
+
+class ConfirmItemsResponse(BaseModel):
+    created_items: list[ConfirmedItem]
+
+
 class ImportTaskResponse(BaseModel):
     task_id: UUID
     status: str
