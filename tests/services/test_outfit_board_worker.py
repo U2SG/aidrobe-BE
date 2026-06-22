@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
 from app.infrastructure.persistence.models.user import User
-from app.infrastructure.workers import outfit_board_worker
+from app.infrastructure.workers import _visual_asset_runtime, outfit_board_worker
 from app.infrastructure.workers.job_runtime import (
     JOB_STATUS_DEAD,
     JOB_STATUS_QUEUED,
@@ -38,11 +38,11 @@ from app.infrastructure.workers.outfit_board_worker import (
 async def patched_session_factory(
     postgres_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    """Point the worker's module-level `AsyncSessionLocal` at the
-    testcontainers DB."""
+    """Point the shared visual-asset runtime's module-level `AsyncSessionLocal`
+    at the testcontainers DB."""
     engine = create_async_engine(postgres_url, future=True)
     factory: async_sessionmaker[AsyncSession] = async_sessionmaker(engine, expire_on_commit=False)
-    monkeypatch.setattr(outfit_board_worker, "AsyncSessionLocal", factory)
+    monkeypatch.setattr(_visual_asset_runtime, "AsyncSessionLocal", factory)
     try:
         yield factory
     finally:
@@ -66,7 +66,7 @@ def _patch_renderer_to_skip_io(monkeypatch: pytest.MonkeyPatch) -> None:
     prove the worker's state-machine semantics."""
 
     async def _fake_render(
-        snapshot: outfit_board_worker._AssetSnapshot,
+        snapshot: _visual_asset_runtime.VisualAssetSnapshot,
     ) -> tuple[str, str]:
         from app.bootstrap.container import object_storage
 
@@ -202,7 +202,7 @@ async def test_drain_marks_failed_and_keeps_asset_processing_until_dead(
     model stays at 'processing' (not 'failed') so a successful retry can
     still complete it. Only on dead does the asset land on 'failed'."""
 
-    async def _exploding_render(snapshot: outfit_board_worker._AssetSnapshot) -> str:
+    async def _exploding_render(snapshot: _visual_asset_runtime.VisualAssetSnapshot) -> str:
         raise RuntimeError("S3 down")
 
     monkeypatch.setattr(outfit_board_worker, "_render_and_upload", _exploding_render)
