@@ -46,16 +46,34 @@ router = APIRouter(prefix="/v1/import-tasks", tags=["import-tasks"])
 
 
 def to_response(task: ImportTask) -> ImportTaskResponse:
-    candidate_item = None
-    if task.candidate_payload is not None:
-        candidate_item = CandidateItem(**task.candidate_payload)
+    candidate_items = _candidate_items_from_payload(task.candidate_payload)
+    # Compat: `candidate_item` mirrors the first recommended candidate
+    # (`should_import`), falling back to the first one overall.
+    candidate_item = next(
+        (item for item in candidate_items if item.should_import),
+        candidate_items[0] if candidate_items else None,
+    )
     return ImportTaskResponse(
         task_id=task.id,
         status=task.task_status,
         candidate_item=candidate_item,
+        candidate_items=candidate_items,
         error_code=task.error_code,
         error_message=task.error_message,
     )
+
+
+def _candidate_items_from_payload(payload: dict[str, object] | None) -> list[CandidateItem]:
+    if not payload:
+        return []
+    # BE#24 — new multi-candidate payloads nest the list under `candidate_items`.
+    raw_items = payload.get("candidate_items")
+    if isinstance(raw_items, list):
+        return [CandidateItem(**item) for item in raw_items]
+    # Legacy / OCR payloads store a single candidate at the top level; the
+    # nested key is absent, so map the top-level shape to a length-1 list.
+    legacy = {key: value for key, value in payload.items() if key != "candidate_items"}
+    return [CandidateItem(**legacy)]
 
 
 @router.post(

@@ -88,8 +88,11 @@ class ProcessImageImportTask:
 
         task.task_status = ImportStatus.WAITING_CONFIRM.value
         # `title` mirrors display_name for old clients; the structured naming
-        # keys carry the stable English canonical + the per-locale map.
-        task.candidate_payload = {
+        # keys carry the stable English canonical + the per-locale map. The
+        # top-level keys stay the single-candidate shape that confirm_import
+        # reads; BE#24 adds the `candidate_items` list (length 1 here — the
+        # vision port yields one item) for multi-candidate-aware clients.
+        single_candidate: dict[str, object] = {
             "title": result.display_name or result.title,
             "canonical_name": result.canonical_name or result.title,
             "display_name": result.display_name or result.title,
@@ -98,6 +101,17 @@ class ProcessImageImportTask:
             "color_main": result.color_main,
             "confidence_score": result.confidence_score,
             "original_image_url": image_url,
+        }
+        task.candidate_payload = {
+            **single_candidate,
+            "candidate_items": [
+                {
+                    **single_candidate,
+                    # BE#24 — stable per-candidate id #25 confirm-items keys off.
+                    "temp_item_id": uuid.uuid4().hex,
+                    "should_import": True,
+                }
+            ],
         }
         await self.repository.flush()
 
