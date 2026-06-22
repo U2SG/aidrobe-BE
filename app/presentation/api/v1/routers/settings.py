@@ -1,10 +1,11 @@
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.users.settings import UserSettingsUseCase
 from app.bootstrap.container import user_repository
+from app.common.locale import LocaleSetting
 from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
@@ -23,6 +24,7 @@ def settings_response(settings: UserSettings) -> UserSettingsResponse:
         push_enabled=settings.push_enabled,
         device_token=settings.device_token,
         location=settings.location,
+        locale=cast(LocaleSetting, settings.locale),
     )
 
 
@@ -58,5 +60,6 @@ async def update_user_settings(
         device_token=payload.device_token,
         push_enabled=payload.push_enabled,
         location=payload.location,
+        locale=payload.locale,
     )
     return ResponseModel(data=settings_response(settings))

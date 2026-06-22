@@ -1,6 +1,7 @@
 import uuid
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.link_parser import LinkParserPort
@@ -14,8 +15,10 @@ from app.bootstrap.container import (
     vision_service,
 )
 from app.common.enums import ImportStatus
+from app.common.locale import resolve_locale
 from app.infrastructure.importers.ocr_router import OcrCandidateAdapter, ocr_adapter_for
 from app.infrastructure.persistence.models.import_task import ImportTask
+from app.infrastructure.persistence.models.user import UserSettings
 from app.infrastructure.persistence.repositories.import_task_repo import (
     SqlAlchemyImportTaskRepository,
 )
@@ -71,7 +74,10 @@ class ProcessImageImportTask:
 
             if self.vision_rate_limiter is not None:
                 self.vision_rate_limiter.check(user_id)
-            result = await self.vision.analyze_image(image_url)
+            # BE#30 — name the candidate in the request locale, falling back to
+            # the user's persisted settings locale (then the zh-CN default).
+            locale = await self._resolve_locale(task, user_id)
+            result = await self.vision.analyze_image(image_url, locale)
         except Exception as exc:
             logger.warning("import_task_processing_failed", task_id=str(task_id), error=str(exc))
             task.task_status = ImportStatus.FAILED.value
@@ -81,14 +87,27 @@ class ProcessImageImportTask:
             return
 
         task.task_status = ImportStatus.WAITING_CONFIRM.value
+        # `title` mirrors display_name for old clients; the structured naming
+        # keys carry the stable English canonical + the per-locale map.
         task.candidate_payload = {
-            "title": result.title,
+            "title": result.display_name or result.title,
+            "canonical_name": result.canonical_name or result.title,
+            "display_name": result.display_name or result.title,
+            "localized_names": result.localized_names,
             "category": result.category,
             "color_main": result.color_main,
             "confidence_score": result.confidence_score,
             "original_image_url": image_url,
         }
         await self.repository.flush()
+
+    async def _resolve_locale(self, task: ImportTask, user_id: uuid.UUID) -> str:
+        request_locale = task.input_payload.get("locale")
+        request_locale = request_locale if isinstance(request_locale, str) else None
+        settings_locale = await self.repository.session.scalar(
+            select(UserSettings.locale).where(UserSettings.user_id == user_id)
+        )
+        return resolve_locale(request_locale, settings_locale)
 
     async def _process_ocr(
         self,

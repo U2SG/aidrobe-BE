@@ -1,7 +1,7 @@
 import uuid
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, Query
 from redis.asyncio import Redis
@@ -47,6 +47,9 @@ def item_response(item: WardrobeItem) -> WardrobeItemResponse:
     return WardrobeItemResponse(
         item_id=item.id,
         title=item.title,
+        canonical_name=item.canonical_name,
+        localized_names=cast(dict[str, str] | None, item.localized_names),
+        name_source=item.name_source,
         category=item.category,
         color_main=item.color_main,
         status=item.status,
@@ -144,6 +147,7 @@ async def delete_wardrobe_item(
     await invalidate_daily_recommendation_cache(redis_client, current_user.id)
     return ResponseModel(data=DeleteWardrobeItemResponse(deleted=deleted))
 
+
 @router.get(
     "/{item_id}/wear-history",
     response_model=ResponseModel[ItemWearHistoryResponse],
@@ -178,9 +182,7 @@ async def get_item_wear_history(
     for worn_date_val, outfit_id, outfit_type in rows:
         key = worn_date_val.isoformat()
         daily_counts[key] += 1
-        entries.append(
-            WearHistoryEntry(worn_date=worn_date_val, outfit_id=outfit_id, outfit_type=outfit_type)
-        )
+        entries.append(WearHistoryEntry(worn_date=worn_date_val, outfit_id=outfit_id, outfit_type=outfit_type))
 
     return ResponseModel(
         data=ItemWearHistoryResponse(
@@ -190,4 +192,3 @@ async def get_item_wear_history(
             entries=entries,
         )
     )
-

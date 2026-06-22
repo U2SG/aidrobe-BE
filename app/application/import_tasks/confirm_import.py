@@ -70,9 +70,25 @@ class ConfirmImageImportTask:
         if purchase_date is None:
             purchase_date = _to_date(candidate.get("purchase_date"))
 
+        # BE#30 — carry the AI naming provenance onto the item. The user's
+        # typed title always wins (it's what `title` holds). name_source flags
+        # whether the title still matches the AI display name ('ai') or the
+        # user changed it ('user') — provenance for any future re-namer.
+        canonical_name = candidate.get("canonical_name")
+        localized_names = candidate.get("localized_names")
+        if not isinstance(localized_names, dict):
+            localized_names = None
+        ai_display_name = candidate.get("display_name")
+        # Compare trimmed so trailing/leading whitespace doesn't misclassify an
+        # otherwise-accepted AI name as a user edit.
+        name_source = "ai" if title.strip() == str(ai_display_name or "").strip() else "user"
+
         item = WardrobeItem(
             user_id=user_id,
             title=title,
+            canonical_name=canonical_name if isinstance(canonical_name, str) else None,
+            localized_names=localized_names,
+            name_source=name_source,
             category=category,
             color_main=color_main,
             status=ItemStatus.WEARABLE.value,

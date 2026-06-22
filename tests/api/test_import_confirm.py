@@ -55,9 +55,7 @@ async def create_task(client: AsyncClient, user_id: uuid.UUID) -> str:
 async def test_confirm_waiting_task_creates_wardrobe_item(db_session: AsyncSession) -> None:
     user_id = uuid.uuid4()
     app = build_import_confirm_app(db_session)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         task_id = await create_task(client, user_id)
         response = await client.post(
             f"/v1/import-tasks/{task_id}/confirm",
@@ -77,9 +75,7 @@ async def test_confirm_waiting_task_creates_wardrobe_item(db_session: AsyncSessi
 async def test_confirm_accepts_location_and_fit_fields(db_session: AsyncSession) -> None:
     user_id = uuid.uuid4()
     app = build_import_confirm_app(db_session)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         task_id = await create_task(client, user_id)
         response = await client.post(
             f"/v1/import-tasks/{task_id}/confirm",
@@ -103,12 +99,57 @@ async def test_confirm_accepts_location_and_fit_fields(db_session: AsyncSession)
     assert item.fit_status == "fits_well"
 
 
+async def test_confirm_keeps_ai_naming_and_records_provenance(db_session: AsyncSession) -> None:
+    """BE#30 — accepting the AI display name verbatim flags name_source='ai'
+    and carries the canonical/localized names onto the item."""
+    user_id = uuid.uuid4()
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        task_id = await create_task(client, user_id)
+        # Default locale is zh-CN, so the candidate display name is "白色衬衫".
+        response = await client.post(
+            f"/v1/import-tasks/{task_id}/confirm",
+            headers={"X-User-Id": str(user_id)},
+            json={"title": "白色衬衫", "category": "top", "color_main": "white"},
+        )
+
+    assert response.status_code == 200
+    item_id = response.json()["data"]["item_id"]
+    item = await db_session.get(WardrobeItem, uuid.UUID(item_id))
+    assert item is not None
+    assert item.title == "白色衬衫"
+    assert item.name_source == "ai"
+    assert item.canonical_name == "White shirt"
+    assert item.localized_names == {"en-US": "White shirt", "zh-CN": "白色衬衫"}
+
+
+async def test_confirm_user_custom_name_wins(db_session: AsyncSession) -> None:
+    """A typed title that differs from the AI display name is kept verbatim
+    and flagged name_source='user' — the AI name never overwrites it."""
+    user_id = uuid.uuid4()
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        task_id = await create_task(client, user_id)
+        response = await client.post(
+            f"/v1/import-tasks/{task_id}/confirm",
+            headers={"X-User-Id": str(user_id)},
+            json={"title": "My favourite shirt", "category": "top", "color_main": "white"},
+        )
+
+    assert response.status_code == 200
+    item_id = response.json()["data"]["item_id"]
+    item = await db_session.get(WardrobeItem, uuid.UUID(item_id))
+    assert item is not None
+    assert item.title == "My favourite shirt"
+    assert item.name_source == "user"
+    # canonical/localized provenance is still carried from the candidate.
+    assert item.canonical_name == "White shirt"
+
+
 async def test_confirm_completed_task_returns_409(db_session: AsyncSession) -> None:
     user_id = uuid.uuid4()
     app = build_import_confirm_app(db_session)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         task_id = await create_task(client, user_id)
         payload = {"title": "Office shirt", "category": "top", "color_main": "white"}
         first = await client.post(
@@ -130,9 +171,7 @@ async def test_confirm_completed_task_returns_409(db_session: AsyncSession) -> N
 async def test_confirm_marks_import_task_completed(db_session: AsyncSession) -> None:
     user_id = uuid.uuid4()
     app = build_import_confirm_app(db_session)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         task_id = await create_task(client, user_id)
         await client.post(
             f"/v1/import-tasks/{task_id}/confirm",
