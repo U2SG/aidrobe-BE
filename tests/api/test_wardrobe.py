@@ -118,6 +118,8 @@ async def test_patch_wardrobe_item_updates_fields(db_session: AsyncSession) -> N
     assert response.status_code == 200
     assert response.json()["data"]["title"] == "Updated"
     assert response.json()["data"]["status"] == "unavailable"
+    # BE#30 — a user rename takes ownership of the display name.
+    assert response.json()["data"]["name_source"] == "user"
 
 
 async def test_patch_wardrobe_item_rejects_invalid_status(db_session: AsyncSession) -> None:

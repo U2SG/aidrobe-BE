@@ -13,22 +13,23 @@ from app.infrastructure.persistence.models.base import Base, JsonDict, Timestamp
 class WardrobeItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "wardrobe_items"
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(120), nullable=False)
+    # BE#30 — provenance + localized display names. `title` stays the
+    # user-visible name (user edits win). `canonical_name` is the stable
+    # English AI name; `localized_names` is {locale: display_name}.
+    # `name_source` records who set the title: 'ai' | 'user'.
+    canonical_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    localized_names: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    name_source: Mapped[str] = mapped_column(String(8), default="ai", server_default="ai", nullable=False)
     category: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     color_main: Mapped[str] = mapped_column(String(32), nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(32), default=ItemStatus.WEARABLE.value, nullable=False
-    )
+    status: Mapped[str] = mapped_column(String(32), default=ItemStatus.WEARABLE.value, nullable=False)
     cover_image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     original_image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     # V4 item cutout — async gpt-image-2 product-shot. skipped (default/rollback)
     # → queued → ready/failed. When ready, cover_image_url points at the cutout.
-    cutout_status: Mapped[str] = mapped_column(
-        String(16), default="skipped", server_default="skipped", nullable=False
-    )
+    cutout_status: Mapped[str] = mapped_column(String(16), default="skipped", server_default="skipped", nullable=False)
     location: Mapped[str | None] = mapped_column(String(120), nullable=True)
     size_label: Mapped[str | None] = mapped_column(String(32), nullable=True)
     size_region: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -51,9 +52,7 @@ class WardrobeItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     last_worn_at: Mapped[date | None] = mapped_column(Date, nullable=True)
     purchase_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
-    images: Mapped[list["WardrobeItemImage"]] = relationship(
-        back_populates="item", cascade="all, delete-orphan"
-    )
+    images: Mapped[list["WardrobeItemImage"]] = relationship(back_populates="item", cascade="all, delete-orphan")
 
 
 class WardrobeItemImage(UUIDPrimaryKeyMixin, Base):
@@ -62,9 +61,7 @@ class WardrobeItemImage(UUIDPrimaryKeyMixin, Base):
     item_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("wardrobe_items.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    image_type: Mapped[str] = mapped_column(
-        String(32), default=ImageType.ORIGINAL.value, nullable=False
-    )
+    image_type: Mapped[str] = mapped_column(String(32), default=ImageType.ORIGINAL.value, nullable=False)
     image_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     # Phase E5 — internal-storage object key. Set when the row's image
     # was produced by our storage pipeline (cutouts, thumbnails, etc).

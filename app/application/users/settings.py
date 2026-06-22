@@ -20,6 +20,7 @@ class UserSettingsUseCase:
         device_token: str | None = None,
         push_enabled: bool | None = None,
         location: str | None = None,
+        locale: str | None = None,
     ) -> UserSettings:
         settings = await self.user_repository.get_or_create_settings(user_id)
         if departure_time_set:
@@ -30,5 +31,7 @@ class UserSettingsUseCase:
             settings.push_enabled = push_enabled
         if location is not None:
             settings.location = location
+        if locale is not None:
+            settings.locale = locale
         await self.user_repository.flush()
         return settings

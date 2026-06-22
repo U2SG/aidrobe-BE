@@ -10,6 +10,7 @@ from app.application.ask.answer_question import (
     _parse_structured,
     _preamble_for,
     _project_tokens,
+    _resolve_lang,
 )
 from app.application.ask.wardrobe_context import (
     WardrobeContext,
@@ -74,6 +75,15 @@ def test_preamble_matches_language_subtag() -> None:
     assert _preamble_for("zh-CN").startswith("你是 Aidrobe")
 
 
+def test_resolve_lang_request_over_settings_over_default() -> None:
+    # BE#30 — request locale wins; else settings locale; else zh-CN default.
+    assert _resolve_lang("en-US", "zh-CN") == "en"  # request wins
+    assert _resolve_lang(None, "en-US") == "en"  # falls back to settings
+    assert _resolve_lang(None, "system") == "zh"  # 'system' -> default
+    assert _resolve_lang(None, None) == "zh"  # nothing -> default
+    assert _resolve_lang("fr", "en-US") == "en"  # unknown request -> settings
+
+
 def test_build_prompt_feeds_wardrobe_and_hides_titles() -> None:
     items = _items()
     prompt = _build_system_prompt(uuid.uuid4(), items, _ctx(items=items))
@@ -87,12 +97,8 @@ def test_build_prompt_feeds_wardrobe_and_hides_titles() -> None:
 
 
 def test_build_prompt_honors_locale() -> None:
-    assert _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en")).startswith(
-        "You are Aidrobe"
-    )
-    assert _build_system_prompt(uuid.uuid4(), [], _ctx(locale="zh")).startswith(
-        "你是 Aidrobe"
-    )
+    assert _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en")).startswith("You are Aidrobe")
+    assert _build_system_prompt(uuid.uuid4(), [], _ctx(locale="zh")).startswith("你是 Aidrobe")
 
 
 def test_focus_clause_added_only_when_focused() -> None:
@@ -101,16 +107,12 @@ def test_focus_clause_added_only_when_focused() -> None:
     assert "FIRST item" not in plain
     assert "FIRST item" in focused
     # Locale-aware: Chinese focus clause for a Chinese locale.
-    assert "第 1 件" in _build_system_prompt(
-        uuid.uuid4(), [], _ctx(locale="zh", scope="item")
-    )
+    assert "第 1 件" in _build_system_prompt(uuid.uuid4(), [], _ctx(locale="zh", scope="item"))
 
 
 def test_structured_instruction_added_only_when_structured() -> None:
     plain = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en"), structured=False)
-    structured = _build_system_prompt(
-        uuid.uuid4(), [], _ctx(locale="en"), structured=True
-    )
+    structured = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en"), structured=True)
     assert "referenced_items" not in plain
     assert "referenced_items" in structured
 

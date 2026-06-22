@@ -26,6 +26,12 @@ class ConfirmImportResponse(BaseModel):
 class WardrobeItemResponse(BaseModel):
     item_id: UUID
     title: str
+    # BE#30 — naming provenance + locale variants. Additive: `title` stays the
+    # primary display name (user edits win). canonical_name is the stable
+    # English AI name; localized_names maps locale -> display name.
+    canonical_name: str | None = None
+    localized_names: dict[str, str] | None = None
+    name_source: str = "ai"
     category: str
     color_main: str
     # A-4: tightened from str to WardrobeItemStatus enum (wearable/unavailable/dirty/lost/donated)

@@ -21,8 +21,11 @@ class CreateImageImportTask:
         source_type: str,
         image_url: str | None = None,
         source_url: str | None = None,
+        locale: str | None = None,
     ) -> ImportTask:
-        input_payload = {"image_url": image_url, "source_url": source_url}
+        # BE#30 — persist the request locale hint so the (background) worker
+        # can name the candidate in it. None = fall back to user settings.
+        input_payload = {"image_url": image_url, "source_url": source_url, "locale": locale}
 
         return await self.repository.add(
             ImportTask(

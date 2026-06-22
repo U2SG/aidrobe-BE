@@ -34,9 +34,11 @@ from app.application.ports.llm import LlmPort
 from app.common import error_codes
 from app.common.enums import ItemStatus
 from app.common.exceptions import FriendlyException
+from app.common.locale import lang_subtag, resolve_locale
 from app.config.settings import get_settings
 from app.infrastructure.llm.sanitizer import hash_user_token, sanitize_for_llm
 from app.infrastructure.persistence.models.async_job import AsyncJob
+from app.infrastructure.persistence.models.user import UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.ask_repo import SqlAlchemyAskRepository
 
@@ -53,6 +55,7 @@ _JOB_TYPE = "llm_ask"
 
 def _project_tokens(item_count: int) -> int:
     return _BASE_PROJECTED_TOKENS + item_count * _TOKENS_PER_ITEM
+
 
 logger = structlog.get_logger(__name__)
 
@@ -86,7 +89,7 @@ _FOCUS_CLAUSE: dict[str, str] = {
 # `referenced_items` are 1-based positions into the items list above.
 _STRUCTURED_INSTRUCTION: dict[str, str] = {
     "zh": (
-        '\n请只返回一个 JSON 对象，不要包含任何其它文字：'
+        "\n请只返回一个 JSON 对象，不要包含任何其它文字："
         '{"answer": "你的中文建议", "referenced_items": [引用到的单品在上面列表中的序号，从 1 开始]}。'
         "若没有引用任何单品，referenced_items 返回空数组。"
     ),
@@ -98,9 +101,11 @@ _STRUCTURED_INSTRUCTION: dict[str, str] = {
 }
 
 
-def _resolve_lang(locale: str | None) -> str:
-    lang = (locale or "").split("-", 1)[0].lower()
-    return lang if lang in _PREAMBLES else _DEFAULT_LANG
+def _resolve_lang(locale: str | None, settings_locale: str | None = None) -> str:
+    # BE#30 — request locale wins, else the user's persisted settings locale,
+    # else the zh-CN product default. resolve_locale always returns a supported
+    # BCP-47 locale, so its subtag is guaranteed present in _PREAMBLES.
+    return lang_subtag(resolve_locale(locale, settings_locale))
 
 
 def _preamble_for(locale: str | None) -> str:
@@ -200,11 +205,7 @@ async def answer_question(
     focused_item: WardrobeItem | None = None
     if focused_item_id is not None:
         focused_item = await session.get(WardrobeItem, focused_item_id)
-        if (
-            focused_item is None
-            or focused_item.user_id != user_id
-            or focused_item.deleted_at is not None
-        ):
+        if focused_item is None or focused_item.user_id != user_id or focused_item.deleted_at is not None:
             raise FriendlyException(
                 error_codes.NOT_FOUND,
                 "Item not found",
@@ -234,17 +235,19 @@ async def answer_question(
     # read, not spend). Projecting from the assembled candidate count keeps the
     # reservation honest as the prompt grows. DB-aggregate path (no
     # redis_client) so tests are deterministic; no-op when ENABLE_COST_GUARD off.
-    await assert_within_quota(
-        session, user_id, _JOB_TYPE, cost_tokens=_project_tokens(len(items))
-    )
+    await assert_within_quota(session, user_id, _JOB_TYPE, cost_tokens=_project_tokens(len(items)))
 
     structured = get_settings().ENABLE_ASK_STRUCTURED_OUTPUT
+    # BE#30 — when the request omits a locale, fall back to the user's
+    # persisted settings locale (then the zh-CN default) so the answer
+    # language tracks the user's UI choice.
+    settings_locale = await session.scalar(select(UserSettings.locale).where(UserSettings.user_id == user_id))
     ctx = await build_wardrobe_context(
         session,
         user_id,
         items=items,
         focused_item_id=focused_item_id,
-        locale=_resolve_lang(locale),
+        locale=_resolve_lang(locale, settings_locale),
         today=datetime.now(UTC).date(),
     )
     system_prompt = _build_system_prompt(user_id, items, ctx, structured=structured)
@@ -321,6 +324,4 @@ async def list_history(
     limit: int,
     offset: int,
 ) -> list[Any]:
-    return await SqlAlchemyAskRepository(session).list_for_user(
-        user_id, limit=limit, offset=offset
-    )
+    return await SqlAlchemyAskRepository(session).list_for_user(user_id, limit=limit, offset=offset)

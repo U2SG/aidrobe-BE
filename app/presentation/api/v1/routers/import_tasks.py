@@ -92,6 +92,7 @@ async def create_import_task(
         source_type=payload.source_type,
         image_url=payload.image_url,
         source_url=payload.source_url,
+        locale=payload.locale,
     )
     response = to_response(task)
     background_tasks.add_task(process_import_task_with_session, session, task.id, current_user.id)
