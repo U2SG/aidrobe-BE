@@ -263,21 +263,28 @@ async def answer_question(
 
     answer_text = answer.text
     item_refs: list[str]
+    # BE#28 — item_refs must mean "items the model actually cited" (structured
+    # success) or, failing that, only the explicitly focused item. We never
+    # echo back the full candidate set: it implies references the model never
+    # made and pollutes downstream snapshotting/analytics. The fallback (no
+    # focus -> empty) is shared by the parse-failure and flag-off branches.
+    fallback_refs = [str(focused_item.id)] if focused_item is not None else []
     if structured:
         parsed = _parse_structured(answer.text, len(items))
         if parsed is None:
             # The model ignored the JSON contract (distinct from a provider
             # error, which surfaces above as empty text). Stay honest: keep the
-            # raw text as the answer but emit no item_refs rather than risk
-            # surfacing items the model never cited.
+            # raw text as the answer but fall back to the focused item only.
             logger.warning("ask.structured_output.parse_failed")
-            item_refs = []
+            item_refs = fallback_refs
         else:
             answer_text, indices = parsed
             item_refs = [str(items[i].id) for i in indices]
     else:
-        # Legacy behavior (flag off): reference every item fed to the prompt.
-        item_refs = [str(i.id) for i in items]
+        # Structured output disabled: we can't tell which items the model
+        # cited, so item_refs degrades to the focused item only (or empty).
+        logger.warning("ask.structured_output.disabled", item_refs_quality="limited")
+        item_refs = fallback_refs
     tokens_used = answer.tokens_used
 
     # Persist the context snapshot alongside the client-supplied context

@@ -118,12 +118,14 @@ async def test_ask_returns_503_when_flag_off(db_session: AsyncSession) -> None:
     assert resp.status_code == 503
 
 
-async def test_ask_happy_path_legacy_refs(
+async def test_ask_structured_disabled_returns_no_refs(
     db_session: AsyncSession,
     patch_router_settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Legacy path (structured OFF): item_refs lists every fed item."""
+    """BE#28 — structured OFF with no focused item must NOT echo back every
+    candidate as item_refs; without a structured signal we can't tell which
+    items the model cited, so item_refs degrades to empty."""
     user_id = await _seed_user_and_items(db_session)
     patch_router_settings(ENABLE_ASK_AIDROBE=True)
     legacy = Settings(
@@ -147,9 +149,41 @@ async def test_ask_happy_path_legacy_refs(
     body = resp.json()
     assert body["answer"] == "建议搭配白衬衫和黑裤子。"
     assert body["tokens_used"] == 42
-    # legacy: references the items fed into the prompt (both wearable items).
-    assert len(body["item_refs"]) == 2
+    # No structured signal + no focus -> no refs (NOT all candidates).
+    assert body["item_refs"] == []
     assert uuid.UUID(body["ask_session_id"])
+
+
+async def test_ask_structured_disabled_with_focus_returns_focused_only(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BE#28 — structured OFF but a focused item set: item_refs is exactly that
+    one focused item, never the whole candidate set."""
+    user_id = await _seed_user_and_items(db_session)
+    focus_id = await _seed_focused_item(db_session, user_id)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    legacy = Settings(
+        APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=False
+    )
+    monkeypatch.setattr(
+        "app.application.ask.answer_question.get_settings", lambda: legacy
+    )
+    app = _build_app(
+        db_session,
+        Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
+        llm=_FakeLlm(),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "用这件搭一套", "focused_item_id": str(focus_id)},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["item_refs"] == [str(focus_id)]
 
 
 async def test_ask_feeds_wardrobe_into_prompt(
@@ -336,6 +370,39 @@ async def test_ask_structured_parse_failure_keeps_text_drops_refs(
     body = resp.json()
     assert body["answer"] == "我觉得你可以穿蓝色。"
     assert body["item_refs"] == []
+
+
+async def test_ask_structured_parse_failure_with_focus_returns_focused_only(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BE#28 — parse failure with a focused item falls back to the focused item
+    only (never the full candidate set)."""
+    user_id = await _seed_user_and_items(db_session)
+    focus_id = await _seed_focused_item(db_session, user_id)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    structured = Settings(
+        APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True
+    )
+    monkeypatch.setattr(
+        "app.application.ask.answer_question.get_settings", lambda: structured
+    )
+    llm = _FakeLlm(text="我觉得你可以穿蓝色。")  # free text, not JSON
+    app = _build_app(
+        db_session,
+        Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
+        llm=llm,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "用这件搭一套", "focused_item_id": str(focus_id)},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["item_refs"] == [str(focus_id)]
 
 
 async def test_ask_503_when_llm_unavailable(
