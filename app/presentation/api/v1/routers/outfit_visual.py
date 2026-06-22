@@ -12,6 +12,7 @@ from app.common import error_codes
 from app.common.exceptions import FriendlyException
 from app.infrastructure.persistence.session import get_db_session as get_db
 from app.presentation.api.v1.deps import get_current_user
+from app.presentation.api.v1.render_url import resolve_render_url as _resolve_render_url
 
 router = APIRouter(prefix="/v1", tags=["outfit-visual"])
 
@@ -110,22 +111,6 @@ async def _resolve_pending_status(
         return "failed", "worker_unavailable"
 
     return current_status, current_error_code
-
-
-def _resolve_render_url(object_key: str | None, fallback_url: str | None) -> str | None:
-    """Sign and return a short-lived URL when an object_key is present;
-    otherwise return the persisted URL as-is. Used by both endpoints
-    below so the policy is consistent."""
-    if object_key:
-        from app.bootstrap.container import object_storage
-
-        try:
-            return object_storage().sign_render_url(object_key)
-        except Exception:
-            # If signing fails (storage misconfigured), fall through to
-            # the persisted URL rather than 500-ing the read.
-            pass
-    return fallback_url
 
 
 @router.get(

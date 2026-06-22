@@ -2747,6 +2747,33 @@ paths:
           minimum: 0
           default: 0
           title: Offset
+      - name: focused_item_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Focused Item Id
+      - name: scope
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 32
+          - type: 'null'
+          title: Scope
+      - name: entrypoint
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Entrypoint
       - name: Authorization
         in: header
         required: false
@@ -2947,6 +2974,11 @@ components:
             type: string
           type: array
           title: Item Refs
+        item_ref_snapshots:
+          items:
+            $ref: '#/components/schemas/AskItemRefSnapshot'
+          type: array
+          title: Item Ref Snapshots
         created_at:
           type: string
           format: date-time
@@ -2957,6 +2989,41 @@ components:
       - question
       - created_at
       title: AskHistoryItem
+    AskItemRefSnapshot:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        name:
+          type: string
+          title: Name
+        category:
+          type: string
+          title: Category
+        color_main:
+          type: string
+          title: Color Main
+        thumbnail_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Thumbnail Url
+      type: object
+      required:
+      - item_id
+      - name
+      - category
+      - color_main
+      title: AskItemRefSnapshot
+      description: 'BE#29 — denormalized card for a referenced wardrobe item so the
+        client
+
+        can render related items without a per-id detail fetch. Only the current
+
+        user''s accessible, non-deleted items appear; `thumbnail_url` is signed at
+
+        request time (never a persisted TTL-bound URL).'
     AskRequest:
       properties:
         question:
@@ -2998,6 +3065,11 @@ components:
             type: string
           type: array
           title: Item Refs
+        item_ref_snapshots:
+          items:
+            $ref: '#/components/schemas/AskItemRefSnapshot'
+          type: array
+          title: Item Ref Snapshots
         tokens_used:
           type: integer
           title: Tokens Used

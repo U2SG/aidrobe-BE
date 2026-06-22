@@ -23,10 +23,25 @@ class AskRequest(BaseModel):
     focused_item_id: uuid.UUID | None = None
 
 
+class AskItemRefSnapshot(BaseModel):
+    """BE#29 — denormalized card for a referenced wardrobe item so the client
+    can render related items without a per-id detail fetch. Only the current
+    user's accessible, non-deleted items appear; `thumbnail_url` is signed at
+    request time (never a persisted TTL-bound URL)."""
+
+    item_id: uuid.UUID
+    # Localized display name (falls back to the user-visible title).
+    name: str
+    category: str
+    color_main: str
+    thumbnail_url: str | None = None
+
+
 class AskResponse(BaseModel):
     ask_session_id: uuid.UUID
     answer: str
     item_refs: list[str]
+    item_ref_snapshots: list[AskItemRefSnapshot] = Field(default_factory=list)
     tokens_used: int
 
 
@@ -35,4 +50,5 @@ class AskHistoryItem(BaseModel):
     question: str
     answer: str | None = None
     item_refs: list[str] = Field(default_factory=list)
+    item_ref_snapshots: list[AskItemRefSnapshot] = Field(default_factory=list)
     created_at: datetime
