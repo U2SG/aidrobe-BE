@@ -118,6 +118,86 @@ class AskResult:
     answer: str
     item_refs: list[str]
     tokens_used: int
+    # Effective BCP-47 locale (request > settings > default) already resolved
+    # here, so the router can build snapshots without re-querying settings.
+    effective_locale: str
+
+
+@dataclass(frozen=True)
+class ItemRefSnapshot:
+    """BE#29 — denormalized card for one referenced wardrobe item.
+
+    `name` is already locale-resolved (localized display name, title fallback);
+    category/color_main stay stable English. `thumbnail_object_key` /
+    `thumbnail_fallback_url` are handed to the presentation layer so it can
+    sign a short-lived URL at request time rather than persisting one."""
+
+    item_id: uuid.UUID
+    name: str
+    category: str
+    color_main: str
+    thumbnail_object_key: str | None
+    thumbnail_fallback_url: str | None
+
+
+def _resolve_item_name(item: WardrobeItem, locale: str) -> str:
+    # BE#30 — prefer the localized display name for the resolved locale, else
+    # the user-visible title. `localized_names` keys are full BCP-47 locales
+    # (e.g. "zh-CN"); resolve_locale yields exactly those.
+    names = item.localized_names
+    if isinstance(names, dict):
+        localized = names.get(locale)
+        if isinstance(localized, str) and localized:
+            return localized
+    return item.title
+
+
+async def build_item_ref_snapshots(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    item_ids: list[str],
+    *,
+    locale: str | None = None,
+    settings_locale: str | None = None,
+) -> list[ItemRefSnapshot]:
+    """Batch-fetch snapshots for a set of item_refs (one query for the set).
+
+    Only the caller's accessible, non-deleted items survive; deleted / foreign
+    ids fall out. Order follows the requested `item_ids` so the cards line up
+    with item_refs. The thumbnail is left unsigned here — the presentation
+    layer signs `thumbnail_object_key` on demand."""
+    parsed: list[uuid.UUID] = []
+    seen: set[uuid.UUID] = set()
+    for ref in item_ids:
+        try:
+            parsed_id = uuid.UUID(ref)
+        except (ValueError, AttributeError):
+            continue
+        if parsed_id not in seen:
+            seen.add(parsed_id)
+            parsed.append(parsed_id)
+    if not parsed:
+        return []
+    resolved_locale = resolve_locale(locale, settings_locale)
+    rows = await SqlAlchemyAskRepository(session).fetch_item_ref_snapshots(user_id, parsed)
+    by_id = {item.id: (item, object_key, fallback) for item, object_key, fallback in rows}
+    snapshots: list[ItemRefSnapshot] = []
+    for item_id in parsed:
+        found = by_id.get(item_id)
+        if found is None:
+            continue
+        item, object_key, fallback = found
+        snapshots.append(
+            ItemRefSnapshot(
+                item_id=item.id,
+                name=_resolve_item_name(item, resolved_locale),
+                category=item.category,
+                color_main=item.color_main,
+                thumbnail_object_key=object_key,
+                thumbnail_fallback_url=fallback,
+            )
+        )
+    return snapshots
 
 
 def _item_to_sanitized(item: WardrobeItem) -> dict[str, Any]:
@@ -242,6 +322,7 @@ async def answer_question(
     # persisted settings locale (then the zh-CN default) so the answer
     # language tracks the user's UI choice.
     settings_locale = await session.scalar(select(UserSettings.locale).where(UserSettings.user_id == user_id))
+    effective_locale = resolve_locale(locale, settings_locale)
     ctx = await build_wardrobe_context(
         session,
         user_id,
@@ -321,6 +402,7 @@ async def answer_question(
         answer=answer_text,
         item_refs=item_refs,
         tokens_used=tokens_used,
+        effective_locale=effective_locale,
     )
 
 
@@ -330,5 +412,8 @@ async def list_history(
     *,
     limit: int,
     offset: int,
+    focused_item_id: uuid.UUID | None = None,
 ) -> list[Any]:
-    return await SqlAlchemyAskRepository(session).list_for_user(user_id, limit=limit, offset=offset)
+    return await SqlAlchemyAskRepository(session).list_for_user(
+        user_id, limit=limit, offset=offset, focused_item_id=focused_item_id
+    )

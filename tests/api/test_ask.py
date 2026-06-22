@@ -12,11 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.llm import LlmAnswer
 from app.bootstrap.container import llm_service
-from app.common.enums import Category, ItemStatus
+from app.common.enums import Category, ImageType, ItemStatus
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.user import User
-from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import ask as ask_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
@@ -447,6 +447,281 @@ async def test_ask_history(
     assert len(rows) == 1
     assert rows[0]["question"] == "第一个问题？"
     assert rows[0]["answer"] == "建议搭配白衬衫和黑裤子。"
+
+
+async def _seed_item_with_image(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    title: str = "White shirt",
+    category: str = Category.TOP.value,
+    color: str = "white",
+    localized_names: dict[str, str] | None = None,
+    object_key: str | None = "wardrobe/abc/standard.jpg",
+    deleted: bool = False,
+) -> uuid.UUID:
+    """Seed one wearable item plus a STANDARD image row (object_key carries the
+    thumbnail). Returns the item id."""
+    item = WardrobeItem(
+        user_id=user_id,
+        title=title,
+        category=category,
+        color_main=color,
+        status=ItemStatus.WEARABLE.value,
+        localized_names=localized_names,
+        deleted_at=datetime.now(UTC) if deleted else None,
+        cover_image_url="https://example.com/cover.jpg",
+    )
+    session.add(item)
+    await session.flush()
+    session.add(
+        WardrobeItemImage(
+            item_id=item.id,
+            image_type=ImageType.STANDARD.value,
+            image_url="https://example.com/standard.jpg",
+            object_key=object_key,
+            created_at=datetime.now(UTC),
+        )
+    )
+    await session.flush()
+    return item.id
+
+
+def _structured_app(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    llm: object,
+) -> FastAPI:
+    """Build an Ask app with structured output ON so item_refs is the validated
+    cited subset (lets snapshots resolve against real cited items)."""
+    structured = Settings(
+        APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True
+    )
+    monkeypatch.setattr(
+        "app.application.ask.answer_question.get_settings", lambda: structured
+    )
+    return _build_app(
+        db_session,
+        Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
+        llm=llm,
+    )
+
+
+async def test_ask_global_history_unchanged_without_filters(
+    db_session: AsyncSession, patch_router_settings
+) -> None:
+    """No filters → global history, identical shape to before (now also an
+    empty item_ref_snapshots list when there are no refs)."""
+    user_id = await _seed_user_and_items(db_session)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    app = _build_app(
+        db_session, Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True), llm=_FakeLlm()
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "全局问题？"},
+        )
+        resp = await client.get("/v1/ask/history", headers={"X-User-Id": str(user_id)})
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert len(rows) == 1
+    assert rows[0]["question"] == "全局问题？"
+    # No refs (structured off, no focus) → empty snapshots, never the candidates.
+    assert rows[0]["item_refs"] == []
+    assert rows[0]["item_ref_snapshots"] == []
+
+
+async def test_ask_history_focused_item_filter(
+    db_session: AsyncSession, patch_router_settings
+) -> None:
+    """focused_item_id returns only sessions about that item; the global, non-
+    focused session stays out of the scoped view (and old context-less rows by
+    construction never match)."""
+    user_id = await _seed_user_and_items(db_session)
+    focus_id = await _seed_focused_item(db_session, user_id)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    app = _build_app(
+        db_session, Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True), llm=_FakeLlm()
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        # A global (non-focused) session — should be excluded from scoped view.
+        await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "全局问题？"},
+        )
+        # A focused session about focus_id.
+        await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "用这件搭一套", "focused_item_id": str(focus_id)},
+        )
+        scoped = await client.get(
+            "/v1/ask/history",
+            headers={"X-User-Id": str(user_id)},
+            params={"focused_item_id": str(focus_id), "scope": "item", "entrypoint": "item_detail"},
+        )
+        global_view = await client.get(
+            "/v1/ask/history", headers={"X-User-Id": str(user_id)}
+        )
+    assert scoped.status_code == 200
+    scoped_rows = scoped.json()
+    assert len(scoped_rows) == 1
+    assert scoped_rows[0]["question"] == "用这件搭一套"
+    # Global view keeps both.
+    assert len(global_view.json()) == 2
+
+
+async def test_ask_item_ref_snapshots_batch_and_localized(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Structured output cites two items → both come back as batched snapshots
+    with localized names + signed thumbnails."""
+    user_id = uuid.uuid4()
+    db_session.add(User(id=user_id))
+    await db_session.flush()
+    id1 = await _seed_item_with_image(
+        db_session, user_id, title="White shirt",
+        localized_names={"zh-CN": "白色衬衫", "en-US": "White shirt"},
+    )
+    id2 = await _seed_item_with_image(
+        db_session, user_id, title="Black pants", category=Category.BOTTOM.value, color="black",
+    )
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    # Cite both positions (1 and 2).
+    llm = _FakeLlm(text='{"answer": "搭这两件", "referenced_items": [1, 2]}')
+    app = _structured_app(db_session, monkeypatch, llm)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "今天穿什么？", "locale": "zh-CN"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body["item_refs"]) == {str(id1), str(id2)}
+    snaps = {s["item_id"]: s for s in body["item_ref_snapshots"]}
+    assert set(snaps) == {str(id1), str(id2)}
+    # Localized name resolved for the locale; title fallback for the other.
+    assert snaps[str(id1)]["name"] == "白色衬衫"
+    assert snaps[str(id2)]["name"] == "Black pants"
+    assert snaps[str(id1)]["category"] == Category.TOP.value
+    assert snaps[str(id2)]["color_main"] == "black"
+    # Thumbnail is a signed/render URL (local backend echoes a files URL).
+    assert snaps[str(id1)]["thumbnail_url"]
+
+
+async def test_ask_snapshots_exclude_deleted_and_foreign(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deleted item cited by the model is dropped from snapshots (item_refs
+    still records the raw id). Foreign items can't be cited, but the batch fetch
+    is user-scoped so it would drop them too."""
+    user_id = uuid.uuid4()
+    db_session.add(User(id=user_id))
+    await db_session.flush()
+    live_id = await _seed_item_with_image(db_session, user_id, title="White shirt")
+    deleted_id = await _seed_item_with_image(
+        db_session, user_id, title="Old tee", category=Category.TOP.value, color="grey", deleted=True
+    )
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    # The wearable filter excludes the deleted item from candidates, so only the
+    # live item is in the prompt at position 1; cite it.
+    llm = _FakeLlm(text='{"answer": "穿这件", "referenced_items": [1]}')
+    app = _structured_app(db_session, monkeypatch, llm)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "今天穿什么？"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    snap_ids = {s["item_id"] for s in body["item_ref_snapshots"]}
+    assert str(live_id) in snap_ids
+    assert str(deleted_id) not in snap_ids
+
+
+async def test_ask_snapshots_drop_deleted_in_history(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If an item referenced by a past Ask is later deleted, history still lists
+    the raw item_ref but omits the snapshot (no per-id fetch, batch-scoped)."""
+    user_id = uuid.uuid4()
+    db_session.add(User(id=user_id))
+    await db_session.flush()
+    item_id = await _seed_item_with_image(db_session, user_id, title="White shirt")
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    llm = _FakeLlm(text='{"answer": "穿这件", "referenced_items": [1]}')
+    app = _structured_app(db_session, monkeypatch, llm)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        ask_resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "今天穿什么？"},
+        )
+        assert ask_resp.json()["item_refs"] == [str(item_id)]
+        # Soft-delete the item, then read history.
+        item = await db_session.get(WardrobeItem, item_id)
+        assert item is not None
+        item.deleted_at = datetime.now(UTC)
+        await db_session.flush()
+        hist = await client.get("/v1/ask/history", headers={"X-User-Id": str(user_id)})
+    assert hist.status_code == 200
+    rows = hist.json()
+    assert len(rows) == 1
+    assert rows[0]["item_refs"] == [str(item_id)]  # raw ref preserved
+    assert rows[0]["item_ref_snapshots"] == []  # but no snapshot for deleted item
+
+
+async def test_ask_history_snapshots_exclude_foreign_items(
+    db_session: AsyncSession, patch_router_settings
+) -> None:
+    """A foreign item id in a row's item_refs is dropped from snapshots — the
+    batch fetch is user-scoped — while the raw ref is preserved. Insert the
+    AskSession directly since the normal flow can never cite another user's
+    item."""
+    from app.infrastructure.persistence.models.ask_session import AskSession
+
+    owner_id = uuid.uuid4()
+    db_session.add(User(id=owner_id))
+    await db_session.flush()
+    foreign_item_id = await _seed_item_with_image(db_session, owner_id, title="Owner shirt")
+
+    viewer_id = uuid.uuid4()
+    db_session.add(User(id=viewer_id))
+    await db_session.flush()
+    db_session.add(
+        AskSession(
+            user_id=viewer_id,
+            question="谁的衣服？",
+            answer="不是你的。",
+            item_refs=[str(foreign_item_id)],
+            context=None,
+            tokens_used=1,
+        )
+    )
+    await db_session.flush()
+
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    app = _build_app(
+        db_session, Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True), llm=_FakeLlm()
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.get("/v1/ask/history", headers={"X-User-Id": str(viewer_id)})
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert len(rows) == 1
+    assert rows[0]["item_refs"] == [str(foreign_item_id)]  # raw ref preserved
+    assert rows[0]["item_ref_snapshots"] == []  # foreign item never resolved
 
 
 async def test_ask_429_when_quota_exhausted(
