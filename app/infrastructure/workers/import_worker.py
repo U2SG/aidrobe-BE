@@ -242,17 +242,19 @@ async def _process_one_import(job: AsyncJob) -> None:
         task_id=task_id_str,
     )
     try:
-        # The task mutation commits in its own session BEFORE finalizing — it's
-        # last-write-wins idempotent (re-deriving candidate_payload), so unlike
-        # a vector write it's safe even if a slow worker lost its lease.
+        # Fence the task mutation on this attempt's claim, in ONE transaction
+        # (mirrors embedding/cutout): if a slow vision/OCR call outlived the
+        # lease and the job was recovered + reclaimed elsewhere, `mark_succeeded`
+        # returns False and we roll back the task write too — so a stale worker
+        # never lands a status/candidate that could clobber the new claim's.
         async with AsyncSessionLocal() as session:
             await process_import_task_with_session(session, task_id, user_id)
-            await session.commit()
-        async with AsyncSessionLocal() as session:
             ok = await mark_succeeded(session, job.id, claimed_attempt=job.attempts)
-            await session.commit()
             if not ok:
-                logger.warning("import_task.lease_lost", job_id=str(job.id))
+                await session.rollback()
+                logger.warning("import_task.lease_lost_discarding", job_id=str(job.id))
+                return
+            await session.commit()
     except Exception as exc:
         logger.warning("import_task.job_failed", task_id=task_id_str, error=str(exc))
         async with AsyncSessionLocal() as session:
