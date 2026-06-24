@@ -27,9 +27,10 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.enums import ItemStatus
 from app.infrastructure.persistence.models.user import UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.recommendation_repo import (
@@ -39,7 +40,11 @@ from app.infrastructure.persistence.repositories.style_repo import (
     SqlAlchemyStyleRepository,
 )
 
-SNAPSHOT_VERSION = 1
+# BE#27 — v2 adds `candidate_selection` (selection strategy + per-category
+# counts + focused_in_top1 + prompt_field_schema_version) to the snapshot and
+# makes `wardrobe_summary` count the full wearable set rather than the curated
+# sample.
+SNAPSHOT_VERSION = 2
 _MAX_STYLE_TAGS = 20
 _TOP_COLORS = 6
 
@@ -55,11 +60,33 @@ class WardrobeContext:
     recent_categories: list[str]
     departure_time: str | None
     candidate_item_ids: list[str]
+    candidate_selection: dict[str, Any]  # snapshot-only; never reaches the prompt
 
 
 def summarize_wardrobe(items: list[WardrobeItem]) -> dict[str, Any]:
     by_category = Counter(i.category for i in items if i.category)
     return {"total": len(items), "by_category": dict(by_category)}
+
+
+async def _wardrobe_summary(session: AsyncSession, user_id: uuid.UUID) -> dict[str, Any]:
+    """Composition over the FULL wearable set, not the curated candidate sample.
+
+    The summary tells the model the wardrobe's true makeup ("you have N tops"),
+    so it must not undercount when candidates are deduped/capped. One GROUP BY,
+    independent of the per-item prompt array."""
+    rows = (
+        await session.execute(
+            select(WardrobeItem.category, func.count())
+            .where(
+                WardrobeItem.user_id == user_id,
+                WardrobeItem.status == ItemStatus.WEARABLE.value,
+                WardrobeItem.deleted_at.is_(None),
+            )
+            .group_by(WardrobeItem.category)
+        )
+    ).all()
+    by_category = {category: count for category, count in rows if category}
+    return {"total": sum(by_category.values()), "by_category": by_category}
 
 
 def _top_colors(items: list[WardrobeItem]) -> list[str]:
@@ -75,6 +102,7 @@ async def build_wardrobe_context(
     focused_item_id: uuid.UUID | None,
     locale: str,
     today: date,
+    candidate_selection: dict[str, Any] | None = None,
 ) -> WardrobeContext:
     style_tags = (await SqlAlchemyStyleRepository(session).get_style_tags(user_id))[
         :_MAX_STYLE_TAGS
@@ -98,12 +126,13 @@ async def build_wardrobe_context(
         scope="item" if focused_item_id else "wardrobe",
         focused_item_id=str(focused_item_id) if focused_item_id else None,
         locale=locale,
-        wardrobe_summary=summarize_wardrobe(items),
+        wardrobe_summary=await _wardrobe_summary(session, user_id),
         style_profile={"style_tags": style_tags, "preferred_colors": _top_colors(items)},
         fit_preferences=fit_preferences,
         recent_categories=recent_categories,
         departure_time=departure_time,
         candidate_item_ids=[str(i.id) for i in items],
+        candidate_selection=candidate_selection or {},
     )
 
 
@@ -146,4 +175,5 @@ def context_snapshot(ctx: WardrobeContext) -> dict[str, Any]:
         "focused_item_id": ctx.focused_item_id,
         "locale": ctx.locale,
         "candidate_item_ids": ctx.candidate_item_ids,
+        "candidate_selection": ctx.candidate_selection,
     }
