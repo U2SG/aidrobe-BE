@@ -162,6 +162,9 @@ async def test_reasons_are_template_generated_and_include_subscores() -> None:
 
     assert all(outfit.reason_text for outfit in result.outfits)
     assert all("color_score" in outfit.score_breakdown for outfit in result.outfits)
+    # BE#38 — each selected outfit carries >= 2 grounded reasons.
+    assert all(len(outfit.reasoning) >= 2 for outfit in result.outfits)
+    assert all(r["type"] and r["text"] for outfit in result.outfits for r in outfit.reasoning)
 
 
 @pytest.mark.asyncio

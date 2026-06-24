@@ -7252,6 +7252,20 @@
               }
             ],
             "title": "Prep Notes"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ReasoningItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning"
           }
         },
         "type": "object",
@@ -7637,6 +7651,25 @@
           "object_key"
         ],
         "title": "PresignUploadResponse"
+      },
+      "ReasoningItem": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "text"
+        ],
+        "title": "ReasoningItem",
+        "description": "BE#38 — one grounded reason. `type` keys the FE rendering\n(weather / wear_history / style_match / category / fit)."
       },
       "RecommendationItemResponse": {
         "properties": {

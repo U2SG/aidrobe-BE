@@ -160,6 +160,7 @@ class RecommendationGenerator:
                         ),
                         score_breakdown_json=static_breakdown,
                         score_rules_version=persisted_rules_version,
+                        reasoning_json=engine_outfit.reasoning or None,
                         created_at=now,
                     )
                 )

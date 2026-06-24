@@ -61,6 +61,7 @@ from app.presentation.api.v1.schemas.recommendations import (
     OutfitHistoryResponse,
     OutfitResponse,
     OutfitScoresResponse,
+    ReasoningItem,
     RecommendationItemResponse,
     StyleContextResponse,
     TodayContextResponse,
@@ -75,6 +76,12 @@ logger = structlog.get_logger(__name__)
 
 
 def _build_base_outfit_response(outfit: Outfit) -> OutfitResponse:
+    # BE#37/#38 — reasoning is persisted on the row; surface it only when the
+    # flag is on (no extra query — it's a column).
+    reasoning: list[ReasoningItem] | None = None
+    raw_reasoning = outfit.reasoning_json
+    if get_settings().ENABLE_TODAY_REASONING and isinstance(raw_reasoning, list):
+        reasoning = [ReasoningItem(**r) for r in raw_reasoning if isinstance(r, dict)]
     return OutfitResponse(
         outfit_id=outfit.id,
         type=outfit.outfit_type,
@@ -89,6 +96,7 @@ def _build_base_outfit_response(outfit: Outfit) -> OutfitResponse:
             )
             for item in sorted(outfit.items, key=lambda i: i.display_order)
         ],
+        reasoning=reasoning,
     )
 
 
@@ -378,6 +386,7 @@ async def get_today_recommendation(
         today,
         settings.departure_time,
         scene,
+        reasoning=get_settings().ENABLE_TODAY_REASONING,
     )
     try:
         cached = await redis_client.get(cache_key)
@@ -453,7 +462,11 @@ async def refresh_today(
         current_user.id
     )
     cache_key = build_daily_recommendation_cache_key(
-        current_user.id, daily.recommendation_date, user_settings.departure_time, scene
+        current_user.id,
+        daily.recommendation_date,
+        user_settings.departure_time,
+        scene,
+        reasoning=get_settings().ENABLE_TODAY_REASONING,
     )
     try:
         await redis_client.delete(cache_key)
