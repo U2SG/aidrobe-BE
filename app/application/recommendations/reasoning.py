@@ -52,10 +52,19 @@ def build_reasoning(
             reasons.append({"type": WEATHER, "text": "今天偏暖，这身轻薄透气更舒服"})
         elif weather.temperature_c >= _COLD_C:
             reasons.append({"type": WEATHER, "text": "今天气温适中，整体好驾驭"})
-        if weather.rain_probability > _RAIN_PROB and not any(
-            c.lower() in _LIGHT_SHOE_COLORS for c in colors
+        shoe_colors = [
+            col.lower()
+            for cat, col in zip(categories, colors, strict=False)
+            if cat == Category.SHOES.value
+        ]
+        if (
+            weather.rain_probability > _RAIN_PROB
+            and shoe_colors
+            and not any(c in _LIGHT_SHOE_COLORS for c in shoe_colors)
         ):
-            reasons.append({"type": WEATHER, "text": "今天可能有雨，鞋面更耐脏好打理"})
+            # Only when the outfit actually has dark shoes — don't invent a shoe
+            # claim for a shoeless look.
+            reasons.append({"type": WEATHER, "text": "今天可能有雨，这双深色鞋面更耐脏好打理"})
 
     # 2. Freshness — the main piece hasn't been worn recently.
     if is_fresh:
@@ -73,9 +82,12 @@ def build_reasoning(
     elif Category.TOP.value in cats and Category.BOTTOM.value in cats:
         reasons.append({"type": CATEGORY, "text": "上下身比例均衡，是稳妥的组合"})
 
-    # 5. Fit — at least one piece is confirmed to fit well.
-    if any(status == "fits_well" for status in fit_statuses):
+    # 5. Fit — phrased for the confirmed piece(s) only; never claim the whole
+    # outfit fits when only some items are confirmed (the rest are unknown).
+    if all(status == "fits_well" for status in fit_statuses) and fit_statuses:
         reasons.append({"type": FIT, "text": "这些单品你穿着都合身"})
+    elif any(status == "fits_well" for status in fit_statuses):
+        reasons.append({"type": FIT, "text": "其中有确认合身的单品"})
 
     # Floor: always give at least two grounded reasons. The category/color facts
     # below are true of any non-empty combo, so they never fabricate.

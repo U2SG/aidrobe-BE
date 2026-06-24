@@ -386,6 +386,7 @@ async def get_today_recommendation(
         today,
         settings.departure_time,
         scene,
+        reasoning=get_settings().ENABLE_TODAY_REASONING,
     )
     try:
         cached = await redis_client.get(cache_key)
@@ -461,7 +462,11 @@ async def refresh_today(
         current_user.id
     )
     cache_key = build_daily_recommendation_cache_key(
-        current_user.id, daily.recommendation_date, user_settings.departure_time, scene
+        current_user.id,
+        daily.recommendation_date,
+        user_settings.departure_time,
+        scene,
+        reasoning=get_settings().ENABLE_TODAY_REASONING,
     )
     try:
         await redis_client.delete(cache_key)
