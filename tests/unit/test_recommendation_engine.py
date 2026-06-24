@@ -200,6 +200,43 @@ async def test_repetition_penalty_downgrades_recently_worn_similar_outfit() -> N
 
 
 @pytest.mark.asyncio
+async def test_avoid_exact_repeats_excludes_recent_outfit_when_alternatives_exist() -> None:
+    # BE#39 — the exact look {1,3} was recently recommended/worn; with the flag
+    # on it must not be re-selected while other combos are available.
+    items = [
+        EngineItem("1", "White shirt", "top", "white"),
+        EngineItem("2", "Blue shirt", "top", "blue"),
+        EngineItem("3", "Black pants", "bottom", "black"),
+        EngineItem("4", "Grey pants", "bottom", "grey"),
+    ]
+    result = await RecommendationEngine().generate(
+        items,
+        recent_worn_outfit_item_ids=[{"1", "3"}],
+        avoid_exact_repeats=True,
+    )
+    assert result.outfits
+    assert {"1", "3"} not in [set(o.item_ids) for o in result.outfits]
+
+
+@pytest.mark.asyncio
+async def test_avoid_exact_repeats_falls_back_for_small_wardrobe() -> None:
+    # Only one possible look exists and it was recent — the relax fallback must
+    # still return it rather than nothing.
+    items = [
+        EngineItem("1", "Shirt", "top", "white"),
+        EngineItem("2", "Pants", "bottom", "black"),
+        EngineItem("3", "Shoes", "shoes", "brown"),
+    ]
+    result = await RecommendationEngine().generate(
+        items,
+        recent_worn_outfit_item_ids=[{"1", "2", "3"}],
+        avoid_exact_repeats=True,
+    )
+    assert result.status == "ready"
+    assert result.outfits
+
+
+@pytest.mark.asyncio
 async def test_weather_score_falls_back_to_neutral_without_weather_data() -> None:
     result = await RecommendationEngine().generate(
         [

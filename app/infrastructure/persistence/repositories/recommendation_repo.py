@@ -405,6 +405,50 @@ class SqlAlchemyRecommendationRepository:
             outfit_items.setdefault(outfit_id, set()).add(str(item_id))
         return list(outfit_items.values())
 
+    async def get_recent_recommended_outfit_item_ids(
+        self, user_id: uuid.UUID, target_date: date, days: int = 7
+    ) -> list[set[str]]:
+        """BE#39 — item-sets of outfits RECOMMENDED (current revision) within the
+        window, so diversity avoids repeating a look the user was recently shown,
+        not only ones they wore. Excludes today (recommendation_date < target)."""
+        since = target_date - timedelta(days=days)
+        rows = await self.session.execute(
+            select(Outfit.id, OutfitItem.item_id)
+            .join(DailyRecommendation, DailyRecommendation.id == Outfit.daily_recommendation_id)
+            .join(OutfitItem, OutfitItem.outfit_id == Outfit.id)
+            .where(
+                DailyRecommendation.user_id == user_id,
+                DailyRecommendation.is_current.is_(True),
+                DailyRecommendation.recommendation_date >= since,
+                DailyRecommendation.recommendation_date < target_date,
+            )
+        )
+        outfit_items: dict[uuid.UUID, set[str]] = {}
+        for outfit_id, item_id in rows:
+            outfit_items.setdefault(outfit_id, set()).add(str(item_id))
+        return list(outfit_items.values())
+
+    async def recent_recommended_main_item_ids(
+        self, user_id: uuid.UUID, target_date: date, days: int = 7
+    ) -> set[str]:
+        """BE#39 — hero (top/dress) item ids RECOMMENDED within the window, so
+        the freshness signal also rotates recently-recommended hero pieces, not
+        only worn ones."""
+        since = target_date - timedelta(days=days)
+        result = await self.session.scalars(
+            select(OutfitItem.item_id)
+            .join(Outfit, Outfit.id == OutfitItem.outfit_id)
+            .join(DailyRecommendation, DailyRecommendation.id == Outfit.daily_recommendation_id)
+            .where(
+                DailyRecommendation.user_id == user_id,
+                DailyRecommendation.is_current.is_(True),
+                DailyRecommendation.recommendation_date >= since,
+                DailyRecommendation.recommendation_date < target_date,
+                OutfitItem.role.in_(["top", "dress"]),
+            )
+        )
+        return {str(item_id) for item_id in result}
+
     async def get_recent_feedback(
         self, user_id: uuid.UUID, days: int = 30
     ) -> list[OutfitFeedback]:

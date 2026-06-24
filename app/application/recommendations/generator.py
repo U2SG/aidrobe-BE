@@ -15,6 +15,7 @@ from app.application.recommendations.fit_profile import build_fit_profile
 from app.application.style.build_style_profile import build_style_profile
 from app.common.enums import OutfitType, RecommendationStatus, TimeSensitivity
 from app.common.season import current_season
+from app.config.settings import get_settings
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
@@ -70,9 +71,22 @@ class RecommendationGenerator:
 
         items = await self.repository.get_wearable_items(user_id)
         recent = await self.repository.recent_worn_main_item_ids(user_id, target_date)
+        settings = get_settings()
+        window = settings.RECOMMENDATION_DIVERSITY_WINDOW_DAYS
         recent_outfits = await self.repository.get_recent_worn_outfit_item_ids(
-            user_id, target_date, days=7
+            user_id, target_date, days=window
         )
+        avoid_exact_repeats = settings.ENABLE_RECOMMENDATION_DIVERSITY
+        if avoid_exact_repeats:
+            # BE#39 — also avoid repeating looks / hero items the user was
+            # recently RECOMMENDED (not just ones they wore). Merge into the
+            # same inputs the engine's repetition/freshness logic consumes.
+            recent_outfits = recent_outfits + await self.repository.get_recent_recommended_outfit_item_ids(
+                user_id, target_date, days=window
+            )
+            recent = recent | await self.repository.recent_recommended_main_item_ids(
+                user_id, target_date, days=window
+            )
         style_profile = await self._load_style_profile(user_id)
         weather = await self._load_weather(user_id)
         fit_profile = await self._load_fit_profile(user_id)
@@ -96,6 +110,7 @@ class RecommendationGenerator:
             weather=weather,
             fit_profile=fit_profile,
             recent_worn_outfit_item_ids=recent_outfits,
+            avoid_exact_repeats=avoid_exact_repeats,
         )
 
         daily = DailyRecommendation(

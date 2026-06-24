@@ -134,6 +134,16 @@ class Settings(BaseSettings):
     # of the original background-generated rev-1. Enforced when
     # ENABLE_TODAY_REFRESH=True. Set <= 0 to disable the cap entirely.
     TODAY_REFRESH_DAILY_LIMIT: int = 3
+    # BE#39 — when on, recommendation generation also avoids repeating recently
+    # RECOMMENDED outfits/hero items (not just recently worn): exact-outfit
+    # repeats within the window are hard-excluded (relaxed for small wardrobes)
+    # and recently-recommended hero items are de-prioritized. Off = legacy
+    # worn-only diversity.
+    ENABLE_RECOMMENDATION_DIVERSITY: bool = False
+    # Look-back window (days) for the diversity checks above. Also used for the
+    # existing recently-worn-outfit similarity penalty (default 7 keeps prior
+    # behavior unchanged).
+    RECOMMENDATION_DIVERSITY_WINDOW_DAYS: int = 7
 
     # Phase E — PIPL-aware account deletion + cost guard.
     # When False, DELETE /v1/me returns 503 (deliberate kill switch so a
