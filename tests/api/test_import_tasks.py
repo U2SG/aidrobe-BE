@@ -1,15 +1,19 @@
 import asyncio
 import uuid
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.enums import ImportStatus
 from app.config.settings import Settings, get_settings
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.session import get_db_session
+from app.infrastructure.workers.import_worker import IMPORT_JOB_TYPE
 from app.presentation.api.v1.routers import import_tasks as import_tasks_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
 
@@ -137,6 +141,41 @@ async def test_import_candidate_respects_request_locale_en(db_session: AsyncSess
     assert candidate["canonical_name"] == "Black trousers"
     assert candidate["category"] == "bottom"
     assert candidate["color_main"] == "black"
+
+
+async def test_create_import_task_async_path_enqueues_job(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # BE#26 — the flag is read in-body via get_settings() (lru_cached, bypasses
+    # dependency_overrides), so monkeypatch the consuming module. With it on,
+    # create enqueues an import_task job instead of running BackgroundTasks; the
+    # task stays queued (a drainer, not this request, will process it).
+    monkeypatch.setattr(
+        import_tasks_router,
+        "get_settings",
+        lambda: Settings(APP_ENV="dev", VISION_PROVIDER="fake", ENABLE_IMPORT_ASYNC_JOBS=True),
+    )
+    user_id = uuid.uuid4()
+    app = build_import_tasks_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/import-tasks",
+            headers={"X-User-Id": str(user_id)},
+            json={"input_type": "image", "source_type": "camera", "image_url": "https://cdn/shirt.jpg"},
+        )
+
+    assert response.status_code == 202
+    task_id = response.json()["data"]["task_id"]
+    job = (
+        await db_session.execute(select(AsyncJob).where(AsyncJob.job_type == IMPORT_JOB_TYPE))
+    ).scalar_one()
+    assert str(job.target_id) == task_id
+    assert job.status == "queued"
+    assert job.idempotency_key == f"import_task:{task_id}"
+    task = (
+        await db_session.execute(select(ImportTask).where(ImportTask.id == uuid.UUID(task_id)))
+    ).scalar_one()
+    assert task.task_status == ImportStatus.QUEUED.value  # not processed inline
 
 
 async def test_failed_vision_response_stores_failed_task(db_session: AsyncSession) -> None:

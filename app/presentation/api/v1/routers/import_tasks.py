@@ -26,7 +26,7 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
 from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
-from app.infrastructure.workers.import_worker import process_import_task_with_session
+from app.infrastructure.workers.import_worker import enqueue_import_task, process_import_task_with_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.import_tasks import (
@@ -116,7 +116,14 @@ async def create_import_task(
         locale=payload.locale,
     )
     response = to_response(task)
-    background_tasks.add_task(process_import_task_with_session, session, task.id, current_user.id)
+    # BE#26 — when enabled, hand processing to job_runtime/arq (own session,
+    # lease/retry/dead-letter) instead of running heavy Vision/OCR/link work in
+    # the request lifecycle on the request's session. The import_tasks row is
+    # already persisted, so the job (or legacy path) only drives processing.
+    if get_settings().ENABLE_IMPORT_ASYNC_JOBS:
+        await enqueue_import_task(session, task_id=task.id, user_id=current_user.id)
+    else:
+        background_tasks.add_task(process_import_task_with_session, session, task.id, current_user.id)
     return ResponseModel(data=response)
 
 
