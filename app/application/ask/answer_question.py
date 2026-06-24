@@ -21,7 +21,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import nulls_last, select
+from sqlalchemy import func, nulls_last, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ask.wardrobe_context import (
@@ -46,10 +46,12 @@ from app.infrastructure.persistence.repositories.ask_repo import SqlAlchemyAskRe
 # Cap the number of items injected so the prompt stays lightweight and cheap.
 _MAX_ITEMS = 80
 # BE#27 — pull a priority-ordered superset, then curate down to `_MAX_ITEMS`.
-# Fetching more than the cap lets the curation step balance category coverage
-# (e.g. surface rarely-worn shoes) instead of letting a SQL `LIMIT` truncate by
-# the default row order. 200 covers essentially every real wardrobe.
-_CANDIDATE_FETCH_CAP = 200
+# Fetch the top-N PER CATEGORY (window query) rather than a flat global LIMIT:
+# a flat LIMIT could drop a whole category (e.g. shoes) for a huge wardrobe
+# whose top rows are all one category, defeating curation's coverage. A
+# per-category cap guarantees every category reaches the curator while staying
+# bounded (≈ categories × cap).
+_PER_CATEGORY_FETCH_CAP = 40
 # Same (category, color_main) pieces beyond this are sampled out so a closet
 # full of white shirts doesn't crowd the prompt and starve other categories.
 _MAX_PER_COLOR_CATEGORY = 3
@@ -410,25 +412,38 @@ async def answer_question(
                 status_code=404,
             )
 
-    # Pull a priority-ordered superset (most-worn / most-recent first) so the
-    # curation step can balance category coverage instead of letting a bare
-    # `LIMIT` truncate by default row order. NULLs-last keeps never-worn items
-    # from sorting to the top under DESC.
+    # Priority order: most-worn / most-recent first. NULLs-last keeps never-worn
+    # items from sorting to the top under DESC. Reused for the per-category
+    # ranking and the final pool order the curator buckets from.
+    priority_order = (
+        WardrobeItem.wear_count.desc(),
+        nulls_last(WardrobeItem.last_worn_at.desc()),
+        WardrobeItem.updated_at.desc(),
+        WardrobeItem.id,
+    )
+    # Rank within each category, then keep the top `_PER_CATEGORY_FETCH_CAP` per
+    # category — so a huge single-category-dominated wardrobe can't truncate
+    # other categories out of the pool before curation balances coverage.
+    ranked = (
+        select(
+            WardrobeItem.id,
+            func.row_number()
+            .over(partition_by=WardrobeItem.category, order_by=priority_order)
+            .label("rn"),
+        )
+        .where(
+            WardrobeItem.user_id == user_id,
+            WardrobeItem.status == ItemStatus.WEARABLE.value,
+            WardrobeItem.deleted_at.is_(None),
+        )
+        .subquery()
+    )
     pool = list(
         await session.scalars(
             select(WardrobeItem)
-            .where(
-                WardrobeItem.user_id == user_id,
-                WardrobeItem.status == ItemStatus.WEARABLE.value,
-                WardrobeItem.deleted_at.is_(None),
-            )
-            .order_by(
-                WardrobeItem.wear_count.desc(),
-                nulls_last(WardrobeItem.last_worn_at.desc()),
-                WardrobeItem.updated_at.desc(),
-                WardrobeItem.id,
-            )
-            .limit(_CANDIDATE_FETCH_CAP)
+            .join(ranked, WardrobeItem.id == ranked.c.id)
+            .where(ranked.c.rn <= _PER_CATEGORY_FETCH_CAP)
+            .order_by(*priority_order)
         )
     )
     # Curate to a stable, explainable set; the focused item (if any) is pinned
