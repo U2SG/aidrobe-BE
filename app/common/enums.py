@@ -65,6 +65,25 @@ class FeedbackType(StrEnum):
     DISLIKE = "dislike"
 
 
+class RecommendationEventType(StrEnum):
+    """BE#40 — append-only interaction signals for recommendation learning.
+
+    Distinct from FeedbackType (which is the current-state outfit rating): this
+    is the event stream (what the user did, when), the raw material for future
+    ranking / preference learning."""
+
+    LIKED = "liked"
+    DISLIKED = "disliked"
+    NEUTRAL = "neutral"
+    SAVED = "saved"
+    DISMISSED = "dismissed"
+    WORN = "worn"
+    EDITED = "edited"
+    SHARED = "shared"
+    DELETED = "deleted"
+    IMPRESSION = "impression"
+
+
 class FitStatus(StrEnum):
     UNKNOWN = "unknown"
     FITS_WELL = "fits_well"

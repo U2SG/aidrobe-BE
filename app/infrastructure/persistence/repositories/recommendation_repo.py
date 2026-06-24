@@ -13,6 +13,7 @@ from app.infrastructure.persistence.models.recommendation import (
     OutfitFeedback,
     OutfitItem,
     OutfitPlan,
+    RecommendationEvent,
     WearHistory,
 )
 from app.infrastructure.persistence.models.user import User, UserSettings
@@ -276,6 +277,33 @@ class SqlAlchemyRecommendationRepository:
         self.session.add(feedback)
         await self.session.flush()
         return feedback
+
+    async def add_recommendation_event(self, event: RecommendationEvent) -> RecommendationEvent:
+        """BE#40 — append one interaction event. Caller owns commit."""
+        self.session.add(event)
+        await self.session.flush()
+        return event
+
+    async def list_recommendation_events(
+        self,
+        user_id: uuid.UUID,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        event_type: str | None = None,
+        limit: int = 200,
+    ) -> list[RecommendationEvent]:
+        """Query a user's events by time window (+ optional type), newest first —
+        backed by the (user_id, [event_type,] created_at) indexes."""
+        stmt = select(RecommendationEvent).where(RecommendationEvent.user_id == user_id)
+        if since is not None:
+            stmt = stmt.where(RecommendationEvent.created_at >= since)
+        if until is not None:
+            stmt = stmt.where(RecommendationEvent.created_at <= until)
+        if event_type is not None:
+            stmt = stmt.where(RecommendationEvent.event_type == event_type)
+        stmt = stmt.order_by(RecommendationEvent.created_at.desc()).limit(limit)
+        return list(await self.session.scalars(stmt))
 
     async def get_feedback_for_user(
         self, outfit_id: uuid.UUID, user_id: uuid.UUID
