@@ -161,9 +161,9 @@ async def test_feedback_emits_attributed_recommendation_event(db_session: AsyncS
     assert event.event_metadata == {"feedback_type": "love", "reason_tags": ["sharp"]}
 
 
-async def test_neutral_feedback_emits_no_event(db_session: AsyncSession) -> None:
-    # `neutral` has no polar event_type; the raw rating is preserved on the
-    # OutfitFeedback row, so no signal is lost by not emitting an event.
+async def test_neutral_feedback_emits_neutral_event(db_session: AsyncSession) -> None:
+    # Every rating is a signal — neutral emits a `neutral` event (raw rating in
+    # event_metadata) so a later like/dislike doesn't erase it from the stream.
     user_id = uuid.uuid4()
     await seed_ready_recommendation(db_session, user_id)
     app = build_outfit_app(db_session)
@@ -177,8 +177,35 @@ async def test_neutral_feedback_emits_no_event(db_session: AsyncSession) -> None
             json={"feedback_type": "neutral"},
         )
 
-    count = await db_session.scalar(select(func.count()).select_from(RecommendationEvent))
-    assert count == 0
+    event = await db_session.scalar(select(RecommendationEvent))
+    assert event is not None
+    assert event.event_type == RecommendationEventType.NEUTRAL.value
+    assert event.event_metadata == {"feedback_type": "neutral", "reason_tags": []}
+
+
+async def test_wear_emits_single_worn_event_idempotent(db_session: AsyncSession) -> None:
+    # BE#40 — a real wear emits one WORN event; a duplicate wear (same day) is
+    # idempotent and must NOT add a second.
+    user_id = uuid.uuid4()
+    await seed_ready_recommendation(db_session, user_id)
+    app = build_outfit_app(db_session)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        outfit_id = await get_first_outfit_id(client, user_id)
+        for _ in range(2):
+            await client.post(
+                f"/v1/recommendations/outfits/{outfit_id}/wear",
+                headers={"X-User-Id": str(user_id)},
+                json={"worn_date": "2026-06-24"},
+            )
+
+    count = await db_session.scalar(
+        select(func.count())
+        .select_from(RecommendationEvent)
+        .where(RecommendationEvent.event_type == RecommendationEventType.WORN.value)
+    )
+    assert count == 1
 
 
 async def test_feedback_updates_existing_row(db_session: AsyncSession) -> None:

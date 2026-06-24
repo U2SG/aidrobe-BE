@@ -74,6 +74,7 @@ class RecommendationEventType(StrEnum):
 
     LIKED = "liked"
     DISLIKED = "disliked"
+    NEUTRAL = "neutral"
     SAVED = "saved"
     DISMISSED = "dismissed"
     WORN = "worn"

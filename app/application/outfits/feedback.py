@@ -9,12 +9,14 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
 
-# BE#40 — outfit feedback is also an interaction signal. Polar ratings map to
-# liked/disliked events; `neutral` carries no event_type of its own but the raw
-# rating is always preserved in event_metadata, so no signal is discarded.
+# BE#40 — outfit feedback is also an interaction signal. Every rating emits an
+# event (love/like → liked, dislike → disliked, neutral → neutral) so the
+# append-only learning stream never loses a neutral the user later overwrites;
+# the raw rating is also preserved in event_metadata.
 _FEEDBACK_EVENT_MAP = {
     FeedbackType.LOVE.value: RecommendationEventType.LIKED.value,
     FeedbackType.LIKE.value: RecommendationEventType.LIKED.value,
+    FeedbackType.NEUTRAL.value: RecommendationEventType.NEUTRAL.value,
     FeedbackType.DISLIKE.value: RecommendationEventType.DISLIKED.value,
 }
 
