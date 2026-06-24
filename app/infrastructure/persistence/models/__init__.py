@@ -14,6 +14,7 @@ from app.infrastructure.persistence.models.recommendation import (
     Outfit,
     OutfitFeedback,
     OutfitItem,
+    RecommendationEvent,
     WearHistory,
 )
 from app.infrastructure.persistence.models.shopping import ShoppingSenseCheck
@@ -37,6 +38,7 @@ __all__ = [
     "OutfitFeedback",
     "OutfitItem",
     "PackingList",
+    "RecommendationEvent",
     "ShoppingSenseCheck",
     "User",
     "UserSession",

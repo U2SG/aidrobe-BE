@@ -6,9 +6,14 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.enums import RecommendationEventType
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.fit import FitFeedback
-from app.infrastructure.persistence.models.recommendation import OutfitFeedback, WearHistory
+from app.infrastructure.persistence.models.recommendation import (
+    OutfitFeedback,
+    RecommendationEvent,
+    WearHistory,
+)
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import recommendations as recommendations_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
@@ -127,6 +132,53 @@ async def test_feedback_accepts_new_four_tier_values(
     assert response.status_code == 200
     assert feedback is not None
     assert feedback.feedback_type == feedback_type
+
+
+async def test_feedback_emits_attributed_recommendation_event(db_session: AsyncSession) -> None:
+    # BE#40 — a polar rating also lands an attributed interaction event.
+    user_id = uuid.uuid4()
+    await seed_ready_recommendation(db_session, user_id)
+    app = build_outfit_app(db_session)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        outfit_id = await get_first_outfit_id(client, user_id)
+        response = await client.post(
+            f"/v1/recommendations/outfits/{outfit_id}/feedback",
+            headers={"X-User-Id": str(user_id)},
+            json={"feedback_type": "love", "reason_tags": ["sharp"]},
+        )
+
+    assert response.status_code == 200
+    event = await db_session.scalar(
+        select(RecommendationEvent).where(RecommendationEvent.outfit_id == uuid.UUID(outfit_id))
+    )
+    assert event is not None
+    assert event.event_type == RecommendationEventType.LIKED.value
+    assert event.user_id == user_id
+    assert event.recommendation_id is not None  # attributed to the daily
+    assert event.source == "outfit_feedback"
+    assert event.event_metadata == {"feedback_type": "love", "reason_tags": ["sharp"]}
+
+
+async def test_neutral_feedback_emits_no_event(db_session: AsyncSession) -> None:
+    # `neutral` has no polar event_type; the raw rating is preserved on the
+    # OutfitFeedback row, so no signal is lost by not emitting an event.
+    user_id = uuid.uuid4()
+    await seed_ready_recommendation(db_session, user_id)
+    app = build_outfit_app(db_session)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        outfit_id = await get_first_outfit_id(client, user_id)
+        await client.post(
+            f"/v1/recommendations/outfits/{outfit_id}/feedback",
+            headers={"X-User-Id": str(user_id)},
+            json={"feedback_type": "neutral"},
+        )
+
+    count = await db_session.scalar(select(func.count()).select_from(RecommendationEvent))
+    assert count == 0
 
 
 async def test_feedback_updates_existing_row(db_session: AsyncSession) -> None:
