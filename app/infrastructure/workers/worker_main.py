@@ -16,7 +16,11 @@ from app.infrastructure.workers.cutout_worker import (
 )
 from app.infrastructure.workers.embedding_worker import drain_embedding_jobs
 from app.infrastructure.workers.image_worker import process_image_job
-from app.infrastructure.workers.import_worker import process_import_task
+from app.infrastructure.workers.import_worker import (
+    drain_import_jobs,
+    process_import_task,
+    reconcile_dead_import_tasks,
+)
 from app.infrastructure.workers.job_runtime import recover_expired_leases
 from app.infrastructure.workers.ootd_poster_worker import (
     drain_ootd_poster_jobs,
@@ -77,10 +81,12 @@ class WorkerSettings:
         drain_cutout_jobs,
         drain_pdf_ingest_jobs,
         drain_user_purge_jobs,
+        drain_import_jobs,
         recover_async_job_leases,
         reconcile_dead_outfit_board_assets,
         reconcile_dead_ootd_poster_assets,
         reconcile_dead_cutout_items,
+        reconcile_dead_import_tasks,
     ]
     # async_jobs queues drain on a fixed cadence rather than via arq enqueue —
     # producers only write the row, so cron is the trigger. Keep drain ticks
@@ -93,6 +99,9 @@ class WorkerSettings:
             cron(drain_embedding_jobs, second={0, 30}, name="embedding_drain"),
             cron(drain_outfit_board_jobs, second={0, 30}, name="outfit_board_drain"),
             cron(drain_ootd_poster_jobs, second={0, 30}, name="ootd_poster_drain"),
+            # Import is a user-visible "recognizing" state, so drain often to
+            # trim queue-wait before the ~seconds Vision/OCR call.
+            cron(drain_import_jobs, second=set(range(0, 60, 5)), name="import_drain"),
             # Tight cadence (every 5s): the cutout is a user-visible "polishing"
             # state, so trim queue-wait before the ~30s gpt-image-2 gen. claim_one
             # is a cheap FOR UPDATE SKIP LOCKED query, so polling often is fine.
@@ -119,6 +128,11 @@ class WorkerSettings:
                 reconcile_dead_cutout_items,
                 minute={7, 22, 37, 52},
                 name="cutout_reconcile_dead_items",
+            ),
+            cron(
+                reconcile_dead_import_tasks,
+                minute={8, 23, 38, 53},
+                name="import_reconcile_dead_tasks",
             ),
             # Purge cadence is hourly: grace boundary is days, so finer-grain
             # ticking just wastes claim_one queries.

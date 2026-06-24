@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, nulls_last, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ask.wardrobe_context import (
@@ -44,12 +45,32 @@ from app.infrastructure.persistence.repositories.ask_repo import SqlAlchemyAskRe
 
 # Cap the number of items injected so the prompt stays lightweight and cheap.
 _MAX_ITEMS = 80
+# BE#27 — pull a priority-ordered superset, then curate down to `_MAX_ITEMS`.
+# Fetch the top-N PER CATEGORY (window query) rather than a flat global LIMIT:
+# a flat LIMIT could drop a whole category (e.g. shoes) for a huge wardrobe
+# whose top rows are all one category, defeating curation's coverage. A
+# per-category cap guarantees every category reaches the curator while staying
+# bounded (≈ categories × cap).
+_PER_CATEGORY_FETCH_CAP = 40
+# Same (category, color_main) pieces beyond this are sampled out so a closet
+# full of white shirts doesn't crowd the prompt and starve other categories.
+_MAX_PER_COLOR_CATEGORY = 3
+# Round-robin order for category coverage; key categories first, others appended
+# alphabetically after these (see `_curate_candidates`).
+_CATEGORY_PRIORITY = ("top", "bottom", "outerwear", "dress", "shoes")
+# Bump when the per-item field set (`_item_to_sanitized`) changes, so persisted
+# snapshots are attributable to the prompt schema that produced them.
+_ITEM_FIELD_SCHEMA_VERSION = 2
+# `style_tags` is user-typed; bound count + length before it reaches a prompt.
+_MAX_STYLE_TAGS_PER_ITEM = 8
+_MAX_STYLE_TAG_LEN = 50
 # Pre-call quota reservation. The real cost is recorded post-call from the
 # provider's token count; this is only the admission estimate, so it scales
 # with the prompt size (preamble + question + N sanitized items) instead of a
-# flat guess that under-counts a full wardrobe.
+# flat guess that under-counts a full wardrobe. Bumped from 25 with BE#27's
+# richer per-item field set.
 _BASE_PROJECTED_TOKENS = 400
-_TOKENS_PER_ITEM = 25
+_TOKENS_PER_ITEM = 45
 _JOB_TYPE = "llm_ask"
 
 
@@ -200,24 +221,123 @@ async def build_item_ref_snapshots(
     return snapshots
 
 
-def _item_to_sanitized(item: WardrobeItem) -> dict[str, Any]:
-    """Project a wardrobe row to the sanitizer-whitelisted fields only."""
-    raw = {
+def _bound_style_tags(tags: Any) -> list[str] | None:
+    """Cap user-typed `style_tags` (count + per-tag length) before it reaches a
+    prompt. Returns None when empty so `_item_to_sanitized` can drop the key."""
+    if not isinstance(tags, list):
+        return None
+    bounded = [t[:_MAX_STYLE_TAG_LEN] for t in tags if isinstance(t, str) and t][
+        :_MAX_STYLE_TAGS_PER_ITEM
+    ]
+    return bounded or None
+
+
+def _item_to_sanitized(item: WardrobeItem, today: date) -> dict[str, Any]:
+    """Project a wardrobe row to the sanitizer-whitelisted fields only.
+
+    BE#27 — beyond core category/color/status, emit the extended styling signals
+    (sub_category/material/formality/time_cost/wear_count/...) so the model can
+    reason about coordination. Recency is a derived `last_worn_days_ago` bucket,
+    never the raw date. `style_tags` is user-typed free text, so it's bounded
+    here before the sanitizer key-gate. Null fields are dropped to keep the
+    prompt compact now that the field set is wider."""
+    raw: dict[str, Any] = {
         "category": item.category,
+        "sub_category": item.sub_category,
         "color_main": item.color_main,
+        "color_secondary": item.color_secondary,
+        "material": item.material,
         "status": item.status,
         "location": item.location,
         "season_tags": item.season_tags,
+        "style_tags": _bound_style_tags(item.style_tags),
+        "formality_score": item.formality_score,
+        "time_cost_level": item.time_cost_level,
         "fit_status": item.fit_status,
         "fit_intent": item.fit_intent,
+        "wear_count": item.wear_count,
+        "cutout_status": item.cutout_status,
     }
-    return sanitize_for_llm(raw)
+    if item.last_worn_at is not None:
+        raw["last_worn_days_ago"] = max((today - item.last_worn_at).days, 0)
+    return sanitize_for_llm({k: v for k, v in raw.items() if v is not None})
+
+
+def _curate_candidates(
+    pool: list[WardrobeItem],
+    focused_item: WardrobeItem | None,
+    *,
+    max_items: int,
+) -> list[WardrobeItem]:
+    """Pick a stable, explainable candidate set from the priority-ordered `pool`
+    (already sorted by wear_count/recency in SQL).
+
+    1. Drop near-duplicates: cap each (category, color_main) bucket to
+       `_MAX_PER_COLOR_CATEGORY` so similar pieces don't crowd out variety.
+    2. Round-robin across categories (key categories first) so the prompt covers
+       top/bottom/outerwear/shoes rather than N near-identical shirts.
+    3. The focused item, if any, is pinned to position 1 and never deduped away.
+    """
+    focused_id = focused_item.id if focused_item is not None else None
+    seen_color_cat: Counter[tuple[str, str | None]] = Counter()
+    buckets: dict[str, list[WardrobeItem]] = {}
+    for item in pool:
+        if focused_id is not None and item.id == focused_id:
+            continue
+        key = (item.category, item.color_main)
+        if seen_color_cat[key] >= _MAX_PER_COLOR_CATEGORY:
+            continue
+        seen_color_cat[key] += 1
+        buckets.setdefault(item.category, []).append(item)
+
+    ordered_cats = sorted(
+        buckets,
+        key=lambda c: (
+            _CATEGORY_PRIORITY.index(c) if c in _CATEGORY_PRIORITY else len(_CATEGORY_PRIORITY),
+            c,
+        ),
+    )
+    budget = max_items - (1 if focused_item is not None else 0)
+    selected: list[WardrobeItem] = []
+    cursors = dict.fromkeys(ordered_cats, 0)
+    while len(selected) < budget:
+        progressed = False
+        for cat in ordered_cats:
+            if len(selected) >= budget:
+                break
+            i = cursors[cat]
+            bucket = buckets[cat]
+            if i < len(bucket):
+                selected.append(bucket[i])
+                cursors[cat] = i + 1
+                progressed = True
+        if not progressed:
+            break
+
+    return ([focused_item] if focused_item is not None else []) + selected
+
+
+def _candidate_selection_meta(
+    items: list[WardrobeItem], focused_item: WardrobeItem | None
+) -> dict[str, Any]:
+    """Snapshot-only metadata describing how the candidate set was chosen, for
+    explainability / answer-quality tracking. Never reaches the prompt."""
+    by_category = Counter(i.category for i in items if i.category)
+    return {
+        "strategy": "wear_recency_priority+color_cat_dedupe+category_roundrobin",
+        "count_by_category": dict(by_category),
+        "focused_in_top1": bool(
+            focused_item is not None and items and items[0].id == focused_item.id
+        ),
+        "prompt_field_schema_version": _ITEM_FIELD_SCHEMA_VERSION,
+    }
 
 
 def _build_system_prompt(
     user_id: uuid.UUID,
     items: list[WardrobeItem],
     ctx: WardrobeContext,
+    today: date,
     *,
     structured: bool = False,
 ) -> str:
@@ -232,7 +352,7 @@ def _build_system_prompt(
         preamble += _FOCUS_CLAUSE.get(lang, _FOCUS_CLAUSE[_DEFAULT_LANG])
     payload = {
         "context": context_for_prompt(ctx),
-        "items": [_item_to_sanitized(i) for i in items],
+        "items": [_item_to_sanitized(i, today) for i in items],
         "usr": hash_user_token(user_id),
     }
     prompt = preamble + json.dumps(payload, ensure_ascii=False)
@@ -292,24 +412,44 @@ async def answer_question(
                 status_code=404,
             )
 
-    items = list(
+    # Priority order: most-worn / most-recent first. NULLs-last keeps never-worn
+    # items from sorting to the top under DESC. Reused for the per-category
+    # ranking and the final pool order the curator buckets from.
+    priority_order = (
+        WardrobeItem.wear_count.desc(),
+        nulls_last(WardrobeItem.last_worn_at.desc()),
+        WardrobeItem.updated_at.desc(),
+        WardrobeItem.id,
+    )
+    # Rank within each category, then keep the top `_PER_CATEGORY_FETCH_CAP` per
+    # category — so a huge single-category-dominated wardrobe can't truncate
+    # other categories out of the pool before curation balances coverage.
+    ranked = (
+        select(
+            WardrobeItem.id,
+            func.row_number()
+            .over(partition_by=WardrobeItem.category, order_by=priority_order)
+            .label("rn"),
+        )
+        .where(
+            WardrobeItem.user_id == user_id,
+            WardrobeItem.status == ItemStatus.WEARABLE.value,
+            WardrobeItem.deleted_at.is_(None),
+        )
+        .subquery()
+    )
+    pool = list(
         await session.scalars(
             select(WardrobeItem)
-            .where(
-                WardrobeItem.user_id == user_id,
-                WardrobeItem.status == ItemStatus.WEARABLE.value,
-                WardrobeItem.deleted_at.is_(None),
-            )
-            .limit(_MAX_ITEMS)
+            .join(ranked, WardrobeItem.id == ranked.c.id)
+            .where(ranked.c.rn <= _PER_CATEGORY_FETCH_CAP)
+            .order_by(*priority_order)
         )
     )
-
-    if focused_item is not None:
-        # Guarantee the focused item is present and first, even if it's not
-        # wearable or fell outside the wearable-items limit. Dedupe so it
-        # isn't listed twice.
-        items = [focused_item] + [i for i in items if i.id != focused_item.id]
-        items = items[:_MAX_ITEMS]
+    # Curate to a stable, explainable set; the focused item (if any) is pinned
+    # first even when it's not wearable or fell outside the fetch cap.
+    items = _curate_candidates(pool, focused_item, max_items=_MAX_ITEMS)
+    today = datetime.now(UTC).date()
 
     # Quota — refuses BEFORE any LLM spend (the item fetch above is a cheap DB
     # read, not spend). Projecting from the assembled candidate count keeps the
@@ -329,9 +469,10 @@ async def answer_question(
         items=items,
         focused_item_id=focused_item_id,
         locale=_resolve_lang(locale, settings_locale),
-        today=datetime.now(UTC).date(),
+        today=today,
+        candidate_selection=_candidate_selection_meta(items, focused_item),
     )
-    system_prompt = _build_system_prompt(user_id, items, ctx, structured=structured)
+    system_prompt = _build_system_prompt(user_id, items, ctx, today, structured=structured)
     answer = await llm.ask(system_prompt, question, json_mode=structured)
 
     if not answer.text:

@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     # adopt the framework should ALSO write the legacy artifact (arq job /
     # direct table row) so we can compare outcomes and roll back on divergence.
     ASYNC_JOBS_DUAL_WRITE: bool = True
+    # BE#26 — route import-task processing through job_runtime/arq (lease /
+    # retry / dead-letter) instead of FastAPI BackgroundTasks. Off = legacy
+    # in-request BackgroundTasks path (unchanged). The import_tasks row is
+    # written regardless of the flag, so flipping back is a clean rollback.
+    ENABLE_IMPORT_ASYNC_JOBS: bool = False
 
     # Phase D — gated independently from Phase B explainability so context
     # can be rolled out (e.g. weather provider down → just disable, no need

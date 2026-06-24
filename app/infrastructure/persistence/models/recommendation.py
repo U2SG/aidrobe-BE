@@ -164,6 +164,51 @@ class OutfitPlan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
 
+class RecommendationEvent(UUIDPrimaryKeyMixin, Base):
+    """BE#40 — append-only interaction event log for recommendation learning.
+
+    This is an EVENT STREAM, not current state: it complements (does not replace)
+    `OutfitFeedback` (latest outfit rating), `FitFeedback` (item fit), and
+    `WearHistory` (which days an outfit was worn). It accumulates the broader
+    signal set (liked / disliked / saved / dismissed / worn / shared / …) with
+    `recommendation_id` attribution so future ranking / preference learning has
+    raw material — no ML now, just durable capture.
+
+    Durability: `outfit_id` / `item_id` carry NO FK (loose coupling, like
+    FitFeedback) so an event survives deletion of the outfit/item it referenced;
+    `recommendation_id` is SET NULL on daily delete. `user_id` FK CASCADEs — this
+    is behavioral data that should die with the user on PIPL purge (the opposite
+    of `audit_log`, which must outlive it)."""
+
+    __tablename__ = "recommendation_events"
+    __table_args__ = (
+        # Time-range queries by user (optionally filtered by type). Declared here
+        # too (not only in the migration) because tests build the schema via
+        # Base.metadata.create_all, bypassing Alembic.
+        Index("ix_recommendation_events_user_created", "user_id", "created_at"),
+        Index(
+            "ix_recommendation_events_user_type_created",
+            "user_id",
+            "event_type",
+            "created_at",
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    recommendation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("daily_recommendations.id", ondelete="SET NULL"), nullable=True
+    )
+    # No FK on purpose — the event outlives the outfit/item it references.
+    outfit_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    item_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    event_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    event_metadata: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class WearHistory(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "wear_history"
     __table_args__ = (

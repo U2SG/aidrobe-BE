@@ -4,8 +4,9 @@ from datetime import UTC, date, datetime
 from sqlalchemy import func, update
 
 from app.common import error_codes
+from app.common.enums import RecommendationEventType
 from app.common.exceptions import FriendlyException
-from app.infrastructure.persistence.models.recommendation import WearHistory
+from app.infrastructure.persistence.models.recommendation import RecommendationEvent, WearHistory
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
@@ -38,6 +39,20 @@ class WearOutfit:
 
         if not inserted:
             return wear_history
+
+        # BE#40 — a real (non-duplicate) wear is a learning signal. Gated on
+        # `inserted` so duplicate wear posts (same user/outfit/day) don't
+        # double-count. Attributed to the outfit's daily recommendation.
+        await self.repository.add_recommendation_event(
+            RecommendationEvent(
+                user_id=user_id,
+                recommendation_id=outfit.daily_recommendation_id,
+                outfit_id=outfit_id,
+                event_type=RecommendationEventType.WORN.value,
+                source="wear",
+                created_at=now,
+            )
+        )
 
         item_ids = [oi.item_id for oi in outfit.items]
         if item_ids:

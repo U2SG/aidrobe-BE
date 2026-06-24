@@ -1,7 +1,8 @@
 import uuid
+from typing import Any, cast
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.link_parser import LinkParserPort
@@ -17,14 +18,33 @@ from app.bootstrap.container import (
 from app.common.enums import ImportStatus
 from app.common.locale import resolve_locale
 from app.infrastructure.importers.ocr_router import OcrCandidateAdapter, ocr_adapter_for
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.user import UserSettings
 from app.infrastructure.persistence.repositories.import_task_repo import (
     SqlAlchemyImportTaskRepository,
 )
 from app.infrastructure.persistence.session import AsyncSessionLocal
+from app.infrastructure.workers.job_runtime import (
+    claim_one,
+    enqueue,
+    mark_failed,
+    mark_succeeded,
+)
 
 logger = structlog.get_logger(__name__)
+
+# BE#26 — import processing on `job_runtime` (lease / retry / dead-letter)
+# instead of FastAPI BackgroundTasks. Gated by ENABLE_IMPORT_ASYNC_JOBS; the
+# job status only tracks EXECUTION, the `import_tasks.task_status` stays the
+# business source of truth.
+IMPORT_JOB_TYPE = "import_task"
+# Vision/OCR is ~seconds and the user is polling, so drain a few per tick.
+IMPORT_MAX_DRAIN_PER_TICK = 10
+
+
+def _import_idempotency_key(task_id: uuid.UUID) -> str:
+    return f"import_task:{task_id}"
 
 
 class ProcessImageImportTask:
@@ -47,7 +67,12 @@ class ProcessImageImportTask:
         if task is None:
             logger.warning("import_task_not_found_for_worker", task_id=str(task_id), user_id=str(user_id))
             return
-        if task.task_status != ImportStatus.QUEUED.value:
+        # Reprocess QUEUED (first run) AND PROCESSING (a prior async-job attempt
+        # crashed mid-flight and is being retried — claim_one guarantees we're
+        # the only worker on it now). A terminal task (WAITING_CONFIRM / FAILED)
+        # no-ops so a lost finalizer's retry doesn't redo the vision call. The
+        # BackgroundTasks path always enters at QUEUED and never re-enters.
+        if task.task_status not in (ImportStatus.QUEUED.value, ImportStatus.PROCESSING.value):
             return
 
         task.task_status = ImportStatus.PROCESSING.value
@@ -173,6 +198,125 @@ async def process_import_task(ctx: object, task_id: str, user_id: str) -> None:
     async with AsyncSessionLocal() as session:
         await process_import_task_with_session(session, uuid.UUID(task_id), uuid.UUID(user_id))
         await session.commit()
+
+
+async def enqueue_import_task(
+    session: AsyncSession,
+    *,
+    task_id: uuid.UUID,
+    user_id: uuid.UUID,
+    correlation_id: str | None = None,
+) -> tuple[AsyncJob, bool]:
+    """Idempotent (per-task) enqueue for import processing. Caller owns commit
+    and must have already inserted the `import_tasks` row (status QUEUED)."""
+    return await enqueue(
+        session,
+        job_type=IMPORT_JOB_TYPE,
+        idempotency_key=_import_idempotency_key(task_id),
+        payload={"task_id": str(task_id), "user_id": str(user_id)},
+        user_id=user_id,
+        target_id=task_id,
+        correlation_id=correlation_id,
+    )
+
+
+async def _process_one_import(job: AsyncJob) -> None:
+    """Run one claimed import job in its OWN session (never the request's), then
+    finalize. Vision/OCR errors are caught inside `execute` and recorded as the
+    task's business FAILED status, so the job still SUCCEEDS — only an
+    unexpected crash fails the job (→ retry/backoff, then dead-letter)."""
+    payload: dict[str, Any] = job.payload or {}
+    task_id_str = payload.get("task_id")
+    user_id_str = payload.get("user_id")
+    if not task_id_str or not user_id_str:
+        async with AsyncSessionLocal() as session:
+            await mark_failed(session, job.id, claimed_attempt=job.attempts, error="missing payload fields")
+            await session.commit()
+        return
+
+    task_id = uuid.UUID(task_id_str)
+    user_id = uuid.UUID(user_id_str)
+    structlog.contextvars.bind_contextvars(
+        correlation_id=job.correlation_id or "",
+        job_id=str(job.id),
+        task_id=task_id_str,
+    )
+    try:
+        # Fence the task mutation on this attempt's claim, in ONE transaction
+        # (mirrors embedding/cutout): if a slow vision/OCR call outlived the
+        # lease and the job was recovered + reclaimed elsewhere, `mark_succeeded`
+        # returns False and we roll back the task write too — so a stale worker
+        # never lands a status/candidate that could clobber the new claim's.
+        async with AsyncSessionLocal() as session:
+            await process_import_task_with_session(session, task_id, user_id)
+            ok = await mark_succeeded(session, job.id, claimed_attempt=job.attempts)
+            if not ok:
+                await session.rollback()
+                logger.warning("import_task.lease_lost_discarding", job_id=str(job.id))
+                return
+            await session.commit()
+    except Exception as exc:
+        logger.warning("import_task.job_failed", task_id=task_id_str, error=str(exc))
+        async with AsyncSessionLocal() as session:
+            await mark_failed(session, job.id, claimed_attempt=job.attempts, error=str(exc))
+            await session.commit()
+    finally:
+        structlog.contextvars.unbind_contextvars("correlation_id", "job_id", "task_id")
+
+
+async def drain_import_jobs(ctx: object) -> int:
+    """arq entrypoint. Drains up to `IMPORT_MAX_DRAIN_PER_TICK` import jobs."""
+    processed = 0
+    for _ in range(IMPORT_MAX_DRAIN_PER_TICK):
+        async with AsyncSessionLocal() as session:
+            job = await claim_one(session, [IMPORT_JOB_TYPE])
+        if job is None:
+            break
+        await _process_one_import(job)
+        processed += 1
+    if processed:
+        logger.info("import_task.drain_completed", processed=processed)
+    return processed
+
+
+async def reconcile_dead_import_tasks(ctx: object) -> int:
+    """Flip tasks to FAILED when their import job dead-lettered (retries
+    exhausted), so a crash-looped task doesn't sit in QUEUED/PROCESSING forever
+    while the client polls it indefinitely."""
+    async with AsyncSessionLocal() as session:
+        dead_task_ids = (
+            (
+                await session.execute(
+                    select(AsyncJob.target_id).where(
+                        AsyncJob.job_type == IMPORT_JOB_TYPE,
+                        AsyncJob.status == "dead",
+                        AsyncJob.target_id.is_not(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not dead_task_ids:
+            return 0
+        res = cast(
+            CursorResult[Any],
+            await session.execute(
+                update(ImportTask)
+                .where(
+                    ImportTask.id.in_(dead_task_ids),
+                    ImportTask.task_status.in_(
+                        (ImportStatus.QUEUED.value, ImportStatus.PROCESSING.value)
+                    ),
+                )
+                .values(task_status=ImportStatus.FAILED.value, error_code="import_failed")
+            ),
+        )
+        await session.commit()
+    count = res.rowcount or 0
+    if count:
+        logger.warning("import_task.reconciled_dead", count=count)
+    return count
 
 
 class WorkerSettings:
