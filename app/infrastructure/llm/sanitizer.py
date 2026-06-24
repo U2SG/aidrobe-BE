@@ -50,6 +50,20 @@ LLM_FIELD_WHITELIST: frozenset[str] = frozenset(
         "season_tags",
         "fit_status",
         "fit_intent",
+        # BE#27 — extended styling signals so Ask can reason about coordination.
+        # All short enums/derived values EXCEPT `style_tags`, which is user-typed
+        # free text; callers MUST bound it (count + length) before it reaches a
+        # prompt. The whitelist gates the KEY; bounding the VALUE is the caller's
+        # job (see `_item_to_sanitized` in the Ask use case).
+        "sub_category",
+        "color_secondary",
+        "material",
+        "style_tags",
+        "formality_score",
+        "time_cost_level",
+        "wear_count",
+        "last_worn_days_ago",  # derived recency bucket — never the raw date
+        "cutout_status",
         # opaque user token added by `attach_user_token` if present
         "usr",
     }

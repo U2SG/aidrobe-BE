@@ -3,21 +3,29 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date, timedelta
 
 from app.application.ask.answer_question import (
     _BASE_PROJECTED_TOKENS,
+    _MAX_PER_COLOR_CATEGORY,
     _build_system_prompt,
+    _candidate_selection_meta,
+    _curate_candidates,
+    _item_to_sanitized,
     _parse_structured,
     _preamble_for,
     _project_tokens,
     _resolve_lang,
 )
 from app.application.ask.wardrobe_context import (
+    SNAPSHOT_VERSION,
     WardrobeContext,
     context_snapshot,
     summarize_wardrobe,
 )
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+
+_TODAY = date(2026, 6, 24)
 
 
 def _items() -> list[WardrobeItem]:
@@ -59,6 +67,7 @@ def _ctx(
         recent_categories=[],
         departure_time=None,
         candidate_item_ids=[str(i.id) for i in items],
+        candidate_selection={"strategy": "test", "count_by_category": {}, "focused_in_top1": False},
     )
 
 
@@ -86,7 +95,7 @@ def test_resolve_lang_request_over_settings_over_default() -> None:
 
 def test_build_prompt_feeds_wardrobe_and_hides_titles() -> None:
     items = _items()
-    prompt = _build_system_prompt(uuid.uuid4(), items, _ctx(items=items))
+    prompt = _build_system_prompt(uuid.uuid4(), items, _ctx(items=items), _TODAY)
     # Sanitized structured attributes reach the prompt...
     assert '"category": "top"' in prompt
     assert '"color_main": "white"' in prompt
@@ -97,22 +106,22 @@ def test_build_prompt_feeds_wardrobe_and_hides_titles() -> None:
 
 
 def test_build_prompt_honors_locale() -> None:
-    assert _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en")).startswith("You are Aidrobe")
-    assert _build_system_prompt(uuid.uuid4(), [], _ctx(locale="zh")).startswith("你是 Aidrobe")
+    assert _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en"), _TODAY).startswith("You are Aidrobe")
+    assert _build_system_prompt(uuid.uuid4(), [], _ctx(locale="zh"), _TODAY).startswith("你是 Aidrobe")
 
 
 def test_focus_clause_added_only_when_focused() -> None:
-    plain = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en", scope="wardrobe"))
-    focused = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en", scope="item"))
+    plain = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en", scope="wardrobe"), _TODAY)
+    focused = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en", scope="item"), _TODAY)
     assert "FIRST item" not in plain
     assert "FIRST item" in focused
     # Locale-aware: Chinese focus clause for a Chinese locale.
-    assert "第 1 件" in _build_system_prompt(uuid.uuid4(), [], _ctx(locale="zh", scope="item"))
+    assert "第 1 件" in _build_system_prompt(uuid.uuid4(), [], _ctx(locale="zh", scope="item"), _TODAY)
 
 
 def test_structured_instruction_added_only_when_structured() -> None:
-    plain = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en"), structured=False)
-    structured = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en"), structured=True)
+    plain = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en"), _TODAY, structured=False)
+    structured = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en"), _TODAY, structured=True)
     assert "referenced_items" not in plain
     assert "referenced_items" in structured
 
@@ -120,7 +129,7 @@ def test_structured_instruction_added_only_when_structured() -> None:
 def test_build_prompt_includes_context_dimensions() -> None:
     items = _items()
     ctx = _ctx(items=items, style_tags=["minimal", "commute"])
-    prompt = _build_system_prompt(uuid.uuid4(), items, ctx)
+    prompt = _build_system_prompt(uuid.uuid4(), items, ctx, _TODAY)
     # Each context dimension actually reaches the prompt (regression guard
     # against silently dropping context like the original double-sanitize bug).
     assert '"wardrobe_summary"' in prompt
@@ -139,7 +148,7 @@ def test_summarize_wardrobe_counts_by_category() -> None:
 
 def test_context_snapshot_is_versioned_and_complete() -> None:
     snap = context_snapshot(_ctx(items=_items()))
-    assert snap["snapshot_version"] == 1
+    assert snap["snapshot_version"] == SNAPSHOT_VERSION == 2
     for key in (
         "scope",
         "locale",
@@ -148,8 +157,100 @@ def test_context_snapshot_is_versioned_and_complete() -> None:
         "fit_preferences",
         "recent_categories",
         "candidate_item_ids",
+        "candidate_selection",  # BE#27 — selection explainability
     ):
         assert key in snap
+    # Selection metadata is snapshot-only and never leaks into the prompt block.
+    assert "candidate_selection" not in {
+        "scope",
+        "wardrobe_summary",
+        "style_profile",
+        "fit_preferences",
+        "recent_categories",
+        "departure_time",
+    }
+
+
+def test_item_sanitized_emits_extended_fields_and_recency() -> None:
+    item = WardrobeItem(
+        user_id=uuid.uuid4(),
+        title="Linen blazer",
+        category="outerwear",
+        sub_category="blazer",
+        color_main="beige",
+        color_secondary="white",
+        material="linen",
+        status="wearable",
+        formality_score=7,
+        time_cost_level="medium",
+        wear_count=12,
+        last_worn_at=_TODAY - timedelta(days=5),
+        cutout_status="ready",
+    )
+    out = _item_to_sanitized(item, _TODAY)
+    assert out["sub_category"] == "blazer"
+    assert out["material"] == "linen"
+    assert out["formality_score"] == 7
+    assert out["wear_count"] == 12
+    assert out["last_worn_days_ago"] == 5
+    # Raw date / title / image never reach the projection.
+    assert "last_worn_at" not in out
+    assert "Linen blazer" not in str(out)
+
+
+def test_item_sanitized_bounds_style_tags() -> None:
+    item = WardrobeItem(
+        user_id=uuid.uuid4(),
+        title="x",
+        category="top",
+        color_main="white",
+        status="wearable",
+        style_tags=["minimal", "y" * 200] + [f"t{i}" for i in range(20)],
+    )
+    out = _item_to_sanitized(item, _TODAY)
+    tags = out["style_tags"]
+    assert len(tags) <= 8  # count bound
+    assert all(len(t) <= 50 for t in tags)  # per-tag length bound
+
+
+def _wearable(category: str, color: str, *, wear_count: int = 0) -> WardrobeItem:
+    return WardrobeItem(
+        user_id=uuid.uuid4(),
+        title=f"{color} {category}",
+        category=category,
+        color_main=color,
+        status="wearable",
+        wear_count=wear_count,
+    )
+
+
+def test_curate_caps_same_color_category_and_covers_categories() -> None:
+    # 10 white tops + 1 pair of shoes; dedup caps the tops, round-robin keeps
+    # the lone shoes from being crowded out.
+    pool = [_wearable("top", "white", wear_count=100 - i) for i in range(10)]
+    pool.append(_wearable("shoes", "black"))
+    out = _curate_candidates(pool, None, max_items=80)
+    tops = [i for i in out if i.category == "top"]
+    shoes = [i for i in out if i.category == "shoes"]
+    assert len(tops) == _MAX_PER_COLOR_CATEGORY  # same color+cat sampled down
+    assert len(shoes) == 1  # coverage preserved
+
+
+def test_curate_pins_focused_first_and_respects_max() -> None:
+    focused = _wearable("dress", "red")
+    pool = [_wearable("top", "white", wear_count=99) for _ in range(5)]
+    out = _curate_candidates(pool, focused, max_items=3)
+    assert out[0].id == focused.id  # focused pinned to position 1
+    assert len(out) == 3  # never exceeds the cap
+
+
+def test_candidate_selection_meta_flags_focused_top1() -> None:
+    focused = _wearable("dress", "red")
+    items = [focused, _wearable("top", "white")]
+    meta = _candidate_selection_meta(items, focused)
+    assert meta["focused_in_top1"] is True
+    assert meta["count_by_category"] == {"dress": 1, "top": 1}
+    assert meta["prompt_field_schema_version"] == 2
 
 
 def test_project_tokens_scales_with_item_count() -> None:
