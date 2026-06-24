@@ -40,6 +40,16 @@ class ObstacleResponse(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+class ReasoningItem(BaseModel):
+    """BE#38 — one grounded reason. `type` keys the FE rendering
+    (weather / wear_history / style_match / category / fit)."""
+
+    type: str
+    text: str
+
+    model_config = {"extra": "ignore"}
+
+
 class OutfitResponse(BaseModel):
     outfit_id: UUID
     type: str
@@ -52,6 +62,8 @@ class OutfitResponse(BaseModel):
     obstacles: list[ObstacleResponse] | None = None
     prep_steps: list[I18nMessage] | None = None
     prep_notes: list[I18nMessage] | None = None
+    # BE#37/#38 — grounded reasoning; None unless ENABLE_TODAY_REASONING is on.
+    reasoning: list[ReasoningItem] | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 

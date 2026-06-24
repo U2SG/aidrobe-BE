@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     # to roll back scoring).
     ENABLE_TODAY_CONTEXT: bool = False
     ENABLE_TODAY_REFRESH: bool = False
+    # BE#37/#38 — surface grounded {type, text} reasoning on Today outfits.
+    # Reasoning is persisted at generation time regardless; this flag only
+    # gates its exposure in the response, so flipping back is a clean rollback.
+    ENABLE_TODAY_REASONING: bool = False
     # M15 Ask Aidrobe (LLM Q&A). Off by default; data persists regardless of
     # the flag, the flag only gates endpoint exposure (503 when off). Pair
     # with LLM_PROVIDER (qwen/openai) and ENABLE_COST_GUARD for quotas.

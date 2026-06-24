@@ -1,11 +1,12 @@
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Any
 
 from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.colors import color_score
+from app.application.recommendations.reasoning import build_reasoning
 from app.application.style.build_style_profile import aesthetic_score as compute_aesthetic_score
 from app.common.enums import Category, OutfitType
 
@@ -57,6 +58,8 @@ class EngineOutfit:
     item_ids: list[str]
     score_total: float
     score_breakdown: dict[str, float]
+    # BE#38 — grounded {type, text} reasons; populated for the selected outfits.
+    reasoning: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -141,8 +144,31 @@ class RecommendationEngine:
         selected = [chosen[outfit_type] for outfit_type in ordered_types if outfit_type in chosen]
         if not selected and candidates:
             selected.append(max(candidates, key=lambda candidate: candidate.score_total))
+        selected = selected[:3]
 
-        return EngineResult(status="ready", outfits=selected[:3])
+        # BE#38 — attach grounded reasoning to the chosen outfits only (cheap:
+        # ≤3, not per-candidate). Grounded in the same signals scoring used.
+        item_by_id = {item.item_id: item for item in wearable}
+        preferred_colors = set((style_profile or {}).get("color_weights", {}))
+        selected = [
+            replace(
+                outfit,
+                reasoning=build_reasoning(
+                    categories=[item_by_id[i].category for i in outfit.item_ids if i in item_by_id],
+                    colors=[item_by_id[i].color_main for i in outfit.item_ids if i in item_by_id],
+                    fit_statuses=[
+                        item_by_id[i].fit_status for i in outfit.item_ids if i in item_by_id
+                    ],
+                    is_fresh=self._main_item(outfit.item_ids, wearable)
+                    not in recent_worn_main_item_ids,
+                    weather=weather,
+                    preferred_colors=preferred_colors,
+                ),
+            )
+            for outfit in selected
+        ]
+
+        return EngineResult(status="ready", outfits=selected)
 
     async def _build_candidates(
         self,
@@ -259,7 +285,14 @@ class RecommendationEngine:
         # Polish reason with LLM if available
         if self.llm is not None:
             try:
-                prompt = self._build_reason_prompt(outfit_type, combo, colors, categories)
+                prompt = self._build_reason_prompt(
+                    outfit_type,
+                    combo,
+                    colors,
+                    categories,
+                    weather=weather,
+                    is_fresh=main_item_id not in recent_worn_main_item_ids,
+                )
                 polished = await self.llm.polish_reason(prompt)
                 if polished.strip():
                     reason = polished.strip()
@@ -291,6 +324,9 @@ class RecommendationEngine:
         combo: list[EngineItem],
         colors: list[str],
         categories: list[str],
+        *,
+        weather: WeatherInfo | None = None,
+        is_fresh: bool = False,
     ) -> str:
         items_desc = "、".join(
             f"{item.category}（{item.color_main}）" for item in combo
@@ -300,13 +336,26 @@ class RecommendationEngine:
             OutfitType.FAST.value: "省时快捷",
             OutfitType.STYLISH.value: "风格尝试",
         }
+        # BE#37 — ground the copy in real context (weather + wear recency) so it
+        # reads as personalized for today, not a generic template. Only facts
+        # that are actually true are added, so the model can't over-claim.
+        context_lines = ""
+        if weather is not None:
+            context_lines += f"今日天气：{weather.condition}，约 {round(weather.temperature_c)}°C"
+            if weather.rain_probability > 0.5:
+                context_lines += "，可能有雨"
+            context_lines += "\n"
+        if is_fresh:
+            context_lines += "这套的主要单品用户最近没穿过\n"
         return (
             f"你是一个穿搭助手。请为一个推荐结果写一条简短的理由，15字以内，中文。\n"
             f"搭配风格：{type_labels.get(outfit_type, outfit_type)}\n"
             f"包含单品：{items_desc}\n"
             f"颜色组合：{' + '.join(colors)}\n"
-            f"品类组合：{' + '.join(categories)}\n\n"
-            f"写出自然、有说服力的推荐理由，不要重复\"经典颜色搭配\"等套话。"
+            f"品类组合：{' + '.join(categories)}\n"
+            f"{context_lines}\n"
+            f"结合今日天气与穿着情况，写出自然、有说服力的推荐理由，"
+            f"不要重复\"经典颜色搭配\"等套话，不要编造未提供的信息。"
         )
 
     def _time_cost_score(self, combo: list[EngineItem]) -> float:
