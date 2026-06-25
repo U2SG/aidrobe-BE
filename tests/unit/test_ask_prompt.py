@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import date, timedelta
 
@@ -11,8 +12,8 @@ from app.application.ask.answer_question import (
     _build_system_prompt,
     _candidate_selection_meta,
     _curate_candidates,
+    _extract_structured,
     _item_to_sanitized,
-    _parse_structured,
     _preamble_for,
     _project_tokens,
     _resolve_lang,
@@ -26,6 +27,21 @@ from app.application.ask.wardrobe_context import (
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 _TODAY = date(2026, 6, 24)
+
+
+def _parse_structured(
+    text: str, item_count: int
+) -> tuple[str, list[int], list[dict[str, str]]] | None:
+    """Test shim: replicate the production parse-once path (json.loads + dict
+    guard) then delegate to `_extract_structured`, so these unit tests still
+    exercise the extraction logic by feeding a raw JSON string."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _extract_structured(data, item_count)
 
 
 def _items() -> list[WardrobeItem]:
@@ -124,6 +140,26 @@ def test_structured_instruction_added_only_when_structured() -> None:
     structured = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en"), _TODAY, structured=True)
     assert "referenced_items" not in plain
     assert "referenced_items" in structured
+
+
+def test_structured_instruction_is_one_canonical_envelope_with_deltas() -> None:
+    """FIX 2 — conversation_deltas (incl. rejected_focused_item) lives INSIDE the
+    single JSON envelope, not a second trailing instruction fragment, so the
+    model returns one coherent object and the deltas can't silently vanish."""
+    for locale in ("en", "zh"):
+        prompt = _build_system_prompt(
+            uuid.uuid4(), [], _ctx(locale=locale), _TODAY, structured=True
+        )
+        # Exactly one envelope — a single "answer" key, not two stitched fragments.
+        assert prompt.count('"answer"') == 1
+        # All envelope fields, including the folded-in deltas, are present.
+        for field in (
+            '"referenced_items"',
+            '"stated_preferences"',
+            '"conversation_deltas"',
+            '"rejected_focused_item"',
+        ):
+            assert field in prompt
 
 
 def test_build_prompt_includes_context_dimensions() -> None:

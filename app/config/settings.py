@@ -130,6 +130,10 @@ class Settings(BaseSettings):
     # LLM provider (else Ask 503s regardless). Off = legacy behavior:
     # `item_refs` lists every item fed to the prompt; set False to roll back.
     ENABLE_ASK_STRUCTURED_OUTPUT: bool = True
+    # BE#47 - multi-turn conversational Ask refinement. Conversation rows and
+    # state are persisted regardless; this flag only exposes conversation_id and
+    # structured deltas in the API response.
+    ENABLE_ASK_CONVERSATIONS: bool = False
     # Total daily_recommendations rows allowed per (user, date), inclusive
     # of the original background-generated rev-1. Enforced when
     # ENABLE_TODAY_REFRESH=True. Set <= 0 to disable the cap entirely.

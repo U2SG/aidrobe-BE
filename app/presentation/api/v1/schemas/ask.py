@@ -21,6 +21,9 @@ class AskRequest(BaseModel):
     # Scope the Ask to one wardrobe item ("style an outfit around this").
     # The item is pinned first in the candidate set; 404 if not the caller's.
     focused_item_id: uuid.UUID | None = None
+    # Optional thread id for multi-turn outfit refinement. Persisted even when
+    # response exposure is feature-flagged off.
+    conversation_id: uuid.UUID | None = None
 
 
 class AskItemRefSnapshot(BaseModel):
@@ -37,12 +40,19 @@ class AskItemRefSnapshot(BaseModel):
     thumbnail_url: str | None = None
 
 
+class AskConversationDeltas(BaseModel):
+    reasoning: str | None = None
+    applied_constraints: list[str] = Field(default_factory=list)
+
+
 class AskResponse(BaseModel):
     ask_session_id: uuid.UUID
+    conversation_id: uuid.UUID | None = None
     answer: str
     item_refs: list[str]
     item_ref_snapshots: list[AskItemRefSnapshot] = Field(default_factory=list)
     tokens_used: int
+    deltas: AskConversationDeltas | None = None
 
 
 class AskHistoryItem(BaseModel):

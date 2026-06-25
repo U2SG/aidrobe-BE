@@ -1,3 +1,8 @@
+from app.infrastructure.persistence.models.ask_conversation import (
+    AskConversation,
+    AskConversationState,
+    AskMessage,
+)
 from app.infrastructure.persistence.models.ask_session import AskSession
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.audit_log import AuditLog
@@ -25,6 +30,9 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem, Wardrob
 
 __all__ = [
     "AskSession",
+    "AskConversation",
+    "AskConversationState",
+    "AskMessage",
     "AsyncJob",
     "AuditLog",
     "Base",

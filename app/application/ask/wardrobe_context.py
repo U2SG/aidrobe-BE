@@ -65,6 +65,7 @@ class WardrobeContext:
     # ENABLE_PREFERENCE_MEMORY is on (the caller passes {} otherwise). Values are
     # bounded at write time; safe to put straight into the prompt.
     preference_memory: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    conversation_state: dict[str, Any] = field(default_factory=dict)
 
 
 def summarize_wardrobe(items: list[WardrobeItem]) -> dict[str, Any]:
@@ -108,6 +109,7 @@ async def build_wardrobe_context(
     today: date,
     candidate_selection: dict[str, Any] | None = None,
     preference_memory: dict[str, list[dict[str, Any]]] | None = None,
+    conversation_state: dict[str, Any] | None = None,
 ) -> WardrobeContext:
     style_tags = (await SqlAlchemyStyleRepository(session).get_style_tags(user_id))[
         :_MAX_STYLE_TAGS
@@ -139,6 +141,7 @@ async def build_wardrobe_context(
         candidate_item_ids=[str(i.id) for i in items],
         candidate_selection=candidate_selection or {},
         preference_memory=preference_memory or {},
+        conversation_state=conversation_state or {},
     )
 
 
@@ -172,6 +175,8 @@ def context_for_prompt(ctx: WardrobeContext) -> dict[str, Any]:
     # so a flag-off prompt is byte-identical to the legacy one.
     if ctx.preference_memory.get("positive") or ctx.preference_memory.get("negative"):
         block["user_preferences"] = ctx.preference_memory
+    if ctx.conversation_state:
+        block["conversation_state"] = ctx.conversation_state
     return block
 
 
