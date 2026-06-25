@@ -257,6 +257,10 @@ class Settings(BaseSettings):
     # flag (controlled write path); the flag only gates the read/injection, so
     # flipping back to False is a clean rollback.
     ENABLE_PREFERENCE_MEMORY: bool = False
+    # BE#48 wardrobe relationship graph. Item-item relationships are persisted
+    # regardless; this flag only gates their ranking boost/penalty in Today
+    # recommendations.
+    ENABLE_WARDROBE_GRAPH: bool = False
 
     # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
     # every authenticated user is admin (DX); empty in prod means the admin

@@ -11,7 +11,7 @@ from app.application.outfits.scoring.static import compute_static_breakdown, get
 from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo, WeatherPort
 from app.application.preferences.memory import live_negative_values_by_type
-from app.application.recommendations.engine import EngineItem, RecommendationEngine
+from app.application.recommendations.engine import EngineItem, RecommendationEngine, RelationshipEdge
 from app.application.recommendations.fit_profile import build_fit_profile
 from app.application.style.build_style_profile import build_style_profile
 from app.common.enums import OutfitType, RecommendationStatus, TimeSensitivity
@@ -23,10 +23,15 @@ from app.infrastructure.persistence.models.recommendation import (
     OutfitItem,
 )
 from app.infrastructure.persistence.models.user import UserSettings
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.models.wardrobe_relationship import WardrobeItemRelationship
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
 from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
+from app.infrastructure.persistence.repositories.wardrobe_relationship_repo import (
+    SqlAlchemyWardrobeRelationshipRepository,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -73,6 +78,19 @@ class RecommendationGenerator:
         items = await self.repository.get_wearable_items(user_id)
         recent = await self.repository.recent_worn_main_item_ids(user_id, target_date)
         settings = get_settings()
+        relationship_repository = SqlAlchemyWardrobeRelationshipRepository(self.repository.session)
+        if settings.ENABLE_WARDROBE_GRAPH:
+            # Rule-based edges are 100% derived from current item metadata (no
+            # user data, no rollback concern), so the "persist regardless of
+            # flag" convention does not apply — gating keeps the O(n^2) upsert
+            # off the hot path when the feature is off.
+            await self._persist_rule_based_relationships(user_id, relationship_repository, items)
+        relationship_edges = await self._load_relationship_edges(
+            user_id,
+            relationship_repository,
+            items,
+            settings,
+        )
         avoid_exact_repeats = settings.ENABLE_RECOMMENDATION_DIVERSITY
         # The flag is the SOLE gate for any behavior change: when diversity is
         # off, keep the legacy fixed 7-day worn-similarity window regardless of
@@ -121,6 +139,7 @@ class RecommendationGenerator:
             recent_worn_outfit_item_ids=recent_outfits,
             avoid_exact_repeats=avoid_exact_repeats,
             disliked_colors=disliked_colors,
+            relationship_edges=relationship_edges,
         )
 
         daily = DailyRecommendation(
@@ -209,6 +228,59 @@ class RecommendationGenerator:
             has_style_profile=bool(style_profile),
         )
         return daily
+
+    async def _persist_rule_based_relationships(
+        self,
+        user_id: uuid.UUID,
+        relationship_repository: SqlAlchemyWardrobeRelationshipRepository,
+        items: list[WardrobeItem],
+    ) -> None:
+        if len(items) < 2:
+            return
+        try:
+            await relationship_repository.generate_rule_based(items)
+            # TODO(BE#48): extend this seam with LLM-generated relationship
+            # suggestions once they have review and correction controls.
+        except Exception as exc:
+            logger.warning(
+                "wardrobe_relationship_generation_failed",
+                user_id=str(user_id),
+                error=str(exc),
+            )
+
+    async def _load_relationship_edges(
+        self,
+        user_id: uuid.UUID,
+        relationship_repository: SqlAlchemyWardrobeRelationshipRepository,
+        items: list[WardrobeItem],
+        settings: Any,
+    ) -> list[RelationshipEdge]:
+        if not settings.ENABLE_WARDROBE_GRAPH:
+            return []
+        try:
+            rows_by_id: dict[uuid.UUID, WardrobeItemRelationship] = {}
+            for item in items:
+                for row in await relationship_repository.positive_pairs(item.id):
+                    rows_by_id[row.id] = row
+                for row in await relationship_repository.rejected_pairs(item.id):
+                    rows_by_id[row.id] = row
+            return [
+                RelationshipEdge(
+                    source_item_id=str(row.source_item_id),
+                    target_item_id=str(row.target_item_id),
+                    relationship_type=row.relationship_type,
+                    score=float(row.score),
+                    confidence=float(row.confidence),
+                )
+                for row in rows_by_id.values()
+            ]
+        except Exception as exc:
+            logger.warning(
+                "wardrobe_relationship_load_failed",
+                user_id=str(user_id),
+                error=str(exc),
+            )
+            return []
 
     async def _load_disliked_colors(self, user_id: uuid.UUID, settings: Any) -> set[str]:
         """BE#46 — lowercased colors the user has explicitly stated they dislike.
