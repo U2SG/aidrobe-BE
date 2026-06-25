@@ -40,6 +40,7 @@ def test_seeded_fixture_scenario_scores_50() -> None:
 
 
 def test_score_is_clamped_to_zero_floor() -> None:
-    assert _score(coverage_ratio=0.0, dominant_ratio=1.0) == 25
-    # Construct a deeply unbalanced, unworn case stays >= 0 (clamp guard).
+    # Worst case: no coverage (-75) + full dominance (-25) = 100-75-25 = 0 floor.
+    assert _score(coverage_ratio=0.0, dominant_ratio=1.0) == 0
+    # No coverage but balanced (no dominance penalty): 100-75-0 = 25, still >= 0.
     assert _score(coverage_ratio=0.0, dominant_ratio=0.0) == 25
