@@ -82,6 +82,7 @@ class RecommendationEngine:
         weather: WeatherInfo | None = None,
         recent_worn_outfit_item_ids: list[set[str]] | None = None,
         fit_profile: dict[str, Any] | None = None,
+        avoid_exact_repeats: bool = False,
     ) -> EngineResult:
         recent_worn_main_item_ids = recent_worn_main_item_ids or set()
         recent_worn_outfit_item_ids = recent_worn_outfit_item_ids or []
@@ -119,15 +120,28 @@ class RecommendationEngine:
         chosen: dict[str, EngineOutfit] = {}
         used_main: set[str] = set()
         used_core: set[tuple[str, ...]] = set()
+        # BE#39 — hard-exclude outfits whose EXACT item-set repeats one seen in the
+        # recent window. The caller merges worn + recently-recommended sets into
+        # `recent_worn_outfit_item_ids`, so "the exact same look again" is blocked
+        # (the soft Jaccard penalty still down-ranks merely-similar outfits). Gated
+        # by `avoid_exact_repeats` so flag-off behavior is unchanged.
+        recent_sets = {frozenset(s) for s in recent_worn_outfit_item_ids}
 
-        def _fill(key_fn: Callable[[EngineOutfit], Any], blocked: set[Any]) -> None:
+        def _fill(
+            key_fn: Callable[[EngineOutfit], Any],
+            blocked: set[Any],
+            *,
+            exclude_recent: bool,
+        ) -> None:
             for outfit_type in ordered_types:
                 if outfit_type in chosen:
                     continue
                 pool = [
                     candidate
                     for candidate in candidates
-                    if candidate.outfit_type == outfit_type and key_fn(candidate) not in blocked
+                    if candidate.outfit_type == outfit_type
+                    and key_fn(candidate) not in blocked
+                    and not (exclude_recent and frozenset(candidate.item_ids) in recent_sets)
                 ]
                 if not pool:
                     continue
@@ -138,8 +152,25 @@ class RecommendationEngine:
                     used_main.add(main_item)
                 used_core.add(self._core_key(best.item_ids, wearable))
 
-        _fill(lambda candidate: self._main_item(candidate.item_ids, wearable), used_main)
-        _fill(lambda candidate: self._core_key(candidate.item_ids, wearable), used_core)
+        _fill(
+            lambda candidate: self._main_item(candidate.item_ids, wearable),
+            used_main,
+            exclude_recent=avoid_exact_repeats,
+        )
+        _fill(
+            lambda candidate: self._core_key(candidate.item_ids, wearable),
+            used_core,
+            exclude_recent=avoid_exact_repeats,
+        )
+        if avoid_exact_repeats:
+            # Small-wardrobe fallback: if excluding exact recent repeats left a
+            # type unfilled, relax the exclusion so we still return outfits
+            # rather than fewer than the wardrobe could otherwise support.
+            _fill(
+                lambda candidate: self._core_key(candidate.item_ids, wearable),
+                used_core,
+                exclude_recent=False,
+            )
 
         selected = [chosen[outfit_type] for outfit_type in ordered_types if outfit_type in chosen]
         if not selected and candidates:
