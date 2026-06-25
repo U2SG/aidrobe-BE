@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from tests.evals.checkers import CheckResult, evaluate, llm_judge
+from tests.evals.checkers import CheckResult, FixtureSchemaError, evaluate, llm_judge, validate_fixture
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
@@ -28,6 +28,9 @@ def _load_fixtures() -> list[tuple[str, dict[str, Any]]]:
     cases: list[tuple[str, dict[str, Any]]] = []
     for path in sorted(FIXTURE_DIR.glob("*.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
+        # Fail loudly at load time if a fixture's input shape is malformed (a
+        # typo'd assertion/context key would otherwise silently weaken it).
+        validate_fixture(path.stem, data)
         cases.append((path.stem, data))
     return cases
 
@@ -62,6 +65,49 @@ def test_recommendation_fixture(name: str, fixture: dict[str, Any]) -> None:
         )
     else:
         assert not failed, f"golden fixture {name!r} regressed on: {sorted(failed)}\n{report}"
+
+
+@pytest.mark.parametrize("name,fixture", _FIXTURES, ids=[n for n, _ in _FIXTURES])
+def test_fixture_shape_valid(name: str, fixture: dict[str, Any]) -> None:
+    """Every shipped fixture passes the input-shape validator (also enforced at
+    load time; this surfaces it per-fixture)."""
+    validate_fixture(name, fixture)
+
+
+def test_validator_catches_unknown_top_level_key() -> None:
+    bad = {**dict(_FIXTURES[0][1]), "requst_context": {}}  # typo'd top-level key
+    with pytest.raises(FixtureSchemaError, match=r"bad_fix.*unknown top-level key.*requst_context"):
+        validate_fixture("bad_fix", bad)
+
+
+def test_validator_catches_missing_top_level_key() -> None:
+    bad = {k: v for k, v in _FIXTURES[0][1].items() if k != "output"}
+    with pytest.raises(FixtureSchemaError, match=r"bad_fix.*missing required top-level key.*output"):
+        validate_fixture("bad_fix", bad)
+
+
+def test_validator_catches_unknown_request_context_key() -> None:
+    bad = {**dict(_FIXTURES[0][1]), "request_context": {"focus_item_id": "x"}}  # typo: focus_ vs focused_
+    with pytest.raises(FixtureSchemaError, match=r"bad_fix.*request_context key.*focus_item_id"):
+        validate_fixture("bad_fix", bad)
+
+
+def test_validator_catches_unknown_assertion_type() -> None:
+    bad = {**dict(_FIXTURES[0][1]), "assertions": [{"type": "must_includ_item", "item_id": "x"}]}
+    with pytest.raises(FixtureSchemaError, match=r"bad_fix.*unknown assertion type.*must_includ_item"):
+        validate_fixture("bad_fix", bad)
+
+
+def test_validator_catches_assertion_missing_type() -> None:
+    bad = {**dict(_FIXTURES[0][1]), "assertions": [{"typ": "must_include_item", "item_id": "x"}]}
+    with pytest.raises(FixtureSchemaError, match=r"bad_fix.*assertions\[0\] missing 'type'"):
+        validate_fixture("bad_fix", bad)
+
+
+def test_validator_catches_assertion_missing_required_field() -> None:
+    bad = {**dict(_FIXTURES[0][1]), "assertions": [{"type": "no_attribute_value", "attribute": "fit"}]}
+    with pytest.raises(FixtureSchemaError, match=r"bad_fix.*missing required field.*values"):
+        validate_fixture("bad_fix", bad)
 
 
 def test_llm_judge_off_by_default() -> None:

@@ -316,6 +316,107 @@ def run_assertion(fixture: dict[str, Any], spec: dict[str, Any]) -> CheckResult:
 
 
 # --------------------------------------------------------------------------- #
+# Fixture-shape validation (typo guard)
+# --------------------------------------------------------------------------- #
+#
+# A fixture's *inputs* are themselves a tiny schema. A typo in an assertion or a
+# request_context key would silently weaken a scenario (e.g. ``"typ"`` instead of
+# ``"type"`` makes an assertion a no-op, ``"focus_item_id"`` makes the context
+# inert). This validator fails LOUDLY at load time naming the fixture + offending
+# key instead of letting the scenario quietly pass. Data-driven so it extends
+# alongside new assertion types: register the type in ``_ASSERTIONS`` and its
+# required fields in ``_ASSERTION_REQUIRED_FIELDS``.
+
+
+class FixtureSchemaError(ValueError):
+    """Raised when a fixture's input shape is malformed (unknown/missing key,
+    bad assertion). Message always names the fixture + offending key."""
+
+
+# Top-level keys present in EVERY fixture (must exist).
+_REQUIRED_TOP_LEVEL_KEYS = frozenset(
+    {"name", "description", "wardrobe", "user_preferences", "request", "request_context", "output", "assertions"}
+)
+# Optional top-level keys (present in some fixtures). Union of the two below =
+# the full allow-list; anything else is a typo.
+_OPTIONAL_TOP_LEVEL_KEYS = frozenset({"recent_outfits", "expect_failures"})
+_ALLOWED_TOP_LEVEL_KEYS = _REQUIRED_TOP_LEVEL_KEYS | _OPTIONAL_TOP_LEVEL_KEYS
+
+# Allowed inner keys of request_context (per the module docstring). An unknown
+# key here (e.g. a typo'd "focus_item_id") would silently disable a scenario.
+_ALLOWED_REQUEST_CONTEXT_KEYS = frozenset({"weather", "occasion", "focused_item_id"})
+
+# Required fields per assertion `type`, keyed identically to _ASSERTIONS. Fields
+# the handler reads via spec[...] are required; spec.get(...) ones (e.g.
+# copy_contains' optional "label") are NOT listed here.
+_ASSERTION_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "must_include_item": ("item_id",),
+    "must_not_include_item": ("item_id",),
+    "must_reference_preference": ("value",),
+    "copy_contains": ("keywords",),
+    "no_attribute_value": ("attribute", "values"),
+}
+
+# Adding a handler without registering its required fields (or vice versa) is a
+# bug — keep the two maps in lockstep so the typo guard stays exhaustive.
+assert set(_ASSERTION_REQUIRED_FIELDS) == set(_ASSERTIONS), (
+    "_ASSERTION_REQUIRED_FIELDS must register exactly the assertion types in _ASSERTIONS: "
+    f"missing={sorted(set(_ASSERTIONS) - set(_ASSERTION_REQUIRED_FIELDS))}, "
+    f"extra={sorted(set(_ASSERTION_REQUIRED_FIELDS) - set(_ASSERTIONS))}"
+)
+
+
+def validate_fixture(name: str, fixture: dict[str, Any]) -> None:
+    """Validate a fixture's input shape, raising ``FixtureSchemaError`` (naming
+    ``name`` + the offending key) on any malformed/typo'd key. Pure + importable
+    so both the loader and the proving-test reuse it."""
+    keys = set(fixture)
+    missing = _REQUIRED_TOP_LEVEL_KEYS - keys
+    if missing:
+        raise FixtureSchemaError(f"fixture {name!r}: missing required top-level key(s): {sorted(missing)}")
+    unknown = keys - _ALLOWED_TOP_LEVEL_KEYS
+    if unknown:
+        raise FixtureSchemaError(
+            f"fixture {name!r}: unknown top-level key(s) {sorted(unknown)} "
+            f"(typo?); allowed: {sorted(_ALLOWED_TOP_LEVEL_KEYS)}"
+        )
+
+    request_context = fixture["request_context"]
+    if not isinstance(request_context, dict):
+        raise FixtureSchemaError(
+            f"fixture {name!r}: request_context must be an object, got {type(request_context).__name__}"
+        )
+    bad_ctx = set(request_context) - _ALLOWED_REQUEST_CONTEXT_KEYS
+    if bad_ctx:
+        raise FixtureSchemaError(
+            f"fixture {name!r}: unknown request_context key(s) {sorted(bad_ctx)} "
+            f"(typo?); allowed: {sorted(_ALLOWED_REQUEST_CONTEXT_KEYS)}"
+        )
+
+    assertions = fixture["assertions"]
+    if not isinstance(assertions, list):
+        raise FixtureSchemaError(f"fixture {name!r}: assertions must be a list, got {type(assertions).__name__}")
+    for idx, spec in enumerate(assertions):
+        if not isinstance(spec, dict):
+            raise FixtureSchemaError(f"fixture {name!r}: assertions[{idx}] must be an object, got {spec!r}")
+        kind = spec.get("type")
+        if not kind:
+            raise FixtureSchemaError(f"fixture {name!r}: assertions[{idx}] missing 'type' key (typo?): {spec!r}")
+        required = _ASSERTION_REQUIRED_FIELDS.get(kind)
+        if required is None:
+            raise FixtureSchemaError(
+                f"fixture {name!r}: assertions[{idx}] has unknown assertion type {kind!r}; "
+                f"allowed: {sorted(_ASSERTION_REQUIRED_FIELDS)}"
+            )
+        missing_fields = [f for f in required if f not in spec]
+        if missing_fields:
+            raise FixtureSchemaError(
+                f"fixture {name!r}: assertions[{idx}] (type {kind!r}) missing required field(s) "
+                f"{missing_fields}: {spec!r}"
+            )
+
+
+# --------------------------------------------------------------------------- #
 # Top-level evaluation entry point
 # --------------------------------------------------------------------------- #
 
