@@ -409,7 +409,12 @@ async def test_ask_conversation_initial_creation(
 ) -> None:
     user_id = await _seed_user_and_items(db_session)
     patch_router_settings(ENABLE_ASK_AIDROBE=True, ENABLE_ASK_CONVERSATIONS=True)
-    structured = Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True)
+    structured = Settings(
+        APP_ENV="dev",
+        ENABLE_ASK_AIDROBE=True,
+        ENABLE_ASK_STRUCTURED_OUTPUT=True,
+        ENABLE_ASK_CONVERSATIONS=True,
+    )
     monkeypatch.setattr("app.application.ask.answer_question.get_settings", lambda: structured)
     llm = _FakeLlm(
         text=(
@@ -448,7 +453,12 @@ async def test_ask_conversation_follow_up_uses_same_conversation(
 ) -> None:
     user_id = await _seed_user_and_items(db_session)
     patch_router_settings(ENABLE_ASK_AIDROBE=True, ENABLE_ASK_CONVERSATIONS=True)
-    structured = Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True)
+    structured = Settings(
+        APP_ENV="dev",
+        ENABLE_ASK_AIDROBE=True,
+        ENABLE_ASK_STRUCTURED_OUTPUT=True,
+        ENABLE_ASK_CONVERSATIONS=True,
+    )
     monkeypatch.setattr("app.application.ask.answer_question.get_settings", lambda: structured)
     llm = _FakeLlm(
         text=(
@@ -491,7 +501,12 @@ async def test_ask_conversation_focused_item_rejection(
     user_id = await _seed_user_and_items(db_session)
     focus_id = await _seed_focused_item(db_session, user_id)
     patch_router_settings(ENABLE_ASK_AIDROBE=True, ENABLE_ASK_CONVERSATIONS=True)
-    structured = Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True)
+    structured = Settings(
+        APP_ENV="dev",
+        ENABLE_ASK_AIDROBE=True,
+        ENABLE_ASK_STRUCTURED_OUTPUT=True,
+        ENABLE_ASK_CONVERSATIONS=True,
+    )
     monkeypatch.setattr("app.application.ask.answer_question.get_settings", lambda: structured)
     # Rejection now comes from the STRUCTURED signal, not substring sniffing.
     llm = _FakeLlm(
@@ -527,7 +542,12 @@ async def test_ask_conversation_state_retrieval(
 ) -> None:
     user_id = await _seed_user_and_items(db_session)
     patch_router_settings(ENABLE_ASK_AIDROBE=True, ENABLE_ASK_CONVERSATIONS=True)
-    structured = Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True)
+    structured = Settings(
+        APP_ENV="dev",
+        ENABLE_ASK_AIDROBE=True,
+        ENABLE_ASK_STRUCTURED_OUTPUT=True,
+        ENABLE_ASK_CONVERSATIONS=True,
+    )
     monkeypatch.setattr("app.application.ask.answer_question.get_settings", lambda: structured)
     app = _build_app(
         db_session,
@@ -589,6 +609,64 @@ async def test_ask_conversation_flag_off_hides_response_fields_but_persists(
     state = await SqlAlchemyAskConversationRepository(db_session).get_state(user_id, persisted.id)
     assert state is not None
     assert state.active_constraints == ["hidden"]
+
+
+async def test_ask_conversation_flag_off_is_noop_on_answer_context(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FIX 1 — with ENABLE_ASK_CONVERSATIONS OFF, a supplied (valid)
+    conversation_id must NOT alter the answer context: prior conversation_state
+    is never injected into the prompt, and the durable-rejection pool exclusion
+    is not applied. Net effect == no conversation_id."""
+    user_id = await _seed_user_and_items(db_session)
+    # The white top is one of the seeded wearable candidates; pre-mark it rejected
+    # in prior conversation state so we can prove the pool gate is NOT applied.
+    rejected_item = await db_session.scalar(
+        select(WardrobeItem).where(
+            WardrobeItem.user_id == user_id, WardrobeItem.color_main == "white"
+        )
+    )
+    assert rejected_item is not None
+    repo = SqlAlchemyAskConversationRepository(db_session)
+    conversation = await repo.create_conversation(user_id=user_id, title="prior")
+    await repo.upsert_state(
+        conversation=conversation,
+        state=None,
+        last_outfit=None,
+        active_constraints=["formal only"],
+        rejected_item_ids=[str(rejected_item.id)],
+        preferred_item_ids=[],
+        summary="earlier we discussed formalwear",
+    )
+    # Router exposure flag ON (so we get a 200), but conversations OFF on the
+    # consuming module — that's the gate under test.
+    patch_router_settings(ENABLE_ASK_AIDROBE=True, ENABLE_ASK_CONVERSATIONS=False)
+    off = Settings(
+        APP_ENV="dev",
+        ENABLE_ASK_AIDROBE=True,
+        ENABLE_ASK_STRUCTURED_OUTPUT=True,
+        ENABLE_ASK_CONVERSATIONS=False,
+    )
+    monkeypatch.setattr("app.application.ask.answer_question.get_settings", lambda: off)
+    llm = _FakeLlm(text='{"answer": "ok", "referenced_items": []}')
+    app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True), llm=llm)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "今天穿什么？", "conversation_id": str(conversation.id)},
+        )
+    assert resp.status_code == 200
+    assert llm.last_system_prompt is not None
+    # Prior conversation state is NOT injected into the prompt.
+    assert '"conversation_state"' not in llm.last_system_prompt
+    assert "formal only" not in llm.last_system_prompt
+    assert "earlier we discussed formalwear" not in llm.last_system_prompt
+    # The durably-rejected item is NOT excluded from the candidate pool when the
+    # flag is off, so its attribute still reaches the prompt.
+    assert '"color_main": "white"' in llm.last_system_prompt
 
 
 async def test_ask_structured_parse_failure_keeps_text_drops_refs(

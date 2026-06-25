@@ -160,11 +160,17 @@ _PREFERENCE_TYPE_VOCAB = (
 # `stated_preferences` captures ONLY durable preferences the user explicitly
 # stated this turn (the trusted write path) — never inferences from a one-off
 # request; an empty array is the default.
+# `conversation_deltas` (incl. `rejected_focused_item`) lives INSIDE this one
+# canonical JSON object — a single coherent envelope the model returns — so a
+# separate trailing instruction can't make the deltas silently vanish.
 _STRUCTURED_INSTRUCTION: dict[str, str] = {
     "zh": (
         "\n请只返回一个 JSON 对象，不要包含任何其它文字："
         '{"answer": "你的中文建议", "referenced_items": [引用到的单品在上面列表中的序号，从 1 开始], '
-        '"stated_preferences": [{"type": "类型", "value": "简短的值", "polarity": "positive 或 negative"}]}。'
+        '"stated_preferences": [{"type": "类型", "value": "简短的值", "polarity": "positive 或 negative"}], '
+        '"conversation_deltas": {"reasoning": "一句话说明如何延续上一轮", '
+        '"applied_constraints": ["本轮临时约束"], '
+        '"rejected_focused_item": 仅当用户明确表示不要/换掉当前聚焦的那件单品时为 true，否则为 false}}。'
         "若没有引用任何单品，referenced_items 返回空数组。"
         f"stated_preferences 只收录用户本轮明确表达的长期偏好（如「我不喜欢宽松衬衫」），"
         f"type 必须是以下之一：{_PREFERENCE_TYPE_VOCAB}；不要从一次性的请求里推断，没有就返回空数组。"
@@ -173,26 +179,16 @@ _STRUCTURED_INSTRUCTION: dict[str, str] = {
         "\nRespond with a single JSON object and nothing else: "
         '{"answer": "your advice in English", "referenced_items": [1-based positions '
         'of the items above you reference], '
-        '"stated_preferences": [{"type": "...", "value": "short value", "polarity": "positive" or "negative"}]}. '
+        '"stated_preferences": [{"type": "...", "value": "short value", "polarity": "positive" or "negative"}], '
+        '"conversation_deltas": {"reasoning": "one sentence on how this refines the previous turn", '
+        '"applied_constraints": ["temporary constraints applied this turn"], '
+        '"rejected_focused_item": true only when the user explicitly rejects / wants to swap out the '
+        'focused item, otherwise false}}. '
         "If you reference no item, return an empty array. "
         "stated_preferences captures ONLY durable preferences the user explicitly stated this turn "
         '(e.g. "I dislike oversized shirts"); '
         f"type must be one of: {_PREFERENCE_TYPE_VOCAB}. Do not infer from a one-off request; "
         "return an empty array when there are none."
-    ),
-}
-
-_CONVERSATION_DELTAS_INSTRUCTION: dict[str, str] = {
-    "zh": (
-        '"conversation_deltas": {"reasoning": "一句话说明如何延续上一轮", '
-        '"applied_constraints": ["本轮临时约束"], '
-        '"rejected_focused_item": 仅当用户明确表示不要/换掉当前聚焦的那件单品时为 true，否则为 false}'
-    ),
-    "en": (
-        '"conversation_deltas": {"reasoning": "one sentence on how this refines the previous turn", '
-        '"applied_constraints": ["temporary constraints applied this turn"], '
-        '"rejected_focused_item": true only when the user explicitly rejects / wants to swap out the '
-        "focused item, otherwise false}"
     ),
 }
 
@@ -444,9 +440,6 @@ def _build_system_prompt(
     prompt = preamble + json.dumps(payload, ensure_ascii=False)
     if structured:
         prompt += _STRUCTURED_INSTRUCTION.get(lang, _STRUCTURED_INSTRUCTION[_DEFAULT_LANG])
-        prompt += _CONVERSATION_DELTAS_INSTRUCTION.get(
-            lang, _CONVERSATION_DELTAS_INSTRUCTION[_DEFAULT_LANG]
-        )
     return prompt
 
 
@@ -643,6 +636,14 @@ async def answer_question(
             )
     sanitized_question = sanitize_llm_text(question)
 
+    settings = get_settings()
+    # EXPOSURE gate: when ENABLE_ASK_CONVERSATIONS is OFF, a supplied
+    # conversation_id must NOT alter the answer context. Rows still persist
+    # (clean rollback), but prompt-context injection + the durable-rejection
+    # pool exclusion below are gated on the flag, so flag-off + a known
+    # conversation_id yields the same answer context as no conversation_id.
+    conversations_enabled = settings.ENABLE_ASK_CONVERSATIONS
+
     conversation_repo = SqlAlchemyAskConversationRepository(session)
     if conversation_id is not None:
         conversation = await conversation_repo.get_owned_conversation(user_id, conversation_id)
@@ -661,8 +662,8 @@ async def answer_question(
     # Rejection is derived from the STRUCTURED model output post-call, never from
     # substring-sniffing free text (that misfired on phrases like "不要太正式").
     # The DURABLE rejected_item_ids (persisted from a prior turn's structured
-    # signal) still drive same-turn pool exclusion here. Computed once and reused
-    # for the merge-back below.
+    # signal) drive same-turn pool exclusion below ONLY when conversations are
+    # enabled. Computed once regardless (so the merge-back below stays correct).
     rejected_item_ids = _json_str_list(
         conversation_state.rejected_item_ids if conversation_state else None
     )
@@ -702,7 +703,7 @@ async def answer_question(
             .order_by(*priority_order)
         )
     )
-    if existing_rejected_ids:
+    if conversations_enabled and existing_rejected_ids:
         pool = [item for item in pool if str(item.id) not in existing_rejected_ids]
     # Curate to a stable, explainable set; the focused item (if any) is pinned
     # first even when it's not wearable or fell outside the fetch cap. It is
@@ -717,7 +718,6 @@ async def answer_question(
     # redis_client) so tests are deterministic; no-op when ENABLE_COST_GUARD off.
     await assert_within_quota(session, user_id, _JOB_TYPE, cost_tokens=_project_tokens(len(items)))
 
-    settings = get_settings()
     structured = settings.ENABLE_ASK_STRUCTURED_OUTPUT
     # BE#46 — durable preference memory, read only when the flag is on. Rows are
     # written regardless of the flag; gating the READ keeps a flip a clean
@@ -742,7 +742,13 @@ async def answer_question(
         today=today,
         candidate_selection=_candidate_selection_meta(items, focused_item),
         preference_memory=preference_memory,
-        conversation_state=_conversation_state_for_prompt(conversation_state, items),
+        # Inject prior conversation state into the prompt ONLY when the feature
+        # is on; flag-off keeps the prompt context independent of conversation_id.
+        conversation_state=(
+            _conversation_state_for_prompt(conversation_state, items)
+            if conversations_enabled
+            else {}
+        ),
     )
     system_prompt = _build_system_prompt(user_id, items, ctx, today, structured=structured)
     answer = await llm.ask(system_prompt, sanitized_question or question, json_mode=structured)

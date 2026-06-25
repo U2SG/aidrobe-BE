@@ -142,6 +142,26 @@ def test_structured_instruction_added_only_when_structured() -> None:
     assert "referenced_items" in structured
 
 
+def test_structured_instruction_is_one_canonical_envelope_with_deltas() -> None:
+    """FIX 2 — conversation_deltas (incl. rejected_focused_item) lives INSIDE the
+    single JSON envelope, not a second trailing instruction fragment, so the
+    model returns one coherent object and the deltas can't silently vanish."""
+    for locale in ("en", "zh"):
+        prompt = _build_system_prompt(
+            uuid.uuid4(), [], _ctx(locale=locale), _TODAY, structured=True
+        )
+        # Exactly one envelope — a single "answer" key, not two stitched fragments.
+        assert prompt.count('"answer"') == 1
+        # All envelope fields, including the folded-in deltas, are present.
+        for field in (
+            '"referenced_items"',
+            '"stated_preferences"',
+            '"conversation_deltas"',
+            '"rejected_focused_item"',
+        ):
+            assert field in prompt
+
+
 def test_build_prompt_includes_context_dimensions() -> None:
     items = _items()
     ctx = _ctx(items=items, style_tags=["minimal", "commute"])
