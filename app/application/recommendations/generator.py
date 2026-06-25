@@ -72,11 +72,15 @@ class RecommendationGenerator:
         items = await self.repository.get_wearable_items(user_id)
         recent = await self.repository.recent_worn_main_item_ids(user_id, target_date)
         settings = get_settings()
-        window = settings.RECOMMENDATION_DIVERSITY_WINDOW_DAYS
+        avoid_exact_repeats = settings.ENABLE_RECOMMENDATION_DIVERSITY
+        # The flag is the SOLE gate for any behavior change: when diversity is
+        # off, keep the legacy fixed 7-day worn-similarity window regardless of
+        # RECOMMENDATION_DIVERSITY_WINDOW_DAYS, so that setting can't silently
+        # alter the always-on repetition penalty.
+        window = settings.RECOMMENDATION_DIVERSITY_WINDOW_DAYS if avoid_exact_repeats else 7
         recent_outfits = await self.repository.get_recent_worn_outfit_item_ids(
             user_id, target_date, days=window
         )
-        avoid_exact_repeats = settings.ENABLE_RECOMMENDATION_DIVERSITY
         if avoid_exact_repeats:
             # BE#39 — also avoid repeating looks / hero items the user was
             # recently RECOMMENDED (not just ones they wore). Merge into the

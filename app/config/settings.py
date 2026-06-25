@@ -140,9 +140,9 @@ class Settings(BaseSettings):
     # and recently-recommended hero items are de-prioritized. Off = legacy
     # worn-only diversity.
     ENABLE_RECOMMENDATION_DIVERSITY: bool = False
-    # Look-back window (days) for the diversity checks above. Also used for the
-    # existing recently-worn-outfit similarity penalty (default 7 keeps prior
-    # behavior unchanged).
+    # Look-back window (days) for the diversity checks above. Applied ONLY when
+    # ENABLE_RECOMMENDATION_DIVERSITY is on; with the flag off the worn-similarity
+    # penalty keeps its legacy fixed 7-day window regardless of this value.
     RECOMMENDATION_DIVERSITY_WINDOW_DAYS: int = 7
 
     # Phase E — PIPL-aware account deletion + cost guard.
