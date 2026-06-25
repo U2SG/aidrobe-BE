@@ -11,7 +11,7 @@ previously corrected preference revives it.
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,6 +61,12 @@ class SqlAlchemyPreferenceMemoryRepository:
                 "source": source,
                 "source_message_id": source_message_id,
                 "deleted_at": None,
+                # ON CONFLICT DO UPDATE bypasses the model's onupdate hook, so
+                # set updated_at explicitly. Without it, re-stating a preference
+                # at the same confidence leaves updated_at stale, and list_live
+                # (confidence desc, updated_at desc) won't surface the just-
+                # restated row into the capped prompt-visible memory block.
+                "updated_at": func.now(),
             },
             where=update_predicate,
         ).returning(UserPreferenceMemory.id)

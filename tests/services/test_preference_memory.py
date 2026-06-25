@@ -100,6 +100,40 @@ async def test_update_merge_in_place(db_session: AsyncSession) -> None:
     assert float(rows[0].confidence) == 0.95
 
 
+async def test_restate_existing_preference_refreshes_updated_at(
+    db_session: AsyncSession,
+) -> None:
+    """Re-stating a preference must bump updated_at even when confidence is
+    unchanged — otherwise list_live (confidence desc, updated_at desc) won't lift
+    the just-restated row into the capped prompt-visible block. The commit gives
+    the second write a later transaction timestamp (func.now() is per-tx)."""
+    user_id = await _seed_user(db_session)
+    repo = SqlAlchemyPreferenceMemoryRepository(db_session)
+    first = await record_preference(
+        repo,
+        user_id=user_id,
+        preference_type="color",
+        preference_value="red",
+        polarity="negative",
+        confidence=0.9,
+        source=SOURCE_EXPLICIT,
+    )
+    first_updated_at = first.updated_at
+    await db_session.commit()
+
+    second = await record_preference(
+        repo,
+        user_id=user_id,
+        preference_type="color",
+        preference_value="red",
+        polarity="negative",
+        confidence=0.9,  # unchanged
+        source=SOURCE_EXPLICIT,
+    )
+    assert second.id == first.id  # same row
+    assert second.updated_at > first_updated_at
+
+
 async def test_feedback_source_cannot_become_strong_preference(
     db_session: AsyncSession,
 ) -> None:
