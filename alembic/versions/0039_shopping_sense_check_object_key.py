@@ -1,7 +1,7 @@
 """add object_key to shopping_sense_checks
 
 Revision ID: 0039_shopping_sense_check_object_key
-Revises: 0036_user_preference_memory
+Revises: 0038
 Create Date: 2026-06-25
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0039_shopping_sense_check_object_key"
-down_revision: str | None = "0036_user_preference_memory"
+down_revision: str | None = "0038"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
