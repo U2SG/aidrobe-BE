@@ -250,6 +250,14 @@ class Settings(BaseSettings):
     # When False, POST /v1/import-tasks with receipt input_types returns 400.
     ENABLE_RECEIPT_IMPORT: bool = False
 
+    # BE#46 — persistent user preference memory. When on, Ask reads the
+    # `{positive, negative}` memory into its prompt context and Today
+    # recommendations let explicit NEGATIVE preferences (e.g. a disliked color)
+    # down-rank matching outfits. Preference rows are written regardless of the
+    # flag (controlled write path); the flag only gates the read/injection, so
+    # flipping back to False is a clean rollback.
+    ENABLE_PREFERENCE_MEMORY: bool = False
+
     # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
     # every authenticated user is admin (DX); empty in prod means the admin
     # surface is locked off. This is intentional so a misconfigured prod

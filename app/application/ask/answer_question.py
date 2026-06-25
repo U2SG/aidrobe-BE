@@ -32,6 +32,12 @@ from app.application.ask.wardrobe_context import (
 )
 from app.application.cost_guard import assert_within_quota
 from app.application.ports.llm import LlmPort
+from app.application.preferences.memory import (
+    SOURCE_EXPLICIT,
+    PreferenceMemoryError,
+    read_preference_memory,
+    record_preference,
+)
 from app.common import error_codes
 from app.common.enums import ItemStatus
 from app.common.exceptions import FriendlyException
@@ -42,6 +48,9 @@ from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.user import UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.ask_repo import SqlAlchemyAskRepository
+from app.infrastructure.persistence.repositories.preference_memory_repo import (
+    SqlAlchemyPreferenceMemoryRepository,
+)
 
 # Cap the number of items injected so the prompt stays lightweight and cheap.
 _MAX_ITEMS = 80
@@ -105,19 +114,42 @@ _FOCUS_CLAUSE: dict[str, str] = {
 }
 
 
+# Confidence for a preference the user stated explicitly in their own words.
+# High, but not 1.0 — they may revise it later, and the row is user-correctable.
+_EXPLICIT_PREFERENCE_CONFIDENCE = 0.9
+
+# The vocabulary the model may tag a stated preference with — mirrors the write
+# service allowlist. Embedded in the prompt so the model emits storable types;
+# the write path re-validates, so a bad type is dropped, never persisted.
+_PREFERENCE_TYPE_VOCAB = (
+    "style, color, fit, occasion, brand, material, formality, climate, footwear, negative_preference"
+)
+
 # Appended when ENABLE_ASK_STRUCTURED_OUTPUT is on. Asks for a strict JSON
 # envelope so the server can validate which items the model actually cited.
 # `referenced_items` are 1-based positions into the items list above.
+# `stated_preferences` captures ONLY durable preferences the user explicitly
+# stated this turn (the trusted write path) — never inferences from a one-off
+# request; an empty array is the default.
 _STRUCTURED_INSTRUCTION: dict[str, str] = {
     "zh": (
         "\n请只返回一个 JSON 对象，不要包含任何其它文字："
-        '{"answer": "你的中文建议", "referenced_items": [引用到的单品在上面列表中的序号，从 1 开始]}。'
+        '{"answer": "你的中文建议", "referenced_items": [引用到的单品在上面列表中的序号，从 1 开始], '
+        '"stated_preferences": [{"type": "类型", "value": "简短的值", "polarity": "positive 或 negative"}]}。'
         "若没有引用任何单品，referenced_items 返回空数组。"
+        f"stated_preferences 只收录用户本轮明确表达的长期偏好（如「我不喜欢宽松衬衫」），"
+        f"type 必须是以下之一：{_PREFERENCE_TYPE_VOCAB}；不要从一次性的请求里推断，没有就返回空数组。"
     ),
     "en": (
         "\nRespond with a single JSON object and nothing else: "
         '{"answer": "your advice in English", "referenced_items": [1-based positions '
-        "of the items above you reference]}. If you reference no item, return an empty array."
+        'of the items above you reference], '
+        '"stated_preferences": [{"type": "...", "value": "short value", "polarity": "positive" or "negative"}]}. '
+        "If you reference no item, return an empty array. "
+        "stated_preferences captures ONLY durable preferences the user explicitly stated this turn "
+        '(e.g. "I dislike oversized shirts"); '
+        f"type must be one of: {_PREFERENCE_TYPE_VOCAB}. Do not infer from a one-off request; "
+        "return an empty array when there are none."
     ),
 }
 
@@ -361,13 +393,17 @@ def _build_system_prompt(
     return prompt
 
 
-def _parse_structured(text: str, item_count: int) -> tuple[str, list[int]] | None:
+def _parse_structured(
+    text: str, item_count: int
+) -> tuple[str, list[int], list[dict[str, str]]] | None:
     """Parse the structured-output envelope.
 
-    Returns (answer_text, validated 0-based item indices) or None when the
-    response isn't the expected JSON shape. Positions are 1-based in the
-    prompt; only those that land inside [1, item_count] survive — anything
-    else is a hallucinated reference and is dropped."""
+    Returns (answer_text, validated 0-based item indices, stated_preferences) or
+    None when the response isn't the expected JSON shape. Positions are 1-based
+    in the prompt; only those that land inside [1, item_count] survive — anything
+    else is a hallucinated reference and is dropped. `stated_preferences` is a
+    best-effort list of {type, value, polarity} string dicts; the write path
+    re-validates each, so anything malformed is simply not persisted."""
     try:
         data = json.loads(text)
     except ValueError:  # JSONDecodeError is a ValueError subclass
@@ -386,7 +422,16 @@ def _parse_structured(text: str, item_count: int) -> tuple[str, list[int]] | Non
         if 1 <= pos <= item_count and pos not in seen:
             seen.add(pos)
             indices.append(pos - 1)
-    return answer, indices
+    preferences: list[dict[str, str]] = []
+    raw_prefs = data.get("stated_preferences", [])
+    if isinstance(raw_prefs, list):
+        for pref in raw_prefs:
+            if not isinstance(pref, dict):
+                continue
+            ptype, pvalue, ppolarity = pref.get("type"), pref.get("value"), pref.get("polarity")
+            if isinstance(ptype, str) and isinstance(pvalue, str) and isinstance(ppolarity, str):
+                preferences.append({"type": ptype, "value": pvalue, "polarity": ppolarity})
+    return answer, indices, preferences
 
 
 async def answer_question(
@@ -457,7 +502,17 @@ async def answer_question(
     # redis_client) so tests are deterministic; no-op when ENABLE_COST_GUARD off.
     await assert_within_quota(session, user_id, _JOB_TYPE, cost_tokens=_project_tokens(len(items)))
 
-    structured = get_settings().ENABLE_ASK_STRUCTURED_OUTPUT
+    settings = get_settings()
+    structured = settings.ENABLE_ASK_STRUCTURED_OUTPUT
+    # BE#46 — durable preference memory, read only when the flag is on. Rows are
+    # written regardless of the flag; gating the READ keeps a flip a clean
+    # rollback. Values are bounded at write time, so they go straight into the
+    # context block built above.
+    preference_memory: dict[str, list[dict[str, Any]]] = {}
+    if settings.ENABLE_PREFERENCE_MEMORY:
+        preference_memory = await read_preference_memory(
+            SqlAlchemyPreferenceMemoryRepository(session), user_id
+        )
     # BE#30 — when the request omits a locale, fall back to the user's
     # persisted settings locale (then the zh-CN default) so the answer
     # language tracks the user's UI choice.
@@ -471,6 +526,7 @@ async def answer_question(
         locale=_resolve_lang(locale, settings_locale),
         today=today,
         candidate_selection=_candidate_selection_meta(items, focused_item),
+        preference_memory=preference_memory,
     )
     system_prompt = _build_system_prompt(user_id, items, ctx, today, structured=structured)
     answer = await llm.ask(system_prompt, question, json_mode=structured)
@@ -491,6 +547,9 @@ async def answer_question(
     # made and pollutes downstream snapshotting/analytics. The fallback (no
     # focus -> empty) is shared by the parse-failure and flag-off branches.
     fallback_refs = [str(focused_item.id)] if focused_item is not None else []
+    # Preferences the user explicitly stated this turn — only the structured
+    # path can surface them reliably; empty everywhere else.
+    stated_preferences: list[dict[str, str]] = []
     if structured:
         parsed = _parse_structured(answer.text, len(items))
         if parsed is None:
@@ -500,7 +559,7 @@ async def answer_question(
             logger.warning("ask.structured_output.parse_failed")
             item_refs = fallback_refs
         else:
-            answer_text, indices = parsed
+            answer_text, indices, stated_preferences = parsed
             item_refs = [str(items[i].id) for i in indices]
     else:
         # Structured output disabled: we can't tell which items the model
@@ -536,6 +595,30 @@ async def answer_question(
             cost_tokens=tokens_used,
         )
     )
+
+    # BE#46 — trusted write path: persist preferences the user EXPLICITLY stated
+    # this turn. Written unconditionally (the ENABLE_PREFERENCE_MEMORY flag gates
+    # only the READ), so flipping the flag on later already has data — and a flip
+    # back stays a clean rollback. Fail-soft per row: a bad type/value (the write
+    # service re-validates against its allowlist) is dropped, never fails the
+    # answer the user actually asked for. `ask_row.id` is the provenance link.
+    if stated_preferences:
+        pref_repo = SqlAlchemyPreferenceMemoryRepository(session)
+        for pref in stated_preferences:
+            try:
+                await record_preference(
+                    pref_repo,
+                    user_id=user_id,
+                    preference_type=pref["type"],
+                    preference_value=pref["value"],
+                    polarity=pref["polarity"],
+                    confidence=_EXPLICIT_PREFERENCE_CONFIDENCE,
+                    source=SOURCE_EXPLICIT,
+                    source_message_id=ask_row.id,
+                )
+            except PreferenceMemoryError as exc:
+                logger.warning("ask.preference_write_skipped", reason=str(exc))
+
     await session.flush()
 
     return AskResult(

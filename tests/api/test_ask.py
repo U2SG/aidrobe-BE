@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.llm import LlmAnswer
+from app.application.preferences.memory import read_preference_memory
 from app.bootstrap.container import llm_service
 from app.common.enums import Category, ImageType, ItemStatus
 from app.config.settings import Settings, get_settings
@@ -337,6 +338,63 @@ async def test_ask_structured_validates_item_refs(
     assert body["answer"] == "穿白衬衫吧"  # unwrapped from the JSON envelope
     assert len(body["item_refs"]) == 1  # only the in-range position survives
     assert llm.last_json_mode is True  # provider constrained to JSON mode
+
+
+async def test_ask_structured_persists_explicit_stated_preferences(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BE#46 — the trusted write path: a preference the user explicitly stated is
+    persisted from the structured envelope. Persistence is unconditional (the
+    read flag stays OFF here), and a bad type is dropped fail-soft, never failing
+    the answer."""
+    from app.infrastructure.persistence.repositories.preference_memory_repo import (
+        SqlAlchemyPreferenceMemoryRepository,
+    )
+
+    user_id = await _seed_user_and_items(db_session)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    # Note: ENABLE_PREFERENCE_MEMORY is OFF — writes still happen.
+    structured = Settings(
+        APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True
+    )
+    monkeypatch.setattr(
+        "app.application.ask.answer_question.get_settings", lambda: structured
+    )
+    llm = _FakeLlm(
+        text=(
+            '{"answer": "ok", "referenced_items": [], "stated_preferences": ['
+            '{"type": "fit", "value": "oversized shirts", "polarity": "negative"},'
+            '{"type": "bogus", "value": "junk", "polarity": "negative"}]}'
+        )
+    )
+    app = _build_app(
+        db_session,
+        Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
+        llm=llm,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "I dislike oversized shirts. What should I wear?"},
+        )
+    assert resp.status_code == 200
+
+    repo = SqlAlchemyPreferenceMemoryRepository(db_session)
+    rows = await repo.list_live(user_id)
+    # The valid explicit preference is persisted; the bad-type one is dropped.
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.preference_type == "fit"
+    assert row.preference_value == "oversized shirts"
+    assert row.polarity == "negative"
+    assert row.source == "explicit_user_statement"
+    assert row.source_message_id is not None
+    # Read view confirms the shape too.
+    memory = await read_preference_memory(repo, user_id)
+    assert {e["value"] for e in memory["negative"]} == {"oversized shirts"}
 
 
 async def test_ask_structured_parse_failure_keeps_text_drops_refs(
@@ -768,3 +826,84 @@ async def test_ask_429_when_quota_exhausted(
             json={"question": "今天穿什么？"},
         )
     assert resp.status_code == 429
+
+
+async def test_ask_injects_preference_memory_when_flag_on(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BE#46 — when ENABLE_PREFERENCE_MEMORY is on, the user's durable
+    {positive, negative} memory reaches the LLM prompt under `user_preferences`.
+    The flag is read in answer_question.get_settings (lru-cached), so patch it."""
+    from app.application.preferences.memory import SOURCE_EXPLICIT, record_preference
+    from app.infrastructure.persistence.repositories.preference_memory_repo import (
+        SqlAlchemyPreferenceMemoryRepository,
+    )
+
+    user_id = await _seed_user_and_items(db_session)
+    await record_preference(
+        SqlAlchemyPreferenceMemoryRepository(db_session),
+        user_id=user_id,
+        preference_type="fit",
+        preference_value="oversized shirts",
+        polarity="negative",
+        confidence=0.95,
+        source=SOURCE_EXPLICIT,
+    )
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    enabled = Settings(
+        APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_PREFERENCE_MEMORY=True
+    )
+    monkeypatch.setattr(
+        "app.application.ask.answer_question.get_settings", lambda: enabled
+    )
+    llm = _FakeLlm()
+    app = _build_app(
+        db_session, Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True), llm=llm
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "今天穿什么？"},
+        )
+    assert resp.status_code == 200
+    assert llm.last_system_prompt is not None
+    assert "user_preferences" in llm.last_system_prompt
+    assert "oversized shirts" in llm.last_system_prompt
+
+
+async def test_ask_omits_preference_memory_when_flag_off(
+    db_session: AsyncSession, patch_router_settings
+) -> None:
+    """Flag off: no `user_preferences` block in the prompt even if rows exist."""
+    from app.application.preferences.memory import SOURCE_EXPLICIT, record_preference
+    from app.infrastructure.persistence.repositories.preference_memory_repo import (
+        SqlAlchemyPreferenceMemoryRepository,
+    )
+
+    user_id = await _seed_user_and_items(db_session)
+    await record_preference(
+        SqlAlchemyPreferenceMemoryRepository(db_session),
+        user_id=user_id,
+        preference_type="fit",
+        preference_value="oversized shirts",
+        polarity="negative",
+        confidence=0.95,
+        source=SOURCE_EXPLICIT,
+    )
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    llm = _FakeLlm()
+    app = _build_app(
+        db_session, Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True), llm=llm
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "今天穿什么？"},
+        )
+    assert resp.status_code == 200
+    assert llm.last_system_prompt is not None
+    assert "user_preferences" not in llm.last_system_prompt

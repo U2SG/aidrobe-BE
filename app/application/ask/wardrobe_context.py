@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import uuid
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
@@ -61,6 +61,10 @@ class WardrobeContext:
     departure_time: str | None
     candidate_item_ids: list[str]
     candidate_selection: dict[str, Any]  # snapshot-only; never reaches the prompt
+    # BE#46 — compact {positive, negative} preference memory. Empty unless
+    # ENABLE_PREFERENCE_MEMORY is on (the caller passes {} otherwise). Values are
+    # bounded at write time; safe to put straight into the prompt.
+    preference_memory: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 def summarize_wardrobe(items: list[WardrobeItem]) -> dict[str, Any]:
@@ -103,6 +107,7 @@ async def build_wardrobe_context(
     locale: str,
     today: date,
     candidate_selection: dict[str, Any] | None = None,
+    preference_memory: dict[str, list[dict[str, Any]]] | None = None,
 ) -> WardrobeContext:
     style_tags = (await SqlAlchemyStyleRepository(session).get_style_tags(user_id))[
         :_MAX_STYLE_TAGS
@@ -133,6 +138,7 @@ async def build_wardrobe_context(
         departure_time=departure_time,
         candidate_item_ids=[str(i.id) for i in items],
         candidate_selection=candidate_selection or {},
+        preference_memory=preference_memory or {},
     )
 
 
@@ -154,7 +160,7 @@ def context_for_prompt(ctx: WardrobeContext) -> dict[str, Any]:
     """The context block injected into the LLM prompt. Excludes
     candidate_item_ids — the items array carries per-item detail and the model
     cites by position, not id."""
-    return {
+    block: dict[str, Any] = {
         "scope": ctx.scope,
         "wardrobe_summary": ctx.wardrobe_summary,
         "style_profile": ctx.style_profile,
@@ -162,6 +168,11 @@ def context_for_prompt(ctx: WardrobeContext) -> dict[str, Any]:
         "recent_categories": ctx.recent_categories,
         "departure_time": ctx.departure_time,
     }
+    # BE#46 — include the durable preference memory only when populated (flag on),
+    # so a flag-off prompt is byte-identical to the legacy one.
+    if ctx.preference_memory.get("positive") or ctx.preference_memory.get("negative"):
+        block["user_preferences"] = ctx.preference_memory
+    return block
 
 
 def context_snapshot(ctx: WardrobeContext) -> dict[str, Any]:
