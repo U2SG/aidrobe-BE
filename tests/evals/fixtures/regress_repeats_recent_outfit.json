@@ -1,0 +1,36 @@
+{
+  "name": "regress_repeats_recent_outfit",
+  "description": "Regression guard: today's recommendation is item-identical to a recently worn outfit; recent_outfit_diversity must fire.",
+  "wardrobe": [
+    {"id": "62222222-0000-0000-0000-000000000001", "category": "top", "color": "blue", "fit": "regular"},
+    {"id": "62222222-0000-0000-0000-000000000002", "category": "bottom", "color": "khaki", "fit": "regular"}
+  ],
+  "user_preferences": {"negative": [], "positive": []},
+  "request": "今天穿什么",
+  "request_context": {},
+  "recent_outfits": [
+    {"item_ids": ["62222222-0000-0000-0000-000000000001", "62222222-0000-0000-0000-000000000002"]}
+  ],
+  "output": {
+    "recommendation_date": "2026-06-25",
+    "status": "ready",
+    "guidance_text": "今天还是这套稳妥的搭配",
+    "outfits": [
+      {
+        "outfit_id": "f2226222-0000-0000-0000-000000000001",
+        "type": "daily",
+        "title": "经典组合",
+        "reason": "蓝上衣配卡其裤，清爽好搭",
+        "items": [
+          {"item_id": "62222222-0000-0000-0000-000000000001", "category": "top", "display_role": "top"},
+          {"item_id": "62222222-0000-0000-0000-000000000002", "category": "bottom", "display_role": "bottom"}
+        ],
+        "reasoning": [
+          {"type": "category", "text": "上下身比例均衡，是稳妥的组合"}
+        ]
+      }
+    ]
+  },
+  "assertions": [],
+  "expect_failures": ["recent_outfit_diversity"]
+}

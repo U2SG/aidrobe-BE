@@ -1,0 +1,37 @@
+{
+  "name": "negative_preference_avoidance",
+  "description": "Issue example: user dislikes oversized shirts; the oversized shirt must be avoided and the copy should reference the avoidance.",
+  "wardrobe": [
+    {"id": "44444444-0000-0000-0000-000000000001", "category": "top", "color": "white", "fit": "oversized"},
+    {"id": "44444444-0000-0000-0000-000000000002", "category": "top", "color": "white", "fit": "regular"},
+    {"id": "44444444-0000-0000-0000-000000000003", "category": "bottom", "color": "navy", "fit": "regular"}
+  ],
+  "user_preferences": {"negative": ["oversized shirts"], "positive": []},
+  "request": "给我一套休闲穿搭",
+  "request_context": {},
+  "output": {
+    "recommendation_date": "2026-06-25",
+    "status": "ready",
+    "guidance_text": "避开你不爱的 oversized 版型，挑了合身的一套",
+    "outfits": [
+      {
+        "outfit_id": "dddd4444-0000-0000-0000-000000000001",
+        "type": "daily",
+        "title": "合身休闲",
+        "reason": "规整版型更利落，避开 oversized",
+        "items": [
+          {"item_id": "44444444-0000-0000-0000-000000000002", "category": "top", "display_role": "top"},
+          {"item_id": "44444444-0000-0000-0000-000000000003", "category": "bottom", "display_role": "bottom"}
+        ],
+        "reasoning": [
+          {"type": "fit", "text": "这些单品你穿着都合身"}
+        ]
+      }
+    ]
+  },
+  "assertions": [
+    {"type": "must_not_include_item", "item_id": "44444444-0000-0000-0000-000000000001"},
+    {"type": "no_attribute_value", "attribute": "fit", "values": ["oversized"]},
+    {"type": "must_reference_preference", "value": "oversized"}
+  ]
+}

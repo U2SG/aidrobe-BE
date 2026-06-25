@@ -1,0 +1,39 @@
+{
+  "name": "weather_suitability",
+  "description": "Cold + rainy forecast: copy must reflect the weather (outerwear / rain) and the look should include practical dark shoes.",
+  "wardrobe": [
+    {"id": "22222222-0000-0000-0000-000000000001", "category": "top", "color": "gray", "fit": "regular"},
+    {"id": "22222222-0000-0000-0000-000000000002", "category": "bottom", "color": "black", "fit": "regular"},
+    {"id": "22222222-0000-0000-0000-000000000003", "category": "outerwear", "color": "camel", "fit": "regular"},
+    {"id": "22222222-0000-0000-0000-000000000004", "category": "shoes", "color": "black", "fit": "regular"}
+  ],
+  "user_preferences": {"negative": [], "positive": []},
+  "request": "今天出门穿什么",
+  "request_context": {"weather": {"temperature_c": 6.0, "rain_probability": 0.7, "condition": "rain"}},
+  "output": {
+    "recommendation_date": "2026-06-25",
+    "status": "ready",
+    "guidance_text": "今天气温偏低还可能下雨，加件外套更稳妥",
+    "outfits": [
+      {
+        "outfit_id": "bbbb2222-0000-0000-0000-000000000001",
+        "type": "daily",
+        "title": "保暖防雨",
+        "reason": "外套压住寒意，深色鞋面耐脏好打理",
+        "items": [
+          {"item_id": "22222222-0000-0000-0000-000000000003", "category": "outerwear", "display_role": "outer"},
+          {"item_id": "22222222-0000-0000-0000-000000000001", "category": "top", "display_role": "top"},
+          {"item_id": "22222222-0000-0000-0000-000000000002", "category": "bottom", "display_role": "bottom"},
+          {"item_id": "22222222-0000-0000-0000-000000000004", "category": "shoes", "display_role": "shoes"}
+        ],
+        "reasoning": [
+          {"type": "weather", "text": "今天气温偏低，这件外层能压住寒意"},
+          {"type": "weather", "text": "今天可能有雨，这双深色鞋面更耐脏好打理"}
+        ]
+      }
+    ]
+  },
+  "assertions": [
+    {"type": "copy_contains", "label": "weather", "keywords": ["雨", "气温", "外套", "外层", "寒"]}
+  ]
+}

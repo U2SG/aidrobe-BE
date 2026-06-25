@@ -1,0 +1,41 @@
+{
+  "name": "recent_outfit_diversity",
+  "description": "Wear history exists; today's recommendation must not be item-identical to a recently worn outfit. Also exercises grounded reasoning + no hallucination.",
+  "wardrobe": [
+    {"id": "55555555-0000-0000-0000-000000000001", "category": "top", "color": "blue", "fit": "regular"},
+    {"id": "55555555-0000-0000-0000-000000000002", "category": "bottom", "color": "khaki", "fit": "regular"},
+    {"id": "55555555-0000-0000-0000-000000000003", "category": "top", "color": "green", "fit": "regular"},
+    {"id": "55555555-0000-0000-0000-000000000004", "category": "bottom", "color": "black", "fit": "regular"},
+    {"id": "55555555-0000-0000-0000-000000000005", "category": "shoes", "color": "white", "fit": "regular"}
+  ],
+  "user_preferences": {"negative": [], "positive": []},
+  "request": "今天穿什么",
+  "request_context": {},
+  "recent_outfits": [
+    {"item_ids": ["55555555-0000-0000-0000-000000000001", "55555555-0000-0000-0000-000000000002"]},
+    {"item_ids": ["55555555-0000-0000-0000-000000000003", "55555555-0000-0000-0000-000000000004"]}
+  ],
+  "output": {
+    "recommendation_date": "2026-06-25",
+    "status": "ready",
+    "guidance_text": "换个新鲜组合，避开最近常穿的搭配",
+    "outfits": [
+      {
+        "outfit_id": "eeee5555-0000-0000-0000-000000000001",
+        "type": "daily",
+        "title": "清爽新搭",
+        "reason": "绿上衣配卡其裤，最近没怎么穿",
+        "items": [
+          {"item_id": "55555555-0000-0000-0000-000000000003", "category": "top", "display_role": "top"},
+          {"item_id": "55555555-0000-0000-0000-000000000002", "category": "bottom", "display_role": "bottom"},
+          {"item_id": "55555555-0000-0000-0000-000000000005", "category": "shoes", "display_role": "shoes"}
+        ],
+        "reasoning": [
+          {"type": "wear_history", "text": "这件你最近没怎么穿，换个新鲜感"},
+          {"type": "category", "text": "上下身比例均衡，是稳妥的组合"}
+        ]
+      }
+    ]
+  },
+  "assertions": []
+}

@@ -1,0 +1,36 @@
+{
+  "name": "occasion_suitability",
+  "description": "Formal occasion: the recommendation copy must acknowledge the occasion keyword.",
+  "wardrobe": [
+    {"id": "33333333-0000-0000-0000-000000000001", "category": "top", "color": "white", "fit": "regular"},
+    {"id": "33333333-0000-0000-0000-000000000002", "category": "bottom", "color": "black", "fit": "regular"},
+    {"id": "33333333-0000-0000-0000-000000000003", "category": "shoes", "color": "black", "fit": "regular"}
+  ],
+  "user_preferences": {"negative": [], "positive": []},
+  "request": "晚上有个正式的商务晚宴，帮我搭一套",
+  "request_context": {"occasion": "formal"},
+  "output": {
+    "recommendation_date": "2026-06-25",
+    "status": "ready",
+    "guidance_text": "针对正式商务场合，整体偏沉稳得体",
+    "outfits": [
+      {
+        "outfit_id": "cccc3333-0000-0000-0000-000000000001",
+        "type": "occasion",
+        "title": "商务正装",
+        "reason": "黑白配色适合正式商务晚宴，干练得体",
+        "items": [
+          {"item_id": "33333333-0000-0000-0000-000000000001", "category": "top", "display_role": "top"},
+          {"item_id": "33333333-0000-0000-0000-000000000002", "category": "bottom", "display_role": "bottom"},
+          {"item_id": "33333333-0000-0000-0000-000000000003", "category": "shoes", "display_role": "shoes"}
+        ],
+        "reasoning": [
+          {"type": "category", "text": "上下身比例均衡，是稳妥的组合"}
+        ]
+      }
+    ]
+  },
+  "assertions": [
+    {"type": "copy_contains", "label": "occasion", "keywords": ["正式", "商务", "晚宴"]}
+  ]
+}

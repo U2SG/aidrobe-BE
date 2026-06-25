@@ -1,0 +1,37 @@
+{
+  "name": "focused_item_adherence",
+  "description": "When the user pins a focused item, every (or the primary) recommendation must build around it.",
+  "wardrobe": [
+    {"id": "11111111-0000-0000-0000-000000000001", "category": "top", "color": "white", "fit": "regular"},
+    {"id": "11111111-0000-0000-0000-000000000002", "category": "bottom", "color": "navy", "fit": "regular"},
+    {"id": "11111111-0000-0000-0000-000000000003", "category": "shoes", "color": "black", "fit": "regular"}
+  ],
+  "user_preferences": {"negative": [], "positive": ["navy"]},
+  "request": "围绕这件白衬衫给我搭一套",
+  "request_context": {"focused_item_id": "11111111-0000-0000-0000-000000000001"},
+  "output": {
+    "recommendation_date": "2026-06-25",
+    "status": "ready",
+    "guidance_text": "以白衬衫为核心，搭出清爽的一套",
+    "outfits": [
+      {
+        "outfit_id": "aaaa1111-0000-0000-0000-000000000001",
+        "type": "daily",
+        "title": "白衬衫通勤",
+        "reason": "白衬衫配深色裤装，干净利落",
+        "items": [
+          {"item_id": "11111111-0000-0000-0000-000000000001", "category": "top", "display_role": "top"},
+          {"item_id": "11111111-0000-0000-0000-000000000002", "category": "bottom", "display_role": "bottom"},
+          {"item_id": "11111111-0000-0000-0000-000000000003", "category": "shoes", "display_role": "shoes"}
+        ],
+        "reasoning": [
+          {"type": "category", "text": "上下身比例均衡，是稳妥的组合"},
+          {"type": "style_match", "text": "配色贴合你平时常穿的风格"}
+        ]
+      }
+    ]
+  },
+  "assertions": [
+    {"type": "must_include_item", "item_id": "11111111-0000-0000-0000-000000000001"}
+  ]
+}
