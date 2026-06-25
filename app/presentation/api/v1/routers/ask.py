@@ -27,6 +27,7 @@ from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url
 from app.presentation.api.v1.schemas.ask import (
+    AskConversationDeltas,
     AskHistoryItem,
     AskItemRefSnapshot,
     AskRequest,
@@ -77,6 +78,7 @@ async def ask(
         llm=llm,
         locale=payload.locale,
         focused_item_id=payload.focused_item_id,
+        conversation_id=payload.conversation_id,
     )
     # Reuse the locale answer_question already resolved (request > settings >
     # default) — no second settings query. Snapshot names use the request
@@ -87,12 +89,22 @@ async def ask(
         result.item_refs,
         locale=result.effective_locale,
     )
+    expose_conversation = get_settings().ENABLE_ASK_CONVERSATIONS
     return AskResponse(
         ask_session_id=result.ask_session_id,
+        conversation_id=result.conversation_id if expose_conversation else None,
         answer=result.answer,
         item_refs=result.item_refs,
         item_ref_snapshots=_to_schema(snapshots),
         tokens_used=result.tokens_used,
+        deltas=(
+            AskConversationDeltas(
+                reasoning=result.deltas.reasoning,
+                applied_constraints=result.deltas.applied_constraints,
+            )
+            if expose_conversation
+            else None
+        ),
     )
 
 

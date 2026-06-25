@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.llm import LlmAnswer
@@ -15,9 +16,13 @@ from app.application.preferences.memory import read_preference_memory
 from app.bootstrap.container import llm_service
 from app.common.enums import Category, ImageType, ItemStatus
 from app.config.settings import Settings, get_settings
+from app.infrastructure.persistence.models.ask_conversation import AskConversation
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
+from app.infrastructure.persistence.repositories.ask_conversation_repo import (
+    SqlAlchemyAskConversationRepository,
+)
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import ask as ask_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
@@ -395,6 +400,195 @@ async def test_ask_structured_persists_explicit_stated_preferences(
     # Read view confirms the shape too.
     memory = await read_preference_memory(repo, user_id)
     assert {e["value"] for e in memory["negative"]} == {"oversized shirts"}
+
+
+async def test_ask_conversation_initial_creation(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await _seed_user_and_items(db_session)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True, ENABLE_ASK_CONVERSATIONS=True)
+    structured = Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True)
+    monkeypatch.setattr("app.application.ask.answer_question.get_settings", lambda: structured)
+    llm = _FakeLlm(
+        text=(
+            '{"answer": "ok", "referenced_items": [], '
+            '"conversation_deltas": {"reasoning": "first outfit", '
+            '"applied_constraints": ["business casual"]}}'
+        )
+    )
+    app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True), llm=llm)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "Give me a business casual outfit"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    conversation_id = uuid.UUID(body["conversation_id"])
+    assert body["deltas"] == {
+        "reasoning": "first outfit",
+        "applied_constraints": ["business casual"],
+    }
+    repo = SqlAlchemyAskConversationRepository(db_session)
+    state = await repo.get_state(user_id, conversation_id)
+    assert state is not None
+    assert state.active_constraints == ["business casual"]
+    conversation = await repo.get_owned_conversation(user_id, conversation_id)
+    assert conversation is not None
+    assert conversation.message_count == 2  # one user + one assistant message
+
+
+async def test_ask_conversation_follow_up_uses_same_conversation(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await _seed_user_and_items(db_session)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True, ENABLE_ASK_CONVERSATIONS=True)
+    structured = Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True)
+    monkeypatch.setattr("app.application.ask.answer_question.get_settings", lambda: structured)
+    llm = _FakeLlm(
+        text=(
+            '{"answer": "ok", "referenced_items": [], '
+            '"conversation_deltas": {"reasoning": "refined", '
+            '"applied_constraints": ["more casual"]}}'
+        )
+    )
+    app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True), llm=llm)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        first = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "Start an outfit"},
+        )
+        conversation_id = first.json()["conversation_id"]
+        second = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "Make it more casual", "conversation_id": conversation_id},
+        )
+    assert second.status_code == 200
+    assert second.json()["conversation_id"] == conversation_id
+    assert llm.last_system_prompt is not None
+    assert '"conversation_state"' in llm.last_system_prompt
+    repo = SqlAlchemyAskConversationRepository(db_session)
+    state = await repo.get_state(user_id, uuid.UUID(conversation_id))
+    assert state is not None
+    assert "more casual" in state.active_constraints
+    conversation = await repo.get_owned_conversation(user_id, uuid.UUID(conversation_id))
+    assert conversation is not None
+    assert conversation.message_count == 4  # two turns x (user + assistant)
+
+
+async def test_ask_conversation_focused_item_rejection(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await _seed_user_and_items(db_session)
+    focus_id = await _seed_focused_item(db_session, user_id)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True, ENABLE_ASK_CONVERSATIONS=True)
+    structured = Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True)
+    monkeypatch.setattr("app.application.ask.answer_question.get_settings", lambda: structured)
+    # Rejection now comes from the STRUCTURED signal, not substring sniffing.
+    llm = _FakeLlm(
+        text=(
+            '{"answer": "ok", "referenced_items": [], '
+            '"conversation_deltas": {"rejected_focused_item": true}}'
+        )
+    )
+    app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True), llm=llm)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "不要这件，换一件", "focused_item_id": str(focus_id)},
+        )
+    assert resp.status_code == 200
+    assert "exclude focused item" in resp.json()["deltas"]["applied_constraints"]
+    assert llm.last_system_prompt is not None
+    # The focused item is now SHOWN this turn (it's the same prompt that carried
+    # the rejection signal back); durable exclusion takes effect next turn.
+    assert '"color_main": "beige"' in llm.last_system_prompt
+    state = await SqlAlchemyAskConversationRepository(db_session).get_state(
+        user_id, uuid.UUID(resp.json()["conversation_id"])
+    )
+    assert state is not None
+    assert state.rejected_item_ids == [str(focus_id)]
+
+
+async def test_ask_conversation_state_retrieval(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await _seed_user_and_items(db_session)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True, ENABLE_ASK_CONVERSATIONS=True)
+    structured = Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True)
+    monkeypatch.setattr("app.application.ask.answer_question.get_settings", lambda: structured)
+    app = _build_app(
+        db_session,
+        Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
+        llm=_FakeLlm(
+            text=(
+                '{"answer": "ok", "referenced_items": [], '
+                '"conversation_deltas": {"applied_constraints": ["rain"]}}'
+            )
+        ),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "What if it rains?", "context": {"scene": "commute"}},
+        )
+    conversation_id = uuid.UUID(resp.json()["conversation_id"])
+    repo = SqlAlchemyAskConversationRepository(db_session)
+    conversation = await repo.get_owned_conversation(user_id, conversation_id)
+    state = await repo.get_state(user_id, conversation_id)
+    assert conversation is not None
+    assert state is not None
+    assert state.conversation_id == conversation.id
+    assert state.active_constraints == ["rain", "scene:commute"]
+
+
+async def test_ask_conversation_flag_off_hides_response_fields_but_persists(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await _seed_user_and_items(db_session)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True, ENABLE_ASK_CONVERSATIONS=False)
+    structured = Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_STRUCTURED_OUTPUT=True)
+    monkeypatch.setattr("app.application.ask.answer_question.get_settings", lambda: structured)
+    app = _build_app(
+        db_session,
+        Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
+        llm=_FakeLlm(
+            text=(
+                '{"answer": "ok", "referenced_items": [], '
+                '"conversation_deltas": {"applied_constraints": ["hidden"]}}'
+            )
+        ),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "Start hidden conversation"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["conversation_id"] is None
+    assert body["deltas"] is None
+    persisted = await db_session.scalar(select(AskConversation).where(AskConversation.user_id == user_id))
+    assert persisted is not None
+    state = await SqlAlchemyAskConversationRepository(db_session).get_state(user_id, persisted.id)
+    assert state is not None
+    assert state.active_constraints == ["hidden"]
 
 
 async def test_ask_structured_parse_failure_keeps_text_drops_refs(

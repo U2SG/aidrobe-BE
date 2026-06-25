@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import date, timedelta
 
@@ -11,8 +12,8 @@ from app.application.ask.answer_question import (
     _build_system_prompt,
     _candidate_selection_meta,
     _curate_candidates,
+    _extract_structured,
     _item_to_sanitized,
-    _parse_structured,
     _preamble_for,
     _project_tokens,
     _resolve_lang,
@@ -26,6 +27,21 @@ from app.application.ask.wardrobe_context import (
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 _TODAY = date(2026, 6, 24)
+
+
+def _parse_structured(
+    text: str, item_count: int
+) -> tuple[str, list[int], list[dict[str, str]]] | None:
+    """Test shim: replicate the production parse-once path (json.loads + dict
+    guard) then delegate to `_extract_structured`, so these unit tests still
+    exercise the extraction logic by feeding a raw JSON string."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _extract_structured(data, item_count)
 
 
 def _items() -> list[WardrobeItem]:

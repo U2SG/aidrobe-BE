@@ -3004,6 +3004,20 @@ components:
           title: Time Left Minutes
       type: object
       title: AskContext
+    AskConversationDeltas:
+      properties:
+        reasoning:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reasoning
+        applied_constraints:
+          items:
+            type: string
+          type: array
+          title: Applied Constraints
+      type: object
+      title: AskConversationDeltas
     AskHistoryItem:
       properties:
         ask_session_id:
@@ -3096,6 +3110,12 @@ components:
             format: uuid
           - type: 'null'
           title: Focused Item Id
+        conversation_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Conversation Id
       type: object
       required:
       - question
@@ -3106,6 +3126,12 @@ components:
           type: string
           format: uuid
           title: Ask Session Id
+        conversation_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Conversation Id
         answer:
           type: string
           title: Answer
@@ -3122,6 +3148,10 @@ components:
         tokens_used:
           type: integer
           title: Tokens Used
+        deltas:
+          anyOf:
+          - $ref: '#/components/schemas/AskConversationDeltas'
+          - type: 'null'
       type: object
       required:
       - ask_session_id

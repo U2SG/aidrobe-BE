@@ -124,22 +124,30 @@ def _filter(value: Any) -> Any:
 # chars / newlines and hard-cap length so prompt-injection text can't be
 # promoted into trusted memory or smuggled into a prompt.
 _PREFERENCE_VALUE_MAX_LEN = 120
+_LLM_TEXT_MAX_LEN = 2000
+
+
+def sanitize_llm_text(value: str, *, max_len: int = _LLM_TEXT_MAX_LEN) -> str:
+    """Bound arbitrary text before it is sent to an LLM.
+
+    Strips control characters (incl. newlines, the vehicle for multi-line
+    prompt-injection payloads), collapses runs of whitespace, and enforces a
+    hard length cap. Returns "" for non-strings / empties so callers can drop
+    the value rather than keep a junk one.
+    """
+    if not isinstance(value, str):
+        return ""
+    cleaned = "".join(ch for ch in value if ch.isprintable())
+    cleaned = " ".join(cleaned.split())
+    return cleaned[:max_len].strip()
 
 
 def sanitize_preference_value(value: str) -> str:
     """Normalize a user-stated preference value for storage + prompt use.
 
-    Collapses internal whitespace (newlines included, so injected instructions
-    on their own lines lose their structure), strips control characters, and
-    hard-caps length. Returns "" for non-strings / empties so callers can drop
-    the preference rather than store a junk row."""
-    if not isinstance(value, str):
-        return ""
-    # Drop C0/C1 control chars (incl. newlines, tabs) — they're the vehicle for
-    # multi-line prompt-injection payloads.
-    cleaned = "".join(ch for ch in value if ch.isprintable())
-    cleaned = " ".join(cleaned.split())  # collapse runs of whitespace
-    return cleaned[:_PREFERENCE_VALUE_MAX_LEN].strip()
+    Same normalization as `sanitize_llm_text`, with the tighter preference-value
+    length cap so injected instructions can't be promoted into trusted memory."""
+    return sanitize_llm_text(value, max_len=_PREFERENCE_VALUE_MAX_LEN)
 
 
 def attach_user_token(payload: dict[str, Any], user_id: uuid.UUID) -> dict[str, Any]:

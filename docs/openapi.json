@@ -5114,6 +5114,30 @@
         "type": "object",
         "title": "AskContext"
       },
+      "AskConversationDeltas": {
+        "properties": {
+          "reasoning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning"
+          },
+          "applied_constraints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Applied Constraints"
+          }
+        },
+        "type": "object",
+        "title": "AskConversationDeltas"
+      },
       "AskHistoryItem": {
         "properties": {
           "ask_session_id": {
@@ -5246,6 +5270,18 @@
               }
             ],
             "title": "Focused Item Id"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
           }
         },
         "type": "object",
@@ -5260,6 +5296,18 @@
             "type": "string",
             "format": "uuid",
             "title": "Ask Session Id"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
           },
           "answer": {
             "type": "string",
@@ -5282,6 +5330,16 @@
           "tokens_used": {
             "type": "integer",
             "title": "Tokens Used"
+          },
+          "deltas": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskConversationDeltas"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",

@@ -18,7 +18,7 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from sqlalchemy import func, nulls_last, select
@@ -43,10 +43,17 @@ from app.common.enums import ItemStatus
 from app.common.exceptions import FriendlyException
 from app.common.locale import lang_subtag, resolve_locale
 from app.config.settings import get_settings
-from app.infrastructure.llm.sanitizer import hash_user_token, sanitize_for_llm
+from app.infrastructure.llm.sanitizer import hash_user_token, sanitize_for_llm, sanitize_llm_text
+from app.infrastructure.persistence.models.ask_conversation import (
+    AskConversationState,
+    AskMessage,
+)
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.user import UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.repositories.ask_conversation_repo import (
+    SqlAlchemyAskConversationRepository,
+)
 from app.infrastructure.persistence.repositories.ask_repo import SqlAlchemyAskRepository
 from app.infrastructure.persistence.repositories.preference_memory_repo import (
     SqlAlchemyPreferenceMemoryRepository,
@@ -81,6 +88,28 @@ _MAX_STYLE_TAG_LEN = 50
 _BASE_PROJECTED_TOKENS = 400
 _TOKENS_PER_ITEM = 45
 _JOB_TYPE = "llm_ask"
+_CONVERSATION_SUMMARY_THRESHOLD = 8
+_RECENT_MESSAGES_TO_KEEP = 6
+# Bound the summarizer reload: older messages are already folded into the
+# carried-forward `summary`, so a fixed window of the most recent messages is
+# enough. Keeps the path from reloading an ever-growing conversation.
+_MAX_MESSAGES_TO_SUMMARIZE = 40
+_MAX_CONVERSATION_SUMMARY_LEN = 600
+_MAX_CONSTRAINTS = 8
+_MAX_CONSTRAINT_LEN = 120
+_REFINEMENT_MARKERS = (
+    "更",
+    "再",
+    "换",
+    "more",
+    "less",
+    "casual",
+    "formal",
+    "warmer",
+    "cooler",
+    "brighter",
+    "darker",
+)
 
 
 def _project_tokens(item_count: int) -> int:
@@ -153,6 +182,20 @@ _STRUCTURED_INSTRUCTION: dict[str, str] = {
     ),
 }
 
+_CONVERSATION_DELTAS_INSTRUCTION: dict[str, str] = {
+    "zh": (
+        '"conversation_deltas": {"reasoning": "一句话说明如何延续上一轮", '
+        '"applied_constraints": ["本轮临时约束"], '
+        '"rejected_focused_item": 仅当用户明确表示不要/换掉当前聚焦的那件单品时为 true，否则为 false}'
+    ),
+    "en": (
+        '"conversation_deltas": {"reasoning": "one sentence on how this refines the previous turn", '
+        '"applied_constraints": ["temporary constraints applied this turn"], '
+        '"rejected_focused_item": true only when the user explicitly rejects / wants to swap out the '
+        "focused item, otherwise false}"
+    ),
+}
+
 
 def _resolve_lang(locale: str | None, settings_locale: str | None = None) -> str:
     # BE#30 — request locale wins, else the user's persisted settings locale,
@@ -166,11 +209,22 @@ def _preamble_for(locale: str | None) -> str:
 
 
 @dataclass(frozen=True)
+class ConversationDeltas:
+    reasoning: str | None
+    applied_constraints: list[str]
+    # BE#47 — structured "user rejected the focused item this turn" signal. The
+    # trusted source for durable rejection (never substring-sniffed free text).
+    rejected_focused_item: bool = False
+
+
+@dataclass(frozen=True)
 class AskResult:
     ask_session_id: uuid.UUID
+    conversation_id: uuid.UUID
     answer: str
     item_refs: list[str]
     tokens_used: int
+    deltas: ConversationDeltas
     # Effective BCP-47 locale (request > settings > default) already resolved
     # here, so the router can build snapshots without re-querying settings.
     effective_locale: str
@@ -390,13 +444,16 @@ def _build_system_prompt(
     prompt = preamble + json.dumps(payload, ensure_ascii=False)
     if structured:
         prompt += _STRUCTURED_INSTRUCTION.get(lang, _STRUCTURED_INSTRUCTION[_DEFAULT_LANG])
+        prompt += _CONVERSATION_DELTAS_INSTRUCTION.get(
+            lang, _CONVERSATION_DELTAS_INSTRUCTION[_DEFAULT_LANG]
+        )
     return prompt
 
 
-def _parse_structured(
-    text: str, item_count: int
+def _extract_structured(
+    data: dict[str, Any], item_count: int
 ) -> tuple[str, list[int], list[dict[str, str]]] | None:
-    """Parse the structured-output envelope.
+    """Extract the structured-output envelope from an already-parsed dict.
 
     Returns (answer_text, validated 0-based item indices, stated_preferences) or
     None when the response isn't the expected JSON shape. Positions are 1-based
@@ -404,12 +461,6 @@ def _parse_structured(
     else is a hallucinated reference and is dropped. `stated_preferences` is a
     best-effort list of {type, value, polarity} string dicts; the write path
     re-validates each, so anything malformed is simply not persisted."""
-    try:
-        data = json.loads(text)
-    except ValueError:  # JSONDecodeError is a ValueError subclass
-        return None
-    if not isinstance(data, dict):
-        return None
     answer = data.get("answer")
     refs = data.get("referenced_items", [])
     if not isinstance(answer, str) or not isinstance(refs, list):
@@ -434,6 +485,139 @@ def _parse_structured(
     return answer, indices, preferences
 
 
+def _extract_conversation_deltas(data: dict[str, Any]) -> ConversationDeltas:
+    raw = data.get("conversation_deltas")
+    if not isinstance(raw, dict):
+        return ConversationDeltas(reasoning=None, applied_constraints=[])
+    reasoning = raw.get("reasoning")
+    constraints = raw.get("applied_constraints", [])
+    return ConversationDeltas(
+        reasoning=sanitize_llm_text(reasoning, max_len=240) if isinstance(reasoning, str) else None,
+        applied_constraints=_sanitize_constraint_list(constraints),
+        rejected_focused_item=raw.get("rejected_focused_item") is True,
+    )
+
+
+def _sanitize_constraint_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    out: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        cleaned = sanitize_llm_text(value, max_len=_MAX_CONSTRAINT_LEN)
+        if cleaned and cleaned not in out:
+            out.append(cleaned)
+    return out[:_MAX_CONSTRAINTS]
+
+
+def _json_str_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    out: list[str] = []
+    for value in values:
+        text = str(value)
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def _merge_unique(existing: list[str], additions: list[str], *, limit: int) -> list[str]:
+    out: list[str] = []
+    for value in existing + additions:
+        if value and value not in out:
+            out.append(value)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _remove_values(values: list[str], removals: set[str]) -> list[str]:
+    return [value for value in values if value not in removals]
+
+
+def _matches_any(text: str, markers: tuple[str, ...]) -> bool:
+    low = text.lower()
+    return any(m in low for m in markers)
+
+
+def _conversation_state_for_prompt(
+    state: AskConversationState | None, items: list[WardrobeItem]
+) -> dict[str, Any]:
+    if state is None:
+        return {}
+    item_positions = {str(item.id): index + 1 for index, item in enumerate(items)}
+
+    def _positions(ids: list[str]) -> list[int]:
+        return [item_positions[i] for i in ids if i in item_positions]
+
+    block: dict[str, Any] = {}
+    if state.summary:
+        summary = sanitize_llm_text(state.summary, max_len=_MAX_CONVERSATION_SUMMARY_LEN)
+        if summary:
+            block["summary"] = summary
+    constraints = _sanitize_constraint_list(state.active_constraints or [])
+    if constraints:
+        block["active_constraints"] = constraints
+    rejected_positions = _positions(_json_str_list(state.rejected_item_ids))
+    if rejected_positions:
+        block["rejected_item_positions"] = rejected_positions
+    preferred_positions = _positions(_json_str_list(state.preferred_item_ids))
+    if preferred_positions:
+        block["preferred_item_positions"] = preferred_positions
+    if isinstance(state.last_outfit, dict):
+        last_positions = _positions(_json_str_list(state.last_outfit.get("item_refs")))
+        if last_positions:
+            block["last_outfit_positions"] = last_positions
+    return block
+
+
+def _heuristic_constraints(
+    *,
+    question: str,
+    context: dict[str, Any] | None,
+    is_follow_up: bool,
+    rejected_item: bool,
+) -> list[str]:
+    constraints: list[str] = []
+    if context:
+        scene = context.get("scene")
+        if isinstance(scene, str):
+            cleaned = sanitize_llm_text(scene, max_len=60)
+            if cleaned:
+                constraints.append(f"scene:{cleaned}")
+        minutes = context.get("time_left_minutes")
+        if isinstance(minutes, int):
+            constraints.append(f"time_left_minutes:{minutes}")
+    if rejected_item:
+        constraints.append("exclude focused item")
+    elif is_follow_up and _matches_any(question, _REFINEMENT_MARKERS):
+        cleaned = sanitize_llm_text(question, max_len=_MAX_CONSTRAINT_LEN)
+        if cleaned:
+            constraints.append(cleaned)
+    return _merge_unique([], constraints, limit=_MAX_CONSTRAINTS)
+
+
+def _summarize_old_messages(
+    previous_summary: str | None, messages: list[AskMessage]
+) -> str | None:
+    if not messages and not previous_summary:
+        return None
+    parts: list[str] = []
+    if previous_summary:
+        cleaned_previous = sanitize_llm_text(
+            previous_summary, max_len=_MAX_CONVERSATION_SUMMARY_LEN // 2
+        )
+        if cleaned_previous:
+            parts.append(cleaned_previous)
+    for message in messages:
+        content = sanitize_llm_text(message.content, max_len=90)
+        if content:
+            parts.append(f"{message.role}:{content}")
+    summary = " | ".join(parts)
+    return summary[:_MAX_CONVERSATION_SUMMARY_LEN] or None
+
+
 async def answer_question(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -443,6 +627,7 @@ async def answer_question(
     llm: LlmPort,
     locale: str | None = None,
     focused_item_id: uuid.UUID | None = None,
+    conversation_id: uuid.UUID | None = None,
 ) -> AskResult:
     # Validate the focused item before any quota/LLM work. Per repo convention
     # a non-owned (or soft-deleted) resource returns 404 — never reveal that
@@ -456,6 +641,32 @@ async def answer_question(
                 "Item not found",
                 status_code=404,
             )
+    sanitized_question = sanitize_llm_text(question)
+
+    conversation_repo = SqlAlchemyAskConversationRepository(session)
+    if conversation_id is not None:
+        conversation = await conversation_repo.get_owned_conversation(user_id, conversation_id)
+        if conversation is None:
+            raise FriendlyException(
+                error_codes.NOT_FOUND,
+                "Conversation not found",
+                status_code=404,
+            )
+    else:
+        conversation = await conversation_repo.create_conversation(
+            user_id=user_id,
+            title=sanitize_llm_text(question, max_len=80) or None,
+        )
+    conversation_state = await conversation_repo.get_state(user_id, conversation.id)
+    # Rejection is derived from the STRUCTURED model output post-call, never from
+    # substring-sniffing free text (that misfired on phrases like "不要太正式").
+    # The DURABLE rejected_item_ids (persisted from a prior turn's structured
+    # signal) still drive same-turn pool exclusion here. Computed once and reused
+    # for the merge-back below.
+    rejected_item_ids = _json_str_list(
+        conversation_state.rejected_item_ids if conversation_state else None
+    )
+    existing_rejected_ids = set(rejected_item_ids)
 
     # Priority order: most-worn / most-recent first. NULLs-last keeps never-worn
     # items from sorting to the top under DESC. Reused for the per-category
@@ -491,8 +702,12 @@ async def answer_question(
             .order_by(*priority_order)
         )
     )
+    if existing_rejected_ids:
+        pool = [item for item in pool if str(item.id) not in existing_rejected_ids]
     # Curate to a stable, explainable set; the focused item (if any) is pinned
-    # first even when it's not wearable or fell outside the fetch cap.
+    # first even when it's not wearable or fell outside the fetch cap. It is
+    # always shown this turn — whether the user rejects it is only known after
+    # the call, from the structured signal.
     items = _curate_candidates(pool, focused_item, max_items=_MAX_ITEMS)
     today = datetime.now(UTC).date()
 
@@ -522,14 +737,15 @@ async def answer_question(
         session,
         user_id,
         items=items,
-        focused_item_id=focused_item_id,
+        focused_item_id=focused_item.id if focused_item is not None else None,
         locale=_resolve_lang(locale, settings_locale),
         today=today,
         candidate_selection=_candidate_selection_meta(items, focused_item),
         preference_memory=preference_memory,
+        conversation_state=_conversation_state_for_prompt(conversation_state, items),
     )
     system_prompt = _build_system_prompt(user_id, items, ctx, today, structured=structured)
-    answer = await llm.ask(system_prompt, question, json_mode=structured)
+    answer = await llm.ask(system_prompt, sanitized_question or question, json_mode=structured)
 
     if not answer.text:
         # Provider not configured (LLM_PROVIDER=none) — degrade gracefully.
@@ -541,37 +757,73 @@ async def answer_question(
 
     answer_text = answer.text
     item_refs: list[str]
-    # BE#28 — item_refs must mean "items the model actually cited" (structured
-    # success) or, failing that, only the explicitly focused item. We never
-    # echo back the full candidate set: it implies references the model never
-    # made and pollutes downstream snapshotting/analytics. The fallback (no
-    # focus -> empty) is shared by the parse-failure and flag-off branches.
-    fallback_refs = [str(focused_item.id)] if focused_item is not None else []
     # Preferences the user explicitly stated this turn — only the structured
     # path can surface them reliably; empty everywhere else.
     stated_preferences: list[dict[str, str]] = []
+    # Rejection of the focused item comes ONLY from the structured channel; with
+    # structured off / parse failed we leave durable rejection untouched rather
+    # than guess from substrings.
+    focus_is_rejection = False
     if structured:
-        parsed = _parse_structured(answer.text, len(items))
+        # Parse the JSON envelope exactly once; feed both the item/preference
+        # extractor and the conversation-deltas extractor from the same dict.
+        try:
+            parsed_data = json.loads(answer.text)
+        except ValueError:  # JSONDecodeError is a ValueError subclass
+            parsed_data = None
+        parsed = (
+            _extract_structured(parsed_data, len(items))
+            if isinstance(parsed_data, dict)
+            else None
+        )
         if parsed is None:
             # The model ignored the JSON contract (distinct from a provider
             # error, which surfaces above as empty text). Stay honest: keep the
             # raw text as the answer but fall back to the focused item only.
             logger.warning("ask.structured_output.parse_failed")
-            item_refs = fallback_refs
+            item_refs = [str(focused_item.id)] if focused_item is not None else []
+            parsed_deltas = ConversationDeltas(reasoning=None, applied_constraints=[])
         else:
             answer_text, indices, stated_preferences = parsed
             item_refs = [str(items[i].id) for i in indices]
+            parsed_deltas = _extract_conversation_deltas(cast(dict[str, Any], parsed_data))
+        focus_is_rejection = focused_item_id is not None and parsed_deltas.rejected_focused_item
     else:
         # Structured output disabled: we can't tell which items the model
         # cited, so item_refs degrades to the focused item only (or empty).
         logger.warning("ask.structured_output.disabled", item_refs_quality="limited")
-        item_refs = fallback_refs
+        item_refs = [str(focused_item.id)] if focused_item is not None else []
+        parsed_deltas = ConversationDeltas(reasoning=None, applied_constraints=[])
     tokens_used = answer.tokens_used
+    heuristic_constraints = _heuristic_constraints(
+        question=sanitized_question,
+        context=context,
+        is_follow_up=conversation_state is not None,
+        rejected_item=focus_is_rejection,
+    )
+    response_deltas = ConversationDeltas(
+        reasoning=parsed_deltas.reasoning,
+        applied_constraints=_merge_unique(
+            parsed_deltas.applied_constraints,
+            heuristic_constraints,
+            limit=_MAX_CONSTRAINTS,
+        ),
+    )
 
     # Persist the context snapshot alongside the client-supplied context
     # (date/scene/time_left) so the answer stays traceable to the wardrobe
     # state it was grounded in.
-    persisted_context = {**(context or {}), "snapshot": context_snapshot(ctx)}
+    persisted_context = {
+        **(context or {}),
+        "snapshot": context_snapshot(ctx),
+        "conversation": {
+            "conversation_id": str(conversation.id),
+            "deltas": {
+                "reasoning": response_deltas.reasoning,
+                "applied_constraints": response_deltas.applied_constraints,
+            },
+        },
+    }
 
     # Record cost on async_jobs — the cost-guard ground truth. Inline work,
     # so we write a terminal `succeeded` row directly rather than enqueue.
@@ -594,6 +846,63 @@ async def answer_question(
             attempts=1,
             cost_tokens=tokens_used,
         )
+    )
+
+    await conversation_repo.append_message(
+        conversation=conversation,
+        role="user",
+        content=question,
+        ask_session_id=ask_row.id,
+        message_metadata={
+            "focused_item_id": str(focused_item_id) if focused_item_id is not None else None,
+            "focused_item_rejected": focus_is_rejection,
+        },
+    )
+    await conversation_repo.append_message(
+        conversation=conversation,
+        role="assistant",
+        content=answer_text,
+        ask_session_id=ask_row.id,
+        message_metadata={"item_refs": item_refs},
+    )
+
+    existing_constraints = _sanitize_constraint_list(
+        conversation_state.active_constraints if conversation_state else []
+    )
+    active_constraints = _merge_unique(
+        existing_constraints,
+        response_deltas.applied_constraints,
+        limit=_MAX_CONSTRAINTS,
+    )
+    preferred_item_ids = _json_str_list(conversation_state.preferred_item_ids if conversation_state else None)
+    if focused_item_id is not None:
+        focused_id_text = str(focused_item_id)
+        if focus_is_rejection:
+            rejected_item_ids = _merge_unique(rejected_item_ids, [focused_id_text], limit=200)
+            preferred_item_ids = _remove_values(preferred_item_ids, {focused_id_text})
+        else:
+            preferred_item_ids = _merge_unique(preferred_item_ids, [focused_id_text], limit=200)
+            rejected_item_ids = _remove_values(rejected_item_ids, {focused_id_text})
+    summary = conversation_state.summary if conversation_state is not None else None
+    if conversation.message_count > _CONVERSATION_SUMMARY_THRESHOLD:
+        messages = await conversation_repo.list_messages(
+            user_id, conversation.id, limit=_MAX_MESSAGES_TO_SUMMARIZE
+        )
+        summary = _summarize_old_messages(
+            summary,
+            messages[:-_RECENT_MESSAGES_TO_KEEP],
+        )
+    await conversation_repo.upsert_state(
+        conversation=conversation,
+        state=conversation_state,
+        last_outfit={
+            "item_refs": item_refs,
+            "answer": sanitize_llm_text(answer_text, max_len=240),
+        },
+        active_constraints=active_constraints,
+        rejected_item_ids=rejected_item_ids,
+        preferred_item_ids=preferred_item_ids,
+        summary=summary,
     )
 
     # BE#46 — trusted write path: persist preferences the user EXPLICITLY stated
@@ -623,9 +932,11 @@ async def answer_question(
 
     return AskResult(
         ask_session_id=ask_row.id,
+        conversation_id=conversation.id,
         answer=answer_text,
         item_refs=item_refs,
         tokens_used=tokens_used,
+        deltas=response_deltas,
         effective_locale=effective_locale,
     )
 
