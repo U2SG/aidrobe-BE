@@ -66,6 +66,21 @@ def _client(app: FastAPI) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
 
 
+class _SigningStub:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def sign_render_url(
+        self,
+        key: str,
+        *,
+        ttl_seconds: int = 1800,
+        process: str | None = None,
+    ) -> str:
+        self.calls.append(key)
+        return f"https://signed.local/{key}?token=stub"
+
+
 async def _seed_user(session: AsyncSession, user_id: uuid.UUID) -> None:
     if await session.scalar(select(User).where(User.id == user_id)) is None:
         session.add(User(id=user_id))
@@ -232,6 +247,81 @@ async def test_sense_check_persists_and_history_returns_it(
     )
     assert row is not None
     assert row.verdict == post.json()["verdict"]
+    assert row.object_key is None
+
+
+async def test_sense_check_persists_internal_object_key_and_history_signs(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_flag(monkeypatch)
+    signing_stub = _SigningStub()
+    monkeypatch.setattr(
+        "app.bootstrap.container.object_storage", lambda: signing_stub
+    )
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    app = _build_app(db_session)
+    image_url = "http://localhost:9000/local/files/wardrobe/abc/shirt.jpg"
+
+    async with _client(app) as client:
+        post = await client.post(
+            "/v1/shopping/sense-check",
+            headers={"X-User-Id": str(user_id)},
+            json={"image_url": image_url},
+        )
+        assert post.status_code == 200, post.text
+        hist = await client.get(
+            "/v1/shopping/history",
+            headers={"X-User-Id": str(user_id)},
+        )
+
+    assert hist.status_code == 200, hist.text
+    items = hist.json()["items"]
+    assert (
+        items[0]["image_url"]
+        == "https://signed.local/wardrobe/abc/shirt.jpg?token=stub"
+    )
+    assert signing_stub.calls == ["wardrobe/abc/shirt.jpg"]
+
+    row = await db_session.scalar(
+        select(ShoppingSenseCheck).where(ShoppingSenseCheck.user_id == user_id)
+    )
+    assert row is not None
+    assert row.object_key == "wardrobe/abc/shirt.jpg"
+
+
+async def test_history_with_legacy_raw_image_url_does_not_sign(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_flag(monkeypatch)
+    signing_stub = _SigningStub()
+    monkeypatch.setattr(
+        "app.bootstrap.container.object_storage", lambda: signing_stub
+    )
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    record = ShoppingSenseCheck(
+        user_id=user_id,
+        image_url="https://cdn.example.com/raw.jpg",
+        object_key=None,
+        source_url=None,
+        verdict="consider",
+        reason="Looks usable.",
+        payload={"similar_items": [], "wardrobe_gap": [], "outfit_potential": 0},
+    )
+    db_session.add(record)
+    await db_session.flush()
+
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        hist = await client.get(
+            "/v1/shopping/history",
+            headers={"X-User-Id": str(user_id)},
+        )
+
+    assert hist.status_code == 200, hist.text
+    assert hist.json()["items"][0]["image_url"] == "https://cdn.example.com/raw.jpg"
+    assert signing_stub.calls == []
 
 
 async def test_history_flag_off_returns_503(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:

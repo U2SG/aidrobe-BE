@@ -28,10 +28,12 @@ from app.application.ports.vision import VisionPort, VisionResult
 from app.common import error_codes
 from app.common.enums import Category, ItemStatus
 from app.common.exceptions import FriendlyException
+from app.config.settings import get_settings
 from app.infrastructure.importers.link_parser import _is_safe_url
 from app.infrastructure.persistence.models.embedding import ItemEmbedding
 from app.infrastructure.persistence.models.shopping import ShoppingSenseCheck
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.storage.object_key import extract_internal_object_key
 
 # Similarity scores assigned by the deterministic fallback path. Real cosine
 # scores (pgvector branch) override these when available.
@@ -101,7 +103,6 @@ class SenseCheck:
             assert source_url is not None
             if not _is_safe_url(source_url):
                 raise FriendlyException(error_codes.VALIDATION_ERROR, "Unsafe URL", status_code=400)
-            from app.config.settings import get_settings
             from app.infrastructure.importers.router import RoutedLinkParser
 
             parser = RoutedLinkParser(get_settings())
@@ -323,6 +324,7 @@ class SenseCheck:
         record = ShoppingSenseCheck(
             user_id=user_id,
             image_url=image_url,
+            object_key=extract_internal_object_key(image_url, get_settings()),
             source_url=source_url,
             verdict=result.verdict,
             reason=result.reason,

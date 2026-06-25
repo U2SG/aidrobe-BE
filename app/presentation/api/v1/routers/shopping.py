@@ -20,6 +20,7 @@ from app.infrastructure.persistence.models.shopping import ShoppingSenseCheck
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
+from app.presentation.api.v1.render_url import resolve_render_url
 from app.presentation.api.v1.schemas.shopping import (
     SenseCheckHistoryItem,
     SenseCheckHistoryResponse,
@@ -53,7 +54,7 @@ def _history_item(record: ShoppingSenseCheck) -> SenseCheckHistoryItem:
         sense_check_id=record.id,
         verdict=record.verdict,
         reason=record.reason,
-        image_url=record.image_url,
+        image_url=resolve_render_url(record.object_key, record.image_url),
         source_url=record.source_url,
         similar_items=similar,
         wardrobe_gap=payload.get("wardrobe_gap", []) if isinstance(payload, dict) else [],
