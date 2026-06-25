@@ -2915,6 +2915,71 @@
         }
       }
     },
+    "/v1/insights/wardrobe-health": {
+      "get": {
+        "tags": [
+          "insights"
+        ],
+        "summary": "Wardrobe Health Score",
+        "operationId": "wardrobe_health_score_v1_insights_wardrobe_health_get",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WardrobeHealthResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/insights/reports/{period}": {
       "get": {
         "tags": [
@@ -10265,6 +10330,65 @@
           "condition"
         ],
         "title": "WeatherContextResponse"
+      },
+      "WardrobeHealthInsightItem": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "severity",
+          "title",
+          "action"
+        ],
+        "title": "WardrobeHealthInsightItem"
+      },
+      "WardrobeHealthResponse": {
+        "properties": {
+          "score": {
+            "type": "integer",
+            "title": "Score"
+          },
+          "level": {
+            "type": "string",
+            "title": "Level"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "insights": {
+            "items": {
+              "$ref": "#/components/schemas/WardrobeHealthInsightItem"
+            },
+            "type": "array",
+            "title": "Insights"
+          }
+        },
+        "type": "object",
+        "required": [
+          "score",
+          "level",
+          "summary",
+          "insights"
+        ],
+        "title": "WardrobeHealthResponse"
       }
     }
   }

@@ -233,6 +233,9 @@ class Settings(BaseSettings):
     # Pure aggregation over existing wear/item data; off by default. The flag
     # only gates exposure of GET /v1/insights/reports/{period} (503 when off).
     ENABLE_WARDROBE_REPORT: bool = False
+    # BE#49 wardrobe health score. Pure aggregation over existing item and
+    # wear-history data; endpoint returns 503 while disabled.
+    ENABLE_WARDROBE_HEALTH: bool = False
 
     # V4 M17 Shopping Sense-Check — purchase evaluation endpoints. Off by
     # default; sense-check history persists regardless of the flag, the flag

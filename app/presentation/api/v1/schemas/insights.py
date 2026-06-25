@@ -113,3 +113,17 @@ class WardrobeReportResponse(BaseModel):
     highest_cost_per_wear: ReportCostPerWear | None = None
     longest_idle_item: ReportIdleItem | None = None
     recommendation_adoption_rate: float
+
+
+class WardrobeHealthInsightItem(BaseModel):
+    type: str
+    severity: str
+    title: str
+    action: str
+
+
+class WardrobeHealthResponse(BaseModel):
+    score: int
+    level: str
+    summary: str
+    insights: list[WardrobeHealthInsightItem]
