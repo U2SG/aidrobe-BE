@@ -32,6 +32,7 @@ from app.application.ask.wardrobe_context import (
 )
 from app.application.cost_guard import assert_within_quota
 from app.application.ports.llm import LlmPort
+from app.application.preferences.memory import read_preference_memory
 from app.common import error_codes
 from app.common.enums import ItemStatus
 from app.common.exceptions import FriendlyException
@@ -42,6 +43,9 @@ from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.user import UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.ask_repo import SqlAlchemyAskRepository
+from app.infrastructure.persistence.repositories.preference_memory_repo import (
+    SqlAlchemyPreferenceMemoryRepository,
+)
 
 # Cap the number of items injected so the prompt stays lightweight and cheap.
 _MAX_ITEMS = 80
@@ -457,7 +461,17 @@ async def answer_question(
     # redis_client) so tests are deterministic; no-op when ENABLE_COST_GUARD off.
     await assert_within_quota(session, user_id, _JOB_TYPE, cost_tokens=_project_tokens(len(items)))
 
-    structured = get_settings().ENABLE_ASK_STRUCTURED_OUTPUT
+    settings = get_settings()
+    structured = settings.ENABLE_ASK_STRUCTURED_OUTPUT
+    # BE#46 — durable preference memory, read only when the flag is on. Rows are
+    # written regardless of the flag; gating the READ keeps a flip a clean
+    # rollback. Values are bounded at write time, so they go straight into the
+    # context block built above.
+    preference_memory: dict[str, list[dict[str, Any]]] = {}
+    if settings.ENABLE_PREFERENCE_MEMORY:
+        preference_memory = await read_preference_memory(
+            SqlAlchemyPreferenceMemoryRepository(session), user_id
+        )
     # BE#30 — when the request omits a locale, fall back to the user's
     # persisted settings locale (then the zh-CN default) so the answer
     # language tracks the user's UI choice.
@@ -471,6 +485,7 @@ async def answer_question(
         locale=_resolve_lang(locale, settings_locale),
         today=today,
         candidate_selection=_candidate_selection_meta(items, focused_item),
+        preference_memory=preference_memory,
     )
     system_prompt = _build_system_prompt(user_id, items, ctx, today, structured=structured)
     answer = await llm.ask(system_prompt, question, json_mode=structured)

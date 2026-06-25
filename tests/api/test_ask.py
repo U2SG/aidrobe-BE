@@ -768,3 +768,84 @@ async def test_ask_429_when_quota_exhausted(
             json={"question": "今天穿什么？"},
         )
     assert resp.status_code == 429
+
+
+async def test_ask_injects_preference_memory_when_flag_on(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BE#46 — when ENABLE_PREFERENCE_MEMORY is on, the user's durable
+    {positive, negative} memory reaches the LLM prompt under `user_preferences`.
+    The flag is read in answer_question.get_settings (lru-cached), so patch it."""
+    from app.application.preferences.memory import SOURCE_EXPLICIT, record_preference
+    from app.infrastructure.persistence.repositories.preference_memory_repo import (
+        SqlAlchemyPreferenceMemoryRepository,
+    )
+
+    user_id = await _seed_user_and_items(db_session)
+    await record_preference(
+        SqlAlchemyPreferenceMemoryRepository(db_session),
+        user_id=user_id,
+        preference_type="fit",
+        preference_value="oversized shirts",
+        polarity="negative",
+        confidence=0.95,
+        source=SOURCE_EXPLICIT,
+    )
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    enabled = Settings(
+        APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_PREFERENCE_MEMORY=True
+    )
+    monkeypatch.setattr(
+        "app.application.ask.answer_question.get_settings", lambda: enabled
+    )
+    llm = _FakeLlm()
+    app = _build_app(
+        db_session, Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True), llm=llm
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "今天穿什么？"},
+        )
+    assert resp.status_code == 200
+    assert llm.last_system_prompt is not None
+    assert "user_preferences" in llm.last_system_prompt
+    assert "oversized shirts" in llm.last_system_prompt
+
+
+async def test_ask_omits_preference_memory_when_flag_off(
+    db_session: AsyncSession, patch_router_settings
+) -> None:
+    """Flag off: no `user_preferences` block in the prompt even if rows exist."""
+    from app.application.preferences.memory import SOURCE_EXPLICIT, record_preference
+    from app.infrastructure.persistence.repositories.preference_memory_repo import (
+        SqlAlchemyPreferenceMemoryRepository,
+    )
+
+    user_id = await _seed_user_and_items(db_session)
+    await record_preference(
+        SqlAlchemyPreferenceMemoryRepository(db_session),
+        user_id=user_id,
+        preference_type="fit",
+        preference_value="oversized shirts",
+        polarity="negative",
+        confidence=0.95,
+        source=SOURCE_EXPLICIT,
+    )
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    llm = _FakeLlm()
+    app = _build_app(
+        db_session, Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True), llm=llm
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "今天穿什么？"},
+        )
+    assert resp.status_code == 200
+    assert llm.last_system_prompt is not None
+    assert "user_preferences" not in llm.last_system_prompt

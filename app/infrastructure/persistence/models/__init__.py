@@ -9,6 +9,7 @@ from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.operation_log import OperationLog
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
 from app.infrastructure.persistence.models.packing_list import PackingList
+from app.infrastructure.persistence.models.preference_memory import UserPreferenceMemory
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
@@ -41,6 +42,7 @@ __all__ = [
     "RecommendationEvent",
     "ShoppingSenseCheck",
     "User",
+    "UserPreferenceMemory",
     "UserSession",
     "UserSettings",
     "UserStyleProfile",

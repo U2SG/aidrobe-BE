@@ -10,6 +10,10 @@ from sqlalchemy import select
 from app.application.outfits.scoring.static import compute_static_breakdown, get_rules_version
 from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo, WeatherPort
+from app.application.preferences.memory import (
+    negative_values_by_type,
+    read_preference_memory,
+)
 from app.application.recommendations.engine import EngineItem, RecommendationEngine
 from app.application.recommendations.fit_profile import build_fit_profile
 from app.application.style.build_style_profile import build_style_profile
@@ -94,6 +98,10 @@ class RecommendationGenerator:
         style_profile = await self._load_style_profile(user_id)
         weather = await self._load_weather(user_id)
         fit_profile = await self._load_fit_profile(user_id)
+        # BE#46 — let explicit NEGATIVE color preferences down-rank matching
+        # outfits. Read only when the flag is on (rows persist regardless), so a
+        # flag-off generation is byte-identical to the legacy one.
+        disliked_colors = await self._load_disliked_colors(user_id, settings)
 
         result = await self.engine.generate(
             [
@@ -115,6 +123,7 @@ class RecommendationGenerator:
             fit_profile=fit_profile,
             recent_worn_outfit_item_ids=recent_outfits,
             avoid_exact_repeats=avoid_exact_repeats,
+            disliked_colors=disliked_colors,
         )
 
         daily = DailyRecommendation(
@@ -203,6 +212,31 @@ class RecommendationGenerator:
             has_style_profile=bool(style_profile),
         )
         return daily
+
+    async def _load_disliked_colors(self, user_id: uuid.UUID, settings: Any) -> set[str]:
+        """BE#46 — lowercased colors the user has explicitly stated they dislike.
+
+        Off (empty) unless ENABLE_PREFERENCE_MEMORY is on. `color` is the
+        discriminating field the engine carries on every item, so it's the hook
+        for negative influence; `negative_preference` rows that happen to name a
+        color are also honored. Fail-soft: a read error must not abort the daily
+        generation."""
+        if not settings.ENABLE_PREFERENCE_MEMORY:
+            return set()
+        try:
+            from app.infrastructure.persistence.repositories.preference_memory_repo import (
+                SqlAlchemyPreferenceMemoryRepository,
+            )
+
+            memory = await read_preference_memory(
+                SqlAlchemyPreferenceMemoryRepository(self.repository.session), user_id
+            )
+            return negative_values_by_type(memory, "color") | negative_values_by_type(
+                memory, "negative_preference"
+            )
+        except Exception as exc:
+            logger.warning("preference_memory_load_failed", user_id=str(user_id), error=str(exc))
+            return set()
 
     async def _load_style_profile(self, user_id: uuid.UUID) -> dict[str, Any]:
         if self.style_repository is None:

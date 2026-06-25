@@ -25,6 +25,11 @@ FIT_DOWNGRADE_STATUSES = {"tight", "needs_alteration"}
 NO_LONGER_FITS = "no_longer_fits"
 REPETITION_SIMILARITY_THRESHOLD = 0.6
 REPETITION_PENALTY = 0.2
+# BE#46 — per-item penalty applied when an item's color matches an explicit
+# user-stated NEGATIVE color preference. Multiplied by how many items in the
+# combo match, so an outfit built mostly of disliked colors is pushed well below
+# alternatives without being hard-excluded (the user might still own only those).
+DISLIKED_COLOR_PENALTY = 0.3
 
 _REASON_TEMPLATES: dict[str, str] = {
     OutfitType.SAFE.value: "经典颜色搭配，适合日常通勤",
@@ -83,9 +88,11 @@ class RecommendationEngine:
         recent_worn_outfit_item_ids: list[set[str]] | None = None,
         fit_profile: dict[str, Any] | None = None,
         avoid_exact_repeats: bool = False,
+        disliked_colors: set[str] | None = None,
     ) -> EngineResult:
         recent_worn_main_item_ids = recent_worn_main_item_ids or set()
         recent_worn_outfit_item_ids = recent_worn_outfit_item_ids or []
+        disliked_colors = disliked_colors or set()
         wearable = [item for item in items if item.fit_status != NO_LONGER_FITS]
         if len(wearable) < 3:
             return EngineResult(
@@ -101,6 +108,7 @@ class RecommendationEngine:
             weather,
             recent_worn_outfit_item_ids,
             fit_profile or {},
+            disliked_colors,
         )
         if not candidates:
             return EngineResult(
@@ -209,6 +217,7 @@ class RecommendationEngine:
         weather: WeatherInfo | None,
         recent_worn_outfit_item_ids: list[set[str]],
         fit_profile: dict[str, Any],
+        disliked_colors: set[str],
     ) -> list[EngineOutfit]:
         tops = [item for item in items if item.category == Category.TOP.value]
         bottoms = [item for item in items if item.category == Category.BOTTOM.value]
@@ -256,6 +265,7 @@ class RecommendationEngine:
                         weather,
                         recent_worn_outfit_item_ids,
                         fit_profile,
+                        disliked_colors,
                     )
                 )
         return candidates
@@ -269,6 +279,7 @@ class RecommendationEngine:
         weather: WeatherInfo | None,
         recent_worn_outfit_item_ids: list[set[str]],
         fit_profile: dict[str, Any],
+        disliked_colors: set[str],
     ) -> EngineOutfit:
         colors = [item.color_main for item in combo]
         categories = [item.category for item in combo]
@@ -280,6 +291,9 @@ class RecommendationEngine:
         weather_score = self._weather_score(combo, weather)
         fit_score = self._fit_score(combo, fit_profile)
         repetition_penalty = self._repetition_penalty(combo, recent_worn_outfit_item_ids)
+        # BE#46 — explicit negative color preference: one penalty unit per item
+        # whose color the user dislikes. Empty set (flag off) → 0.0, legacy.
+        disliked_penalty = self._disliked_color_penalty(combo, disliked_colors)
         type_boost = {
             OutfitType.SAFE.value: 0.05,
             OutfitType.FAST.value: 0.03,
@@ -297,6 +311,7 @@ class RecommendationEngine:
                 + freshness_score * 0.10
                 + fit_score * 0.10
                 - repetition_penalty
+                - disliked_penalty
             )
         elif has_fit_signal:
             total = (
@@ -305,9 +320,16 @@ class RecommendationEngine:
                 + fit_score * 0.20
                 + type_boost
                 - repetition_penalty
+                - disliked_penalty
             )
         else:
-            total = utility_score * 0.6 + freshness_score * 0.4 + type_boost - repetition_penalty
+            total = (
+                utility_score * 0.6
+                + freshness_score * 0.4
+                + type_boost
+                - repetition_penalty
+                - disliked_penalty
+            )
 
         title = _TITLE_TEMPLATES[outfit_type]
         template = _REASON_TEMPLATES[outfit_type]
@@ -346,6 +368,7 @@ class RecommendationEngine:
                 "weather_score": weather_score,
                 "fit_score": fit_score,
                 "repetition_penalty": repetition_penalty,
+                "disliked_color_penalty": disliked_penalty,
             },
         )
 
@@ -452,6 +475,18 @@ class RecommendationEngine:
 
             scores.append(score)
         return _clamp_score(sum(scores) / len(scores)) if scores else 0.5
+
+    def _disliked_color_penalty(
+        self, combo: list[EngineItem], disliked_colors: set[str]
+    ) -> float:
+        """One `DISLIKED_COLOR_PENALTY` unit per combo item whose color the user
+        explicitly dislikes. 0.0 when the set is empty (flag off)."""
+        if not disliked_colors:
+            return 0.0
+        hits = sum(
+            1 for item in combo if item.color_main and item.color_main.lower() in disliked_colors
+        )
+        return round(hits * DISLIKED_COLOR_PENALTY, 4)
 
     def _repetition_penalty(
         self, combo: list[EngineItem], recent_worn_outfit_item_ids: list[set[str]]

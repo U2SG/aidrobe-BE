@@ -368,3 +368,42 @@ async def test_fit_profile_penalizes_mismatched_items() -> None:
     )
     if tight_no_profile and tight_with_profile:
         assert tight_with_profile.score_total <= tight_no_profile.score_total
+
+
+@pytest.mark.asyncio
+async def test_disliked_color_penalizes_matching_outfits() -> None:
+    """BE#46 — an explicit negative color preference down-ranks outfits whose
+    items are in that color, without hard-excluding them."""
+    items = [
+        EngineItem("1", "Red shirt", "top", "red"),
+        EngineItem("2", "Blue shirt", "top", "blue"),
+        EngineItem("3", "Black pants", "bottom", "black"),
+    ]
+    baseline = await RecommendationEngine().generate(items)
+    penalized = await RecommendationEngine().generate(items, disliked_colors={"red"})
+
+    def _score_for(result: object, item_ids: set[str]) -> float | None:
+        for outfit in result.outfits:  # type: ignore[attr-defined]
+            if set(outfit.item_ids) == item_ids:
+                return outfit.score_total
+        return None
+
+    red_baseline = _score_for(baseline, {"1", "3"})
+    red_penalized = _score_for(penalized, {"1", "3"})
+    # The red outfit must score strictly lower once red is disliked.
+    assert red_baseline is not None
+    assert red_penalized is not None
+    assert red_penalized < red_baseline
+
+
+@pytest.mark.asyncio
+async def test_no_disliked_colors_is_legacy_behavior() -> None:
+    """Empty disliked set (flag off) must not change any score."""
+    items = [
+        EngineItem("1", "Red shirt", "top", "red"),
+        EngineItem("2", "Blue shirt", "top", "blue"),
+        EngineItem("3", "Black pants", "bottom", "black"),
+    ]
+    a = await RecommendationEngine().generate(items)
+    b = await RecommendationEngine().generate(items, disliked_colors=set())
+    assert [o.score_total for o in a.outfits] == [o.score_total for o in b.outfits]

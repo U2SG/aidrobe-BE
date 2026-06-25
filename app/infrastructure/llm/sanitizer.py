@@ -117,6 +117,31 @@ def _filter(value: Any) -> Any:
     return value
 
 
+# BE#46 — bound on any free-text preference value before it reaches a prompt.
+# The §2.9 field whitelist gates KEYS, not free text; a remembered preference
+# ("oversized shirts") is exactly the user-typed value the whitelist excludes.
+# So the safety mechanism for preference memory is bound-at-write: strip control
+# chars / newlines and hard-cap length so prompt-injection text can't be
+# promoted into trusted memory or smuggled into a prompt.
+_PREFERENCE_VALUE_MAX_LEN = 120
+
+
+def sanitize_preference_value(value: str) -> str:
+    """Normalize a user-stated preference value for storage + prompt use.
+
+    Collapses internal whitespace (newlines included, so injected instructions
+    on their own lines lose their structure), strips control characters, and
+    hard-caps length. Returns "" for non-strings / empties so callers can drop
+    the preference rather than store a junk row."""
+    if not isinstance(value, str):
+        return ""
+    # Drop C0/C1 control chars (incl. newlines, tabs) — they're the vehicle for
+    # multi-line prompt-injection payloads.
+    cleaned = "".join(ch for ch in value if ch.isprintable())
+    cleaned = " ".join(cleaned.split())  # collapse runs of whitespace
+    return cleaned[:_PREFERENCE_VALUE_MAX_LEN].strip()
+
+
 def attach_user_token(payload: dict[str, Any], user_id: uuid.UUID) -> dict[str, Any]:
     """Wrap `sanitize_for_llm` and inject the hashed user token. Use this
     for prompts that need cross-turn identity (Ask sessions). Pure prompts
