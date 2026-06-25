@@ -4,6 +4,7 @@ no-over-infer + sanitization. DB-backed (testcontainers Postgres)."""
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -105,8 +106,11 @@ async def test_restate_existing_preference_refreshes_updated_at(
 ) -> None:
     """Re-stating a preference must bump updated_at even when confidence is
     unchanged — otherwise list_live (confidence desc, updated_at desc) won't lift
-    the just-restated row into the capped prompt-visible block. The commit gives
-    the second write a later transaction timestamp (func.now() is per-tx)."""
+    the just-restated row into the capped prompt-visible block.
+
+    func.now() is the transaction timestamp (constant within the test's single
+    transaction), so we backdate the row first and assert the re-statement
+    refreshes it forward to the current transaction time."""
     user_id = await _seed_user(db_session)
     repo = SqlAlchemyPreferenceMemoryRepository(db_session)
     first = await record_preference(
@@ -118,8 +122,9 @@ async def test_restate_existing_preference_refreshes_updated_at(
         confidence=0.9,
         source=SOURCE_EXPLICIT,
     )
-    first_updated_at = first.updated_at
-    await db_session.commit()
+    backdated = datetime(2020, 1, 1, tzinfo=UTC)
+    first.updated_at = backdated
+    await db_session.flush()
 
     second = await record_preference(
         repo,
@@ -131,7 +136,7 @@ async def test_restate_existing_preference_refreshes_updated_at(
         source=SOURCE_EXPLICIT,
     )
     assert second.id == first.id  # same row
-    assert second.updated_at > first_updated_at
+    assert second.updated_at > backdated  # refreshed forward, not left stale
 
 
 async def test_feedback_source_cannot_become_strong_preference(
