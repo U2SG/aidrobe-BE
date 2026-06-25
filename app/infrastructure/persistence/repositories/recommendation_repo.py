@@ -540,6 +540,11 @@ class SqlAlchemyRecommendationRepository:
     async def update_outfit_plan(self, plan: OutfitPlan) -> OutfitPlan:
         self.session.add(plan)
         await self.session.flush()
+        # `updated_at` is server-side `onupdate=func.now()`; an UPDATE doesn't
+        # RETURN it, so it's expired after flush. Reload inside the async
+        # context — otherwise the caller's from_model() reads an expired
+        # attribute and trips MissingGreenlet on the implicit sync load.
+        await self.session.refresh(plan)
         return plan
 
     async def get_outfit_summaries(
