@@ -1,7 +1,7 @@
 """wardrobe item relationships for recommendation ranking
 
 Revision ID: 0038
-Revises: 0036_user_preference_memory
+Revises: 0037
 Create Date: 2026-06-25
 """
 
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "0038"
-down_revision: str | None = "0036_user_preference_memory"
+down_revision: str | None = "0037"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
