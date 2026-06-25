@@ -2,7 +2,7 @@ import uuid
 from itertools import combinations
 from typing import Any, cast
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -100,6 +100,29 @@ class SqlAlchemyWardrobeRelationshipRepository:
         )
         assert row is not None
         return row
+
+    async def delete_rule_based_for_user(self, user_id: uuid.UUID) -> None:
+        # Rule-based edges are fully re-derived from current item metadata on
+        # every regeneration. When a rule re-derives a DIFFERENT type for the
+        # same pair (e.g. a color edit turns a style_clash into a neutral), the
+        # upsert conflict target (source, target, type) inserts a NEW row and
+        # the stale one survives, corrupting ranking. Wiping the user's
+        # rule_based rows before re-inserting keeps the set authoritative.
+        #
+        # Scope by item ownership (the table has no user_id) via a subquery, and
+        # match either endpoint so an edge survives even after one of its items
+        # drops out of the wearable set. The source == "rule_based" filter is
+        # load-bearing: it must never touch user_feedback / llm edges.
+        owned_item_ids = select(WardrobeItem.id).where(WardrobeItem.user_id == user_id)
+        await self.session.execute(
+            delete(WardrobeItemRelationship).where(
+                WardrobeItemRelationship.source == "rule_based",
+                or_(
+                    WardrobeItemRelationship.source_item_id.in_(owned_item_ids),
+                    WardrobeItemRelationship.target_item_id.in_(owned_item_ids),
+                ),
+            )
+        )
 
     async def generate_rule_based(
         self,

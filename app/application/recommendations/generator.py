@@ -238,9 +238,19 @@ class RecommendationGenerator:
         if len(items) < 2:
             return
         try:
-            await relationship_repository.generate_rule_based(items)
-            # TODO(BE#48): extend this seam with LLM-generated relationship
-            # suggestions once they have review and correction controls.
+            # SAVEPOINT isolation: a DBAPI failure inside relationship work would
+            # otherwise leave the shared session in an ABORTED transaction, so
+            # every later query/write in generate_for_user raises
+            # PendingRollbackError instead of degrading to "no graph data". The
+            # nested transaction rolls back ONLY this work and leaves the outer
+            # transaction usable. It also makes the wipe+regenerate atomic: a
+            # mid-generation failure restores the pre-existing edges rather than
+            # leaving them half-deleted.
+            async with self.repository.session.begin_nested():
+                await relationship_repository.delete_rule_based_for_user(user_id)
+                await relationship_repository.generate_rule_based(items)
+                # TODO(BE#48): extend this seam with LLM-generated relationship
+                # suggestions once they have review and correction controls.
         except Exception as exc:
             logger.warning(
                 "wardrobe_relationship_generation_failed",
@@ -258,12 +268,16 @@ class RecommendationGenerator:
         if not settings.ENABLE_WARDROBE_GRAPH:
             return []
         try:
-            rows_by_id: dict[uuid.UUID, WardrobeItemRelationship] = {}
-            for item in items:
-                for row in await relationship_repository.positive_pairs(item.id):
-                    rows_by_id[row.id] = row
-                for row in await relationship_repository.rejected_pairs(item.id):
-                    rows_by_id[row.id] = row
+            # SAVEPOINT isolation (same rationale as _persist_rule_based_relationships):
+            # a read failure must not leave the shared session in an ABORTED
+            # transaction and poison the rest of generate_for_user.
+            async with self.repository.session.begin_nested():
+                rows_by_id: dict[uuid.UUID, WardrobeItemRelationship] = {}
+                for item in items:
+                    for row in await relationship_repository.positive_pairs(item.id):
+                        rows_by_id[row.id] = row
+                    for row in await relationship_repository.rejected_pairs(item.id):
+                        rows_by_id[row.id] = row
             return [
                 RelationshipEdge(
                     source_item_id=str(row.source_item_id),
