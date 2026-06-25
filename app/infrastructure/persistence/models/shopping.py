@@ -38,6 +38,7 @@ class ShoppingSenseCheck(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     # Input reference — exactly one of these is set (image_url preferred when both).
     image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    object_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     verdict: Mapped[str] = mapped_column(String(16), nullable=False)
     reason: Mapped[str] = mapped_column(String(512), nullable=False)
