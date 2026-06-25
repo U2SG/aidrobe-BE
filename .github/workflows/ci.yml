@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Newer pushes to the same ref cancel in-flight runs (the test job is long).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint & type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install deps
+        run: uv sync --group dev --frozen
+      - name: Ruff
+        run: uv run ruff check .
+      - name: Mypy
+        run: uv run mypy app
+
+  test:
+    name: Tests (testcontainers Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install deps
+        run: uv sync --group dev --frozen
+      - name: Pytest
+        # GitHub-hosted ubuntu runners ship a running Docker daemon, so the
+        # testcontainers Postgres fixture works out of the box. Ryuk (the
+        # container reaper) is unnecessary on an ephemeral runner and can be
+        # flaky, so it is disabled.
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: uv run pytest -q
