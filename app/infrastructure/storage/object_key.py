@@ -27,13 +27,29 @@ def extract_internal_object_key(
         if key:
             return key
 
-    for bucket in _configured_buckets(settings):
-        for endpoint_url in (settings.S3_ENDPOINT_URL, settings.ALIYUN_OSS_ENDPOINT):
-            key = _key_after_endpoint_bucket(image_url, endpoint_url, bucket)
-            if key:
-                return key
+    # Endpoint/virtual-host URLs embed the bucket name. Only extract a key when
+    # that bucket is the one the signer actually signs against — the S3 adapter
+    # signs against `S3_BUCKET` and the OSS adapter against `ALIYUN_OSS_BUCKET`.
+    # Matching any of the per-purpose OSS buckets (items/ootd/private/derived)
+    # would let the read path sign the key against the signer's default bucket,
+    # producing a valid-looking URL for the WRONG bucket. Return None instead so
+    # the caller falls back to the stored raw `image_url`.
+    if settings.S3_BUCKET:
+        key = _key_after_endpoint_bucket(
+            image_url, settings.S3_ENDPOINT_URL, settings.S3_BUCKET
+        )
+        if key:
+            return key
+        key = _key_after_s3_virtual_host(
+            image_url, settings.S3_BUCKET, settings.S3_REGION
+        )
+        if key:
+            return key
 
-        key = _key_after_s3_virtual_host(image_url, bucket, settings.S3_REGION)
+    if settings.ALIYUN_OSS_BUCKET:
+        key = _key_after_endpoint_bucket(
+            image_url, settings.ALIYUN_OSS_ENDPOINT, settings.ALIYUN_OSS_BUCKET
+        )
         if key:
             return key
 
@@ -105,18 +121,6 @@ def _key_after_s3_virtual_host(
     if parsed.scheme == "https" and parsed.netloc == expected_host:
         return _clean_key(parsed.path.lstrip("/"))
     return None
-
-
-def _configured_buckets(settings: Settings) -> tuple[str, ...]:
-    buckets = (
-        settings.S3_BUCKET,
-        settings.ALIYUN_OSS_BUCKET,
-        settings.ALIYUN_OSS_BUCKET_ITEMS,
-        settings.ALIYUN_OSS_BUCKET_OOTD,
-        settings.ALIYUN_OSS_BUCKET_PRIVATE,
-        settings.ALIYUN_OSS_BUCKET_DERIVED,
-    )
-    return tuple(dict.fromkeys(bucket for bucket in buckets if bucket))
 
 
 def _clean_key(value: str) -> str | None:
