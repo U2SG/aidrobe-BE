@@ -1,6 +1,5 @@
 import uuid
-from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
@@ -9,12 +8,6 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import Settings, get_settings
-from app.infrastructure.persistence.models.recommendation import (
-    DailyRecommendation,
-    Outfit,
-    OutfitItem,
-    WearHistory,
-)
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.session import get_db_session
@@ -55,73 +48,45 @@ def patched_settings_in_router(monkeypatch: pytest.MonkeyPatch):
     return _factory
 
 
-async def _add_wear(
-    session: AsyncSession,
-    user_id: uuid.UUID,
-    item_id: uuid.UUID,
-    worn_date: date,
-) -> None:
-    daily = DailyRecommendation(
-        user_id=user_id,
-        recommendation_date=worn_date,
-        status="ready",
-        generation_source="manual",
-    )
-    session.add(daily)
-    await session.flush()
-
-    outfit = Outfit(
-        daily_recommendation_id=daily.id,
-        user_id=user_id,
-        outfit_type="safe",
-        title=f"Outfit {worn_date.isoformat()}",
-        reason_text="Seeded test outfit",
-        score_total=Decimal("0.8"),
-        rank_order=1,
-        created_at=datetime.now(UTC),
-    )
-    session.add(outfit)
-    await session.flush()
-
-    session.add(
-        OutfitItem(
-            outfit_id=outfit.id,
-            item_id=item_id,
-            role="item",
-            display_order=0,
-            created_at=datetime.now(UTC),
-        )
-    )
-    session.add(
-        WearHistory(
-            user_id=user_id,
-            outfit_id=outfit.id,
-            worn_date=worn_date,
-            selected_at=datetime.now(UTC),
-            created_at=datetime.now(UTC),
-        )
-    )
-    await session.flush()
-
-
 async def _seed_health_data(session: AsyncSession, user_id: uuid.UUID) -> None:
+    """Seed via the authoritative ``WardrobeItem.last_worn_at`` signal.
+
+    This mirrors the production path: ``WearOutfit.execute`` forward-updates
+    ``last_worn_at`` on every recorded wear, and wardrobe_health reads that
+    column directly. One item is left never-worn (last_worn_at NULL) to exercise
+    graceful partial-data handling.
+
+    Resulting signal over 5 items (3 top / 1 bottom / 1 shoes):
+    - worn in last 90d: 2 (30d, 10d) → coverage 40%
+    - unused: 60d → 3, 90d → 3, 180d → 1
+    """
     session.add(User(id=user_id))
+    today = date.today()
     items = [
-        WardrobeItem(user_id=user_id, title="White tee", category="top", color_main="white"),
-        WardrobeItem(user_id=user_id, title="Blue shirt", category="top", color_main="blue"),
-        WardrobeItem(user_id=user_id, title="Knit top", category="top", color_main="cream"),
-        WardrobeItem(user_id=user_id, title="Black pants", category="bottom", color_main="black"),
-        WardrobeItem(user_id=user_id, title="Canvas shoes", category="shoes", color_main="white"),
+        WardrobeItem(
+            user_id=user_id, title="White tee", category="top", color_main="white",
+            last_worn_at=today - timedelta(days=30),
+        ),
+        WardrobeItem(
+            user_id=user_id, title="Blue shirt", category="top", color_main="blue",
+            last_worn_at=today - timedelta(days=100),
+        ),
+        WardrobeItem(
+            user_id=user_id, title="Knit top", category="top", color_main="cream",
+            last_worn_at=None,
+        ),
+        WardrobeItem(
+            user_id=user_id, title="Black pants", category="bottom", color_main="black",
+            last_worn_at=today - timedelta(days=10),
+        ),
+        WardrobeItem(
+            user_id=user_id, title="Canvas shoes", category="shoes", color_main="white",
+            last_worn_at=today - timedelta(days=170),
+        ),
     ]
     for item in items:
         session.add(item)
     await session.flush()
-
-    today = date.today()
-    await _add_wear(session, user_id, items[0].id, today - timedelta(days=30))
-    await _add_wear(session, user_id, items[3].id, today - timedelta(days=10))
-    await _add_wear(session, user_id, items[1].id, today - timedelta(days=100))
-    await _add_wear(session, user_id, items[4].id, today - timedelta(days=170))
 
 
 async def _get_health(
@@ -148,9 +113,10 @@ async def test_wardrobe_health_wear_coverage_ratio(
     data = await _get_health(db_session, user_id, settings)
 
     assert data["score"] == 50
+    assert data["level"] == "fair"
     coverage = {item["type"]: item for item in data["insights"]}["wear_coverage"]
     assert coverage["severity"] == "high"
-    assert coverage["title"] == "40% of your wardrobe was worn in the last 90 days"
+    assert coverage["metrics"] == {"coverage_ratio": 0.4, "window_days": 90}
 
 
 async def test_wardrobe_health_unused_item_counts(
@@ -164,7 +130,7 @@ async def test_wardrobe_health_unused_item_counts(
 
     unused = {item["type"]: item for item in data["insights"]}["unused_items"]
     assert unused["severity"] == "high"
-    assert unused["title"] == "Unused items: 3 in 60d, 3 in 90d, 1 in 180d"
+    assert unused["metrics"] == {"unused_60": 3, "unused_90": 3, "unused_180": 1}
 
 
 async def test_wardrobe_health_category_balance(
@@ -178,7 +144,10 @@ async def test_wardrobe_health_category_balance(
 
     balance = {item["type"]: item for item in data["insights"]}["category_balance"]
     assert balance["severity"] == "low"
-    assert balance["title"] == "Top makes up 60% of your wardrobe"
+    assert balance["metrics"] == {
+        "dominant_ratio": 0.6,
+        "counts": {"top": 3, "bottom": 1, "shoes": 1},
+    }
 
 
 async def test_wardrobe_health_empty_wardrobe_returns_partial_response(
@@ -194,13 +163,11 @@ async def test_wardrobe_health_empty_wardrobe_returns_partial_response(
     assert data == {
         "score": 0,
         "level": "low",
-        "summary": "Add a few wardrobe items to unlock a health score.",
         "insights": [
             {
                 "type": "data_sparsity",
                 "severity": "low",
-                "title": "No wardrobe items are available yet",
-                "action": "Start with a few everyday pieces, then check back for richer insights.",
+                "metrics": {"item_count": 0},
             }
         ],
     }

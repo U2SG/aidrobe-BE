@@ -1,4 +1,11 @@
-"""Wardrobe health scoring for issue #49."""
+"""Wardrobe health scoring for issue #49.
+
+The API is i18n-safe by design: it returns stable machine codes
+(``type`` / ``level`` / ``severity``) plus numeric ``metrics``, never
+user-facing copy. The frontend localizes from these codes. See the schema
+docstrings in ``app/presentation/api/v1/schemas/insights.py`` for the
+authoritative contract.
+"""
 
 from __future__ import annotations
 
@@ -7,28 +14,39 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import cast
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.persistence.models.recommendation import OutfitItem, WearHistory
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+
+# Single coverage weight. ``coverage_ratio`` (share of items worn in the last
+# 90 days) is the only recent-wear signal that feeds the score. An earlier
+# version also subtracted ``unused_90_ratio * 35``; that is the exact complement
+# of ``coverage_ratio`` over the *same* 90-day window, so the two terms
+# collapsed to a single ``100 - (1 - coverage_ratio) * 75`` term. We make that
+# explicit here. ``unused_counts`` is still computed for the ``unused_items``
+# insight metrics, but does NOT feed the score.
+_COVERAGE_WEIGHT = 75.0
+_COVERAGE_WINDOW_DAYS = 90
+
+
+# Metric values are numeric scalars, except ``category_balance.counts`` which is
+# a per-category count map. The nested dict is the only non-scalar value.
+MetricValue = int | float | dict[str, int]
 
 
 @dataclass(frozen=True)
 class WardrobeHealthInsight:
     type: str
     severity: str
-    title: str
-    action: str
+    metrics: dict[str, MetricValue]
 
 
 @dataclass(frozen=True)
 class WardrobeHealthResult:
     score: int
     level: str
-    summary: str
     insights: list[WardrobeHealthInsight]
 
 
@@ -42,54 +60,44 @@ class _ItemSnapshot:
 async def build_health(
     user_id: uuid.UUID, session: AsyncSession, as_of: date | None = None
 ) -> WardrobeHealthResult:
-    """Build a deterministic wardrobe health summary from existing item/wear data."""
+    """Build a deterministic wardrobe health summary from existing item data."""
     today = as_of or date.today()
     items = await _load_items(user_id, session)
     if not items:
         return WardrobeHealthResult(
             score=0,
             level="low",
-            summary="Add a few wardrobe items to unlock a health score.",
             insights=[
                 WardrobeHealthInsight(
                     type="data_sparsity",
                     severity="low",
-                    title="No wardrobe items are available yet",
-                    action="Start with a few everyday pieces, then check back for richer insights.",
+                    metrics={"item_count": 0},
                 )
             ],
         )
 
-    history_last_worn = await _load_history_last_worn(
-        user_id, session, [item.id for item in items]
-    )
-    last_worn_by_item = {
-        item.id: _latest_date(item.last_worn_at, history_last_worn.get(item.id))
-        for item in items
-    }
+    # `WardrobeItem.last_worn_at` is the authoritative wear signal — it is
+    # forward-updated by `WearOutfit.execute` on every recorded wear. Siblings
+    # (wardrobe_report / obstacles / answer_question) read it directly; do the
+    # same rather than re-deriving last-worn from WearHistory.
+    last_worn_values = [item.last_worn_at for item in items]
 
     total = len(items)
-    coverage_ratio = _coverage_ratio(last_worn_by_item.values(), today, 90)
+    coverage_ratio = _coverage_ratio(last_worn_values, today, _COVERAGE_WINDOW_DAYS)
     unused_counts = {
-        window: _unused_count(last_worn_by_item.values(), today, window)
-        for window in (60, 90, 180)
+        window: _unused_count(last_worn_values, today, window) for window in (60, 90, 180)
     }
-    dominant_category, dominant_ratio = _category_balance(items)
+    dominant_category, dominant_ratio, category_counts = _category_balance(items)
 
-    score = _score(coverage_ratio, unused_counts[90] / total, dominant_ratio)
+    score = _score(coverage_ratio, dominant_ratio)
     level = _level(score)
     insights = [
         _coverage_insight(coverage_ratio),
         _unused_insight(unused_counts, total),
-        _category_insight(dominant_category, dominant_ratio),
+        _category_insight(dominant_category, dominant_ratio, category_counts),
     ]
 
-    return WardrobeHealthResult(
-        score=score,
-        level=level,
-        summary=_summary(level),
-        insights=insights,
-    )
+    return WardrobeHealthResult(score=score, level=level, insights=insights)
 
 
 async def _load_items(user_id: uuid.UUID, session: AsyncSession) -> list[_ItemSnapshot]:
@@ -107,37 +115,6 @@ async def _load_items(user_id: uuid.UUID, session: AsyncSession) -> list[_ItemSn
     ]
 
 
-async def _load_history_last_worn(
-    user_id: uuid.UUID, session: AsyncSession, item_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, date]:
-    if not item_ids:
-        return {}
-
-    result = await session.execute(
-        select(OutfitItem.item_id, func.max(WearHistory.worn_date).label("last_worn"))
-        .select_from(WearHistory)
-        .join(OutfitItem, OutfitItem.outfit_id == WearHistory.outfit_id)
-        .where(
-            WearHistory.user_id == user_id,
-            OutfitItem.item_id.in_(item_ids),
-        )
-        .group_by(OutfitItem.item_id)
-    )
-    last_worn_by_item: dict[uuid.UUID, date] = {}
-    for row in result.all():
-        if row.last_worn is not None:
-            last_worn_by_item[cast(uuid.UUID, row.item_id)] = cast(date, row.last_worn)
-    return last_worn_by_item
-
-
-def _latest_date(a: date | None, b: date | None) -> date | None:
-    if a is None:
-        return b
-    if b is None:
-        return a
-    return max(a, b)
-
-
 def _coverage_ratio(last_worn_dates: Iterable[date | None], today: date, days: int) -> float:
     dates = list(last_worn_dates)
     if not dates:
@@ -152,17 +129,26 @@ def _unused_count(last_worn_dates: Iterable[date | None], today: date, days: int
     return sum(1 for worn_date in last_worn_dates if worn_date is None or worn_date < cutoff)
 
 
-def _category_balance(items: list[_ItemSnapshot]) -> tuple[str | None, float]:
+def _category_balance(items: list[_ItemSnapshot]) -> tuple[str | None, float, dict[str, int]]:
     if not items:
-        return None, 0.0
+        return None, 0.0, {}
     counts = Counter(item.category for item in items)
     category, count = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0]
-    return category, count / len(items)
+    return category, count / len(items), dict(counts)
 
 
-def _score(coverage_ratio: float, unused_90_ratio: float, dominant_ratio: float) -> int:
+def _score(coverage_ratio: float, dominant_ratio: float) -> int:
+    """Deterministic 0-100 health score.
+
+    Two terms only:
+    - recent-wear coverage: ``(1 - coverage_ratio) * _COVERAGE_WEIGHT`` (75).
+    - category dominance penalty: linear above a 0.5 share, capped by the 0.5
+      span so a fully single-category wardrobe (ratio 1.0) costs 25 points.
+
+    Pinned by ``tests/unit/test_wardrobe_health_score.py``.
+    """
     dominance_penalty = max(0.0, dominant_ratio - 0.5) * 50
-    raw = 100 - ((1 - coverage_ratio) * 40) - (unused_90_ratio * 35) - dominance_penalty
+    raw = 100 - ((1 - coverage_ratio) * _COVERAGE_WEIGHT) - dominance_penalty
     return max(0, min(100, int(round(raw))))
 
 
@@ -176,32 +162,20 @@ def _level(score: int) -> str:
     return "low"
 
 
-def _summary(level: str) -> str:
-    summaries = {
-        "great": "Your wardrobe has strong recent coverage and a balanced mix.",
-        "good": "Your wardrobe is in a good place, with a few items worth revisiting.",
-        "fair": "Your wardrobe has useful pieces, and a few areas could use attention.",
-        "low": "There is limited recent wear data, so this is a gentle starting point.",
-    }
-    return summaries[level]
-
-
 def _coverage_insight(coverage_ratio: float) -> WardrobeHealthInsight:
-    percent = int(round(coverage_ratio * 100))
     if coverage_ratio >= 0.75:
         severity = "low"
-        action = "Keep rotating pieces you already enjoy wearing."
     elif coverage_ratio >= 0.5:
         severity = "medium"
-        action = "Try pairing one less-used item with a favorite outfit this week."
     else:
         severity = "high"
-        action = "Pick one easy-to-style item you have not worn recently and build around it."
     return WardrobeHealthInsight(
         type="wear_coverage",
         severity=severity,
-        title=f"{percent}% of your wardrobe was worn in the last 90 days",
-        action=action,
+        metrics={
+            "coverage_ratio": round(coverage_ratio, 4),
+            "window_days": _COVERAGE_WINDOW_DAYS,
+        },
     )
 
 
@@ -216,44 +190,33 @@ def _unused_insight(unused_counts: dict[int, int], total: int) -> WardrobeHealth
     return WardrobeHealthInsight(
         type="unused_items",
         severity=severity,
-        title=(
-            f"Unused items: {unused_counts[60]} in 60d, "
-            f"{unused_counts[90]} in 90d, {unused_counts[180]} in 180d"
-        ),
-        action="Revisit one unused piece at a time; keep what still feels useful.",
+        metrics={
+            "unused_60": unused_counts[60],
+            "unused_90": unused_counts[90],
+            "unused_180": unused_counts[180],
+        },
     )
 
 
 def _category_insight(
-    dominant_category: str | None, dominant_ratio: float
+    dominant_category: str | None, dominant_ratio: float, category_counts: dict[str, int]
 ) -> WardrobeHealthInsight:
     if dominant_category is None:
         return WardrobeHealthInsight(
             type="category_balance",
             severity="low",
-            title="Category balance is not available yet",
-            action="Add more wardrobe items to make this insight more useful.",
+            metrics={},
         )
 
-    category = dominant_category.replace("_", " ").title()
-    percent = int(round(dominant_ratio * 100))
     if dominant_ratio > 0.65:
         severity = "medium"
-        action = "When planning future outfits, consider the categories that unlock more combinations."
-    elif dominant_ratio > 0.5:
-        severity = "low"
-        action = "Your wardrobe can still work well; a few complementary pieces may add flexibility."
     else:
         severity = "low"
-        action = "Keep using this balanced mix as a base for new outfit ideas."
-    title = (
-        f"{category} makes up {percent}% of your wardrobe"
-        if dominant_ratio > 0.5
-        else "Your categories are balanced"
-    )
     return WardrobeHealthInsight(
         type="category_balance",
         severity=severity,
-        title=title,
-        action=action,
+        metrics={
+            "dominant_ratio": round(dominant_ratio, 4),
+            "counts": category_counts,
+        },
     )
