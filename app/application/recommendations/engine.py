@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date
+from itertools import combinations
 from typing import Any
 
 from app.application.ports.llm import LlmPort
@@ -9,6 +10,10 @@ from app.application.recommendations.colors import color_score
 from app.application.recommendations.reasoning import build_reasoning
 from app.application.style.build_style_profile import aesthetic_score as compute_aesthetic_score
 from app.common.enums import Category, OutfitType
+from app.infrastructure.persistence.models.wardrobe_relationship import (
+    POSITIVE_RELATIONSHIP_TYPES,
+    REJECTED_RELATIONSHIP_TYPES,
+)
 
 LIGHT_SHOE_COLORS = {
     "white",
@@ -30,6 +35,8 @@ REPETITION_PENALTY = 0.2
 # combo match, so an outfit built mostly of disliked colors is pushed well below
 # alternatives without being hard-excluded (the user might still own only those).
 DISLIKED_COLOR_PENALTY = 0.3
+WARDROBE_GRAPH_PAIR_BOOST = 0.18
+WARDROBE_GRAPH_REJECTION_PENALTY = 0.8
 
 _REASON_TEMPLATES: dict[str, str] = {
     OutfitType.SAFE.value: "经典颜色搭配，适合日常通勤",
@@ -53,6 +60,15 @@ class EngineItem:
     location: str | None = None
     fit_status: str = "unknown"
     fit_intent: str | None = None
+
+
+@dataclass(frozen=True)
+class RelationshipEdge:
+    source_item_id: str
+    target_item_id: str
+    relationship_type: str
+    score: float
+    confidence: float
 
 
 @dataclass(frozen=True)
@@ -89,6 +105,7 @@ class RecommendationEngine:
         fit_profile: dict[str, Any] | None = None,
         avoid_exact_repeats: bool = False,
         disliked_colors: set[str] | None = None,
+        relationship_edges: list[RelationshipEdge] | None = None,
     ) -> EngineResult:
         recent_worn_main_item_ids = recent_worn_main_item_ids or set()
         recent_worn_outfit_item_ids = recent_worn_outfit_item_ids or []
@@ -116,6 +133,10 @@ class RecommendationEngine:
                 outfits=[],
                 guidance_text="再加一件下装就能搭",
             )
+        candidates = self._apply_relationship_ranking(
+            candidates,
+            relationship_edges or [],
+        )
 
         # Fill one outfit per type (safe / fast / stylish) via a de-dup *ladder*,
         # not a hard distinct-main-item rule. The old rule reserved each top for a
@@ -501,6 +522,32 @@ class RecommendationEngine:
                 return REPETITION_PENALTY
         return 0.0
 
+    def _apply_relationship_ranking(
+        self,
+        candidates: list[EngineOutfit],
+        relationship_edges: list[RelationshipEdge],
+    ) -> list[EngineOutfit]:
+        if not relationship_edges:
+            return candidates
+        relationship_index = _relationship_index(relationship_edges)
+        adjusted: list[EngineOutfit] = []
+        for candidate in candidates:
+            boost, penalty = _relationship_adjustment(candidate.item_ids, relationship_index)
+            if boost == 0.0 and penalty == 0.0:
+                adjusted.append(candidate)
+                continue
+            score_breakdown = dict(candidate.score_breakdown)
+            score_breakdown["wardrobe_graph_boost"] = round(boost, 4)
+            score_breakdown["wardrobe_graph_penalty"] = round(penalty, 4)
+            adjusted.append(
+                replace(
+                    candidate,
+                    score_total=round(max(0.0, candidate.score_total + boost - penalty), 4),
+                    score_breakdown=score_breakdown,
+                )
+            )
+        return adjusted
+
     def _main_item(self, item_ids: list[str], items: list[EngineItem]) -> str | None:
         item_by_id = {item.item_id: item for item in items}
         for item_id in item_ids:
@@ -527,6 +574,32 @@ class RecommendationEngine:
 
 def _clamp_score(value: float) -> float:
     return min(1.0, max(0.0, value))
+
+
+def _relationship_index(
+    relationship_edges: list[RelationshipEdge],
+) -> dict[frozenset[str], list[RelationshipEdge]]:
+    indexed: dict[frozenset[str], list[RelationshipEdge]] = {}
+    for edge in relationship_edges:
+        key = frozenset((edge.source_item_id, edge.target_item_id))
+        indexed.setdefault(key, []).append(edge)
+    return indexed
+
+
+def _relationship_adjustment(
+    item_ids: list[str],
+    relationship_index: dict[frozenset[str], list[RelationshipEdge]],
+) -> tuple[float, float]:
+    boost = 0.0
+    penalty = 0.0
+    for left, right in combinations(item_ids, 2):
+        for edge in relationship_index.get(frozenset((left, right)), []):
+            confidence = _clamp_score(edge.confidence)
+            if edge.relationship_type in REJECTED_RELATIONSHIP_TYPES or edge.score < -0.3:
+                penalty += max(abs(edge.score), 0.5) * confidence * WARDROBE_GRAPH_REJECTION_PENALTY
+            elif edge.relationship_type in POSITIVE_RELATIONSHIP_TYPES and edge.score > 0:
+                boost += edge.score * confidence * WARDROBE_GRAPH_PAIR_BOOST
+    return min(0.3, boost), min(1.0, penalty)
 
 
 def _category_fit_preferences(fit_profile: dict[str, Any]) -> dict[str, str]:
