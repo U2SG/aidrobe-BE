@@ -1,0 +1,34 @@
+{
+  "name": "regress_focused_item_ignored",
+  "description": "Regression guard: the focused item is dropped from the recommendation; must_include_item must fire.",
+  "wardrobe": [
+    {"id": "61111111-0000-0000-0000-000000000001", "category": "top", "color": "white", "fit": "regular"},
+    {"id": "61111111-0000-0000-0000-000000000002", "category": "bottom", "color": "navy", "fit": "regular"}
+  ],
+  "user_preferences": {"negative": [], "positive": []},
+  "request": "围绕这件白衬衫给我搭一套",
+  "request_context": {"focused_item_id": "61111111-0000-0000-0000-000000000001"},
+  "output": {
+    "recommendation_date": "2026-06-25",
+    "status": "ready",
+    "guidance_text": "为你挑了一套利落的搭配",
+    "outfits": [
+      {
+        "outfit_id": "f1116111-0000-0000-0000-000000000001",
+        "type": "daily",
+        "title": "深色基础",
+        "reason": "海军蓝裤装百搭好穿",
+        "items": [
+          {"item_id": "61111111-0000-0000-0000-000000000002", "category": "bottom", "display_role": "bottom"}
+        ],
+        "reasoning": [
+          {"type": "style_match", "text": "配色贴合你平时常穿的风格"}
+        ]
+      }
+    ]
+  },
+  "assertions": [
+    {"type": "must_include_item", "item_id": "61111111-0000-0000-0000-000000000001"}
+  ],
+  "expect_failures": ["must_include_item"]
+}

@@ -1,0 +1,32 @@
+{
+  "name": "regress_hallucinated_and_generic",
+  "description": "Regression guard: the recommendation references an item not in the wardrobe AND uses generic mock copy; both checks must fire.",
+  "wardrobe": [
+    {"id": "63333333-0000-0000-0000-000000000001", "category": "top", "color": "white", "fit": "regular"}
+  ],
+  "user_preferences": {"negative": [], "positive": []},
+  "request": "今天穿什么",
+  "request_context": {},
+  "output": {
+    "recommendation_date": "2026-06-25",
+    "status": "ready",
+    "guidance_text": "推荐穿搭",
+    "outfits": [
+      {
+        "outfit_id": "f3336333-0000-0000-0000-000000000001",
+        "type": "daily",
+        "title": "今日穿搭",
+        "reason": "今日穿搭",
+        "items": [
+          {"item_id": "63333333-0000-0000-0000-000000000001", "category": "top", "display_role": "top"},
+          {"item_id": "99999999-9999-9999-9999-999999999999", "category": "bottom", "display_role": "bottom"}
+        ],
+        "reasoning": [
+          {"type": "category", "text": "根据你的衣橱为今天挑选"}
+        ]
+      }
+    ]
+  },
+  "assertions": [],
+  "expect_failures": ["no_hallucinated_items", "generic_copy", "min_specificity"]
+}
