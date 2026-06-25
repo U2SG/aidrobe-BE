@@ -5,7 +5,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.insights import wardrobe_insights, wardrobe_report
+from app.application.insights import wardrobe_health, wardrobe_insights, wardrobe_report
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
@@ -18,6 +18,7 @@ from app.presentation.api.v1.schemas.insights import (
     InsightsSummaryResponse,
     StyleTrendResponse,
     TopItemResponse,
+    WardrobeHealthResponse,
     WardrobeReportResponse,
 )
 
@@ -96,6 +97,19 @@ async def cost_per_wear(
 ) -> list[CostPerWearItem]:
     rows = await wardrobe_insights.get_cost_per_wear(current_user.id, db)
     return [CostPerWearItem(**r) for r in rows]
+
+
+@router.get("/wardrobe-health", response_model=WardrobeHealthResponse)
+async def wardrobe_health_score(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+) -> WardrobeHealthResponse:
+    if not get_settings().ENABLE_WARDROBE_HEALTH:
+        raise FriendlyException(
+            error_codes.FORBIDDEN, "Wardrobe health is not enabled", status_code=503
+        )
+    result = await wardrobe_health.build_health(current_user.id, db)
+    return WardrobeHealthResponse.model_validate(result, from_attributes=True)
 
 
 @router.get("/reports/{period}", response_model=WardrobeReportResponse)

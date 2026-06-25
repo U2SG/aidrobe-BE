@@ -113,3 +113,43 @@ class WardrobeReportResponse(BaseModel):
     highest_cost_per_wear: ReportCostPerWear | None = None
     longest_idle_item: ReportIdleItem | None = None
     recommendation_adoption_rate: float
+
+
+class WardrobeHealthInsightItem(BaseModel):
+    """A single wardrobe-health insight as i18n-safe codes + numbers.
+
+    The backend never returns user-facing copy; the frontend localizes from the
+    stable ``type`` code and the numeric ``metrics``.
+
+    ``type`` (stable machine codes):
+    - ``wear_coverage`` — share of items worn recently.
+      ``metrics``: ``{"coverage_ratio": float (0-1), "window_days": int (90)}``
+    - ``unused_items`` — items not worn within rolling windows.
+      ``metrics``: ``{"unused_60": int, "unused_90": int, "unused_180": int}``
+    - ``category_balance`` — concentration across categories.
+      ``metrics``: ``{"dominant_ratio": float (0-1), "counts": {<category>: int}}``;
+      empty ``metrics`` ``{}`` when balance can't be computed yet.
+    - ``data_sparsity`` — emitted only for an empty wardrobe.
+      ``metrics``: ``{"item_count": 0}``.
+
+    ``severity``: stable code ``low`` / ``medium`` / ``high``.
+    """
+
+    type: str
+    severity: str
+    # Numeric metrics for FE-side copy. Scalars, except
+    # ``category_balance.counts`` which is a per-category count map.
+    metrics: dict[str, int | float | dict[str, int]]
+
+
+class WardrobeHealthResponse(BaseModel):
+    """Wardrobe health score + insights, fully i18n-safe.
+
+    ``score``: int 0-100. ``level``: stable code ``great`` / ``good`` /
+    ``fair`` / ``low`` (FE localizes the headline). No baked English summary —
+    FE renders copy from ``score``, ``level`` and each insight's ``metrics``.
+    """
+
+    score: int
+    level: str
+    insights: list[WardrobeHealthInsightItem]

@@ -2915,6 +2915,71 @@
         }
       }
     },
+    "/v1/insights/wardrobe-health": {
+      "get": {
+        "tags": [
+          "insights"
+        ],
+        "summary": "Wardrobe Health Score",
+        "operationId": "wardrobe_health_score_v1_insights_wardrobe_health_get",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WardrobeHealthResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/insights/reports/{period}": {
       "get": {
         "tags": [
@@ -9686,6 +9751,73 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WardrobeHealthInsightItem": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "object",
+            "title": "Metrics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "severity",
+          "metrics"
+        ],
+        "title": "WardrobeHealthInsightItem",
+        "description": "A single wardrobe-health insight as i18n-safe codes + numbers.\n\nThe backend never returns user-facing copy; the frontend localizes from the\nstable ``type`` code and the numeric ``metrics``.\n\n``type`` (stable machine codes):\n- ``wear_coverage`` — share of items worn recently.\n  ``metrics``: ``{\"coverage_ratio\": float (0-1), \"window_days\": int (90)}``\n- ``unused_items`` — items not worn within rolling windows.\n  ``metrics``: ``{\"unused_60\": int, \"unused_90\": int, \"unused_180\": int}``\n- ``category_balance`` — concentration across categories.\n  ``metrics``: ``{\"dominant_ratio\": float (0-1), \"counts\": {<category>: int}}``;\n  empty ``metrics`` ``{}`` when balance can't be computed yet.\n- ``data_sparsity`` — emitted only for an empty wardrobe.\n  ``metrics``: ``{\"item_count\": 0}``.\n\n``severity``: stable code ``low`` / ``medium`` / ``high``."
+      },
+      "WardrobeHealthResponse": {
+        "properties": {
+          "score": {
+            "type": "integer",
+            "title": "Score"
+          },
+          "level": {
+            "type": "string",
+            "title": "Level"
+          },
+          "insights": {
+            "items": {
+              "$ref": "#/components/schemas/WardrobeHealthInsightItem"
+            },
+            "type": "array",
+            "title": "Insights"
+          }
+        },
+        "type": "object",
+        "required": [
+          "score",
+          "level",
+          "insights"
+        ],
+        "title": "WardrobeHealthResponse",
+        "description": "Wardrobe health score + insights, fully i18n-safe.\n\n``score``: int 0-100. ``level``: stable code ``great`` / ``good`` /\n``fair`` / ``low`` (FE localizes the headline). No baked English summary —\nFE renders copy from ``score``, ``level`` and each insight's ``metrics``."
       },
       "WardrobeItemImagesResponse": {
         "properties": {
