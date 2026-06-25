@@ -257,9 +257,12 @@ class Settings(BaseSettings):
     # flag (controlled write path); the flag only gates the read/injection, so
     # flipping back to False is a clean rollback.
     ENABLE_PREFERENCE_MEMORY: bool = False
-    # BE#48 wardrobe relationship graph. Item-item relationships are persisted
-    # regardless; this flag only gates their ranking boost/penalty in Today
-    # recommendations.
+    # BE#48 wardrobe relationship graph. Rule-based edges are 100% derived from
+    # current item metadata, so — unlike user data — they are NOT persisted when
+    # this flag is off (no passive backfill); they are re-derived cheaply when it
+    # flips on. The flag therefore gates both rule-based generation/persistence
+    # and the ranking boost/penalty in Today recommendations. User/feedback edges
+    # (when added) are user data and follow the persist-regardless convention.
     ENABLE_WARDROBE_GRAPH: bool = False
 
     # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
