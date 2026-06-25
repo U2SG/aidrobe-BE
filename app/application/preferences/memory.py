@@ -41,6 +41,26 @@ _WEAK_SOURCE_CONFIDENCE_CAP = 0.4
 
 _VALID_POLARITIES = frozenset({"positive", "negative", "neutral"})
 
+# Allowlist for `preference_type`. This is durable memory that later enters LLM
+# prompts, so the type label is pinned to a known vocabulary at write time;
+# free-form user text is confined to the bounded `preference_value`. Mirrors the
+# type list documented on the model. Types are stored lowercased so the scoring
+# read can match them case-insensitively.
+_VALID_PREFERENCE_TYPES = frozenset(
+    {
+        "style",
+        "color",
+        "fit",
+        "occasion",
+        "brand",
+        "material",
+        "formality",
+        "climate",
+        "footwear",
+        "negative_preference",
+    }
+)
+
 # Bound the prompt-facing memory so the injected block stays compact.
 _MAX_PER_POLARITY = 8
 
@@ -79,9 +99,11 @@ async def record_preference(
     value = sanitize_preference_value(preference_value)
     if not value:
         raise PreferenceMemoryError("empty preference value after sanitization")
-    pref_type = sanitize_preference_value(preference_type)
+    pref_type = sanitize_preference_value(preference_type).lower()
     if not pref_type:
         raise PreferenceMemoryError("empty preference type")
+    if pref_type not in _VALID_PREFERENCE_TYPES:
+        raise PreferenceMemoryError(f"unknown preference type: {pref_type!r}")
     return await repo.upsert(
         user_id=user_id,
         preference_type=pref_type,
@@ -128,4 +150,26 @@ def negative_values_by_type(
         str(e["value"]).lower()
         for e in memory.get("negative", [])
         if e.get("type") == preference_type and isinstance(e.get("value"), str)
+    }
+
+
+async def live_negative_values_by_type(
+    repo: SqlAlchemyPreferenceMemoryRepository,
+    user_id: uuid.UUID,
+    *preference_types: str,
+) -> set[str]:
+    """Uncapped, scoring-specific read of negative `value`s for the given types.
+
+    `read_preference_memory` caps each polarity to `_MAX_PER_POLARITY` for prompt
+    budget, but RANKING must honor every explicit negative — an explicit
+    "dislike red" that ranks behind eight higher-confidence fit/style negatives
+    must still down-rank red outfits. Scoring therefore reads the live rows
+    directly rather than the capped prompt view. Types are matched against the
+    lowercased values persisted by the write path."""
+    wanted = {t.lower() for t in preference_types}
+    rows = await repo.list_live(user_id)
+    return {
+        row.preference_value.lower()
+        for row in rows
+        if row.polarity == "negative" and row.preference_type in wanted
     }

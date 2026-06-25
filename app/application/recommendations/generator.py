@@ -10,10 +10,7 @@ from sqlalchemy import select
 from app.application.outfits.scoring.static import compute_static_breakdown, get_rules_version
 from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo, WeatherPort
-from app.application.preferences.memory import (
-    negative_values_by_type,
-    read_preference_memory,
-)
+from app.application.preferences.memory import live_negative_values_by_type
 from app.application.recommendations.engine import EngineItem, RecommendationEngine
 from app.application.recommendations.fit_profile import build_fit_profile
 from app.application.style.build_style_profile import build_style_profile
@@ -228,11 +225,13 @@ class RecommendationGenerator:
                 SqlAlchemyPreferenceMemoryRepository,
             )
 
-            memory = await read_preference_memory(
-                SqlAlchemyPreferenceMemoryRepository(self.repository.session), user_id
-            )
-            return negative_values_by_type(memory, "color") | negative_values_by_type(
-                memory, "negative_preference"
+            # Uncapped scoring read: an explicit color dislike must down-rank
+            # even when it sits behind the 8-row prompt cap (see review BE#46).
+            return await live_negative_values_by_type(
+                SqlAlchemyPreferenceMemoryRepository(self.repository.session),
+                user_id,
+                "color",
+                "negative_preference",
             )
         except Exception as exc:
             logger.warning("preference_memory_load_failed", user_id=str(user_id), error=str(exc))

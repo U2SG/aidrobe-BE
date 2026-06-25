@@ -263,12 +263,13 @@ def test_parse_structured_maps_valid_positions_to_indices() -> None:
     assert _parse_structured('{"answer": "hi", "referenced_items": [1, 3]}', 3) == (
         "hi",
         [0, 2],
+        [],
     )
 
 
 def test_parse_structured_drops_hallucinated_dupe_and_nonint_positions() -> None:
     # 1 valid; dup 1 dropped; 0 and 4 out of range; "2" non-int; true is bool.
-    answer, indices = _parse_structured(  # type: ignore[misc]
+    answer, indices, _prefs = _parse_structured(  # type: ignore[misc]
         '{"answer": "x", "referenced_items": [1, 1, 0, 4, "2", true, 2]}', 3
     )
     assert answer == "x"
@@ -276,11 +277,30 @@ def test_parse_structured_drops_hallucinated_dupe_and_nonint_positions() -> None
 
 
 def test_parse_structured_defaults_missing_refs_to_empty() -> None:
-    assert _parse_structured('{"answer": "none"}', 3) == ("none", [])
+    assert _parse_structured('{"answer": "none"}', 3) == ("none", [], [])
     assert _parse_structured('{"answer": "none", "referenced_items": []}', 3) == (
         "none",
         [],
+        [],
     )
+
+
+def test_parse_structured_extracts_well_formed_stated_preferences() -> None:
+    answer, indices, prefs = _parse_structured(  # type: ignore[misc]
+        '{"answer": "ok", "referenced_items": [], "stated_preferences": ['
+        '{"type": "fit", "value": "oversized", "polarity": "negative"},'
+        '{"type": "color", "value": "navy", "polarity": "positive"},'
+        '{"value": "missing type"}, "not a dict", {"type": "x", "value": 5, "polarity": "negative"}'
+        "]}",
+        3,
+    )
+    assert answer == "ok"
+    assert indices == []
+    # Only the two fully-string-typed entries survive; malformed ones are dropped.
+    assert prefs == [
+        {"type": "fit", "value": "oversized", "polarity": "negative"},
+        {"type": "color", "value": "navy", "polarity": "positive"},
+    ]
 
 
 def test_parse_structured_returns_none_on_bad_shape() -> None:
