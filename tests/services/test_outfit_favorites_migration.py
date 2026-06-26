@@ -57,20 +57,16 @@ def test_outfit_favorites_migration_upgrade_and_downgrade(monkeypatch: Any) -> N
         if isinstance(element, sa.Column)
     ]
     assert columns == ["user_id", "outfit_id", "created_at"]
-    assert (
-        "ix_outfit_favorites_user_id",
-        "outfit_favorites",
-        ["user_id"],
-    ) in recorder.created_indexes
+    # Only the reverse-lookup index — user_id is served by the composite PK prefix.
     assert (
         "ix_outfit_favorites_outfit_id",
         "outfit_favorites",
         ["outfit_id"],
     ) in recorder.created_indexes
+    assert ("ix_outfit_favorites_user_id", "outfit_favorites", ["user_id"]) not in recorder.created_indexes
 
     migration.downgrade()
 
     assert ("ix_outfit_favorites_outfit_id", "outfit_favorites") in recorder.dropped_indexes
-    assert ("ix_outfit_favorites_user_id", "outfit_favorites") in recorder.dropped_indexes
     assert recorder.dropped_tables == ["outfit_favorites"]
 

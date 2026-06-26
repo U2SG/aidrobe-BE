@@ -42,19 +42,14 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.PrimaryKeyConstraint("user_id", "outfit_id", name="pk_outfit_favorites"),
-        sa.UniqueConstraint(
-            "user_id",
-            "outfit_id",
-            name="uq_outfit_favorites_user_outfit",
-        ),
     )
-    op.create_index("ix_outfit_favorites_user_id", "outfit_favorites", ["user_id"])
+    # No ix on user_id: the composite PK's leftmost prefix already serves
+    # user_id lookups / the user-cascade. Keep only the reverse-lookup index.
     op.create_index("ix_outfit_favorites_outfit_id", "outfit_favorites", ["outfit_id"])
 
 
 def downgrade() -> None:
     op.execute("SET lock_timeout = '3s'")
     op.drop_index("ix_outfit_favorites_outfit_id", table_name="outfit_favorites")
-    op.drop_index("ix_outfit_favorites_user_id", table_name="outfit_favorites")
     op.drop_table("outfit_favorites")
 

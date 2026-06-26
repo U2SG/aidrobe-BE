@@ -133,9 +133,8 @@ class OutfitFeedback(UUIDPrimaryKeyMixin, Base):
 
 class OutfitFavorite(Base):
     __tablename__ = "outfit_favorites"
-    __table_args__ = (
-        UniqueConstraint("user_id", "outfit_id", name="uq_outfit_favorites_user_outfit"),
-    )
+    # Composite PK (user_id, outfit_id) already enforces uniqueness — no extra
+    # UniqueConstraint needed.
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
