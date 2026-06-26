@@ -157,6 +157,8 @@ async def test_ask_structured_disabled_returns_no_refs(
     assert body["tokens_used"] == 42
     # No structured signal + no focus -> no refs (NOT all candidates).
     assert body["item_refs"] == []
+    assert body["has_wardrobe_context"] is True
+    assert body["locale"] == "zh-CN"
     assert uuid.UUID(body["ask_session_id"])
 
 
@@ -190,6 +192,7 @@ async def test_ask_structured_disabled_with_focus_returns_focused_only(
     assert resp.status_code == 200
     body = resp.json()
     assert body["item_refs"] == [str(focus_id)]
+    assert body["has_wardrobe_context"] is True
 
 
 async def test_ask_feeds_wardrobe_into_prompt(
@@ -223,6 +226,35 @@ async def test_ask_feeds_wardrobe_into_prompt(
     assert '"color_main": "black"' in llm.last_system_prompt
     # The opaque user token is still attached for cross-turn identity.
     assert "usr_" in llm.last_system_prompt
+
+
+async def test_ask_without_items_reports_no_wardrobe_context(
+    db_session: AsyncSession, patch_router_settings
+) -> None:
+    user_id = uuid.uuid4()
+    db_session.add(User(id=user_id))
+    await db_session.flush()
+    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    llm = _FakeLlm()
+    app = _build_app(
+        db_session,
+        Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
+        llm=llm,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "今天穿什么？"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["item_refs"] == []
+    assert body["item_ref_snapshots"] == []
+    assert body["has_wardrobe_context"] is False
+    assert body["locale"] == "zh-CN"
+    assert llm.last_system_prompt is not None
+    assert "本次没有可用的衣橱单品上下文" in llm.last_system_prompt
 
 
 async def _seed_focused_item(session: AsyncSession, user_id: uuid.UUID) -> uuid.UUID:
@@ -302,6 +334,9 @@ async def test_ask_locale_switches_preamble_language(
             json={"question": "what should I wear?", "locale": "en-US"},
         )
     assert resp.status_code == 200
+    body = resp.json()
+    assert body["locale"] == "en-US"
+    assert body["has_wardrobe_context"] is True
     assert llm.last_system_prompt is not None
     assert llm.last_system_prompt.startswith("You are Aidrobe")
     # Wardrobe still reaches the prompt regardless of locale.
@@ -342,6 +377,7 @@ async def test_ask_structured_validates_item_refs(
     body = resp.json()
     assert body["answer"] == "穿白衬衫吧"  # unwrapped from the JSON envelope
     assert len(body["item_refs"]) == 1  # only the in-range position survives
+    assert body["has_wardrobe_context"] is True
     assert llm.last_json_mode is True  # provider constrained to JSON mode
 
 

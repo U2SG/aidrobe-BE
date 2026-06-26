@@ -3181,6 +3181,14 @@ components:
             $ref: '#/components/schemas/AskItemRefSnapshot'
           type: array
           title: Item Ref Snapshots
+        has_wardrobe_context:
+          type: boolean
+          title: Has Wardrobe Context
+          default: false
+        locale:
+          type: string
+          title: Locale
+          default: zh-CN
         tokens_used:
           type: integer
           title: Tokens Used
@@ -5403,6 +5411,14 @@ components:
         reason:
           type: string
           title: Reason
+        display_reason:
+          anyOf:
+          - $ref: '#/components/schemas/I18nMessage'
+          - type: 'null'
+        similar_item_count:
+          type: integer
+          title: Similar Item Count
+          default: 0
         image_url:
           anyOf:
           - type: string
@@ -5475,6 +5491,14 @@ components:
         reason:
           type: string
           title: Reason
+        display_reason:
+          anyOf:
+          - $ref: '#/components/schemas/I18nMessage'
+          - type: 'null'
+        similar_item_count:
+          type: integer
+          title: Similar Item Count
+          default: 0
         similar_items:
           items:
             $ref: '#/components/schemas/SimilarItemResponse'

@@ -15,6 +15,7 @@ from app.application.shopping.sense_check import ListSenseChecks, SenseCheck
 from app.bootstrap.container import vision_service
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
+from app.common.i18n import I18nMessage
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.shopping import ShoppingSenseCheck
 from app.infrastructure.persistence.models.user import User
@@ -43,22 +44,48 @@ def get_vision_service() -> VisionPort:
     return vision_service()
 
 
+def _display_reason(payload: dict[str, object]) -> I18nMessage | None:
+    raw = payload.get("display_reason")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return I18nMessage(**raw)
+    except ValueError:
+        return None
+
+
+def _similar_item_count(payload: dict[str, object], raw_similar: object) -> int:
+    count = payload.get("similar_item_count")
+    if isinstance(count, int):
+        return count
+    if not isinstance(raw_similar, list):
+        return 0
+    return sum(
+        1
+        for item in raw_similar
+        if isinstance(item, dict) and float(item.get("similarity", 0.0)) >= 0.9
+    )
+
+
 def _history_item(record: ShoppingSenseCheck) -> SenseCheckHistoryItem:
     payload = record.payload or {}
-    raw_similar = payload.get("similar_items", []) if isinstance(payload, dict) else []
+    raw_similar = payload.get("similar_items", [])
     similar = [
         SimilarItemResponse(item_id=s["item_id"], similarity=s["similarity"])
         for s in raw_similar
+        if isinstance(s, dict)
     ]
     return SenseCheckHistoryItem(
         sense_check_id=record.id,
         verdict=record.verdict,
         reason=record.reason,
+        display_reason=_display_reason(payload),
+        similar_item_count=_similar_item_count(payload, raw_similar),
         image_url=resolve_render_url(record.object_key, record.image_url),
         source_url=record.source_url,
         similar_items=similar,
-        wardrobe_gap=payload.get("wardrobe_gap", []) if isinstance(payload, dict) else [],
-        outfit_potential=payload.get("outfit_potential", 0) if isinstance(payload, dict) else 0,
+        wardrobe_gap=payload.get("wardrobe_gap", []),
+        outfit_potential=payload.get("outfit_potential", 0),
         created_at=record.created_at,
     )
 
@@ -85,6 +112,8 @@ async def sense_check(
     return SenseCheckResponse(
         verdict=result.verdict,
         reason=result.reason,
+        display_reason=result.display_reason,
+        similar_item_count=result.similar_item_count,
         similar_items=[
             SimilarItemResponse(item_id=s.item_id, similarity=s.similarity)
             for s in result.similar_items
