@@ -10,6 +10,7 @@ from app.common.enums import ItemStatus
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
+    OutfitFavorite,
     OutfitFeedback,
     OutfitItem,
     OutfitPlan,
@@ -199,6 +200,41 @@ class SqlAlchemyRecommendationRepository:
             .where(Outfit.id == outfit_id, Outfit.user_id == user_id)
             ),
         )
+
+    async def add_outfit_favorite(self, user_id: uuid.UUID, outfit_id: uuid.UUID) -> None:
+        """Idempotently favorite an outfit for a user."""
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        stmt = (
+            pg_insert(OutfitFavorite)
+            .values(user_id=user_id, outfit_id=outfit_id)
+            .on_conflict_do_nothing(index_elements=["user_id", "outfit_id"])
+        )
+        await self.session.execute(stmt)
+        await self.session.flush()
+
+    async def remove_outfit_favorite(self, user_id: uuid.UUID, outfit_id: uuid.UUID) -> None:
+        """Idempotently remove an outfit favorite."""
+        await self.session.execute(
+            delete(OutfitFavorite).where(
+                OutfitFavorite.user_id == user_id,
+                OutfitFavorite.outfit_id == outfit_id,
+            )
+        )
+        await self.session.flush()
+
+    async def list_favorited_outfit_ids(
+        self, user_id: uuid.UUID, outfit_ids: list[uuid.UUID]
+    ) -> set[uuid.UUID]:
+        if not outfit_ids:
+            return set()
+        result = await self.session.scalars(
+            select(OutfitFavorite.outfit_id).where(
+                OutfitFavorite.user_id == user_id,
+                OutfitFavorite.outfit_id.in_(outfit_ids),
+            )
+        )
+        return set(result.all())
 
     async def get_wear_history(
         self, outfit_id: uuid.UUID, user_id: uuid.UUID, worn_date: date

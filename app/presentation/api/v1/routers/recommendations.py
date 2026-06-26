@@ -18,6 +18,7 @@ from app.application.outfits.obstacles import (
     has_dirty,
 )
 from app.application.outfits.prep import compute_prep
+from app.application.outfits.replacements import find_replacement_candidates
 from app.application.outfits.scoring.dynamic import compute_dynamic_scores
 from app.application.outfits.wear import WearOutfit
 from app.application.recommendations.feedback_tags import get_tags_for_scene
@@ -27,7 +28,7 @@ from app.application.wardrobe.submit_fit_feedback import SubmitFitFeedback
 from app.bootstrap.container import weather_service
 from app.common import error_codes
 from app.common.category_to_role import map_category_to_role
-from app.common.enums import ItemStatus, RecommendationStatus, TimeSensitivity
+from app.common.enums import ImageType, ItemStatus, RecommendationStatus, TimeSensitivity
 from app.common.exceptions import FriendlyException
 from app.common.i18n import I18nMessage
 from app.common.season import current_season
@@ -36,7 +37,7 @@ from app.infrastructure.cache.client import get_redis_client
 from app.infrastructure.cache.keys import build_daily_recommendation_cache_key
 from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit
 from app.infrastructure.persistence.models.user import User
-from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.repositories.operation_log_repo import (
     SqlAlchemyOperationLogRepository,
 )
@@ -48,8 +49,10 @@ from app.infrastructure.persistence.repositories.user_repo import SqlAlchemyUser
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
+from app.presentation.api.v1.render_url import resolve_render_url
 from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.recommendations import (
+    FavoriteOutfitResponse,
     FeedbackBundleRequest,
     FeedbackBundleResponse,
     FeedbackRequest,
@@ -63,6 +66,8 @@ from app.presentation.api.v1.schemas.recommendations import (
     OutfitScoresResponse,
     ReasoningItem,
     RecommendationItemResponse,
+    ReplacementCandidateResponse,
+    ReplacementCandidatesResponse,
     StyleContextResponse,
     TodayContextResponse,
     TodayRecommendationResponse,
@@ -75,7 +80,7 @@ router = APIRouter(prefix="/v1/recommendations", tags=["recommendations"])
 logger = structlog.get_logger(__name__)
 
 
-def _build_base_outfit_response(outfit: Outfit) -> OutfitResponse:
+def _build_base_outfit_response(outfit: Outfit, *, is_favorited: bool = False) -> OutfitResponse:
     # BE#37/#38 — reasoning is persisted on the row; surface it only when the
     # flag is on (no extra query — it's a column).
     reasoning: list[ReasoningItem] | None = None
@@ -88,6 +93,7 @@ def _build_base_outfit_response(outfit: Outfit) -> OutfitResponse:
         title=outfit.title,
         reason=outfit.reason_text,
         time_sensitivity=outfit.time_sensitivity,
+        is_favorited=is_favorited,
         items=[
             RecommendationItemResponse(
                 item_id=item.item_id,
@@ -110,12 +116,14 @@ async def _enrich_outfits(
     outfits: list[Outfit],
     today: date,
     context_json: dict[str, Any] | None = None,
+    favorited_outfit_ids: set[uuid.UUID] | None = None,
 ) -> list[OutfitResponse]:
     """Batch-fetch WardrobeItem rows for all outfits, compute dynamic scores /
     obstacles / prep per outfit. Each pipeline gated by its own feature flag —
     when all three flags are off, we don't even hit the DB."""
     settings = get_settings()
-    base = [_build_base_outfit_response(o) for o in outfits]
+    favorited = favorited_outfit_ids or set()
+    base = [_build_base_outfit_response(o, is_favorited=o.id in favorited) for o in outfits]
     if not (settings.ENABLE_OUTFIT_SCORES or settings.ENABLE_OBSTACLES or settings.ENABLE_PREP_STEPS):
         return base
 
@@ -198,6 +206,53 @@ async def _enrich_outfits(
     return enriched
 
 
+async def _get_favorited_outfit_ids(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    outfit_ids: list[uuid.UUID],
+) -> set[uuid.UUID]:
+    return await SqlAlchemyRecommendationRepository(session).list_favorited_outfit_ids(
+        user_id, outfit_ids
+    )
+
+
+async def _refresh_favorite_flags(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    outfits: list[OutfitResponse],
+) -> None:
+    favorited = await _get_favorited_outfit_ids(
+        session, user_id, [outfit.outfit_id for outfit in outfits]
+    )
+    for outfit in outfits:
+        outfit.is_favorited = outfit.outfit_id in favorited
+
+
+async def _preferred_thumbnail_sources(
+    session: AsyncSession,
+    item_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, tuple[str | None, str | None]]:
+    if not item_ids:
+        return {}
+    images = list(
+        await session.scalars(
+            select(WardrobeItemImage).where(WardrobeItemImage.item_id.in_(item_ids))
+        )
+    )
+    preferred: dict[uuid.UUID, WardrobeItemImage] = {}
+    for image in images:
+        existing = preferred.get(image.item_id)
+        if existing is None or (
+            existing.image_type != ImageType.STANDARD.value
+            and image.image_type == ImageType.STANDARD.value
+        ):
+            preferred[image.item_id] = image
+    return {
+        item_id: (image.object_key, image.image_url)
+        for item_id, image in preferred.items()
+    }
+
+
 async def _coverage_gap_hint(session: AsyncSession, user_id: uuid.UUID) -> str | None:
     """Detect a wardrobe shape that blocks combinations despite having items —
     e.g. several tops but no bottoms (or vice versa). Returns a nudge to fill the
@@ -246,12 +301,16 @@ async def today_response(
     outfits = sorted(daily.outfits, key=lambda o: o.rank_order)
     selected_outfits = _select_outfits_for_remaining_time(outfits, departure_time)
     selected_outfits = _select_outfits_for_scene(selected_outfits, scene)
+    favorited = await _get_favorited_outfit_ids(
+        session, daily.user_id, [outfit.id for outfit in selected_outfits]
+    )
     enriched = (
         await _enrich_outfits(
             session,
             selected_outfits,
             today,
             context_json=daily.context_json if isinstance(daily.context_json, dict) else None,
+            favorited_outfit_ids=favorited,
         )
         if daily.id is not None
         else []
@@ -397,6 +456,7 @@ async def get_today_recommendation(
         payload = cached.decode() if isinstance(cached, bytes) else cached
         response = ResponseModel[TodayRecommendationResponse].model_validate_json(payload)
         if response.data is not None:
+            await _refresh_favorite_flags(session, current_user.id, response.data.outfits)
             await _backfill_weather_if_missing(response.data, settings.location)
         return response
 
@@ -485,8 +545,8 @@ async def get_outfit_detail(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ResponseModel[OutfitResponse]:
-    use_case = SqlAlchemyRecommendationRepository(session)
-    outfit = await use_case.get_outfit_for_user(outfit_id, current_user.id)
+    repository = SqlAlchemyRecommendationRepository(session)
+    outfit = await repository.get_outfit_for_user(outfit_id, current_user.id)
     if outfit is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Outfit not found", status_code=404)
     await SqlAlchemyOperationLogRepository(session).add(
@@ -494,8 +554,96 @@ async def get_outfit_detail(
         "recommendation_viewed",
         {"outfit_type": outfit.outfit_type},
     )
-    enriched = await _enrich_outfits(session, [outfit], datetime.now(UTC).date())
+    favorited = await repository.list_favorited_outfit_ids(current_user.id, [outfit.id])
+    enriched = await _enrich_outfits(
+        session,
+        [outfit],
+        datetime.now(UTC).date(),
+        favorited_outfit_ids=favorited,
+    )
     return ResponseModel(data=enriched[0])
+
+
+@router.get(
+    "/outfits/{outfit_id}/items/{item_id}/replacements",
+    response_model=ResponseModel[ReplacementCandidatesResponse],
+)
+async def get_replacement_candidates(
+    outfit_id: uuid.UUID,
+    item_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[ReplacementCandidatesResponse]:
+    repository = SqlAlchemyRecommendationRepository(session)
+    outfit = await repository.get_outfit_for_user(outfit_id, current_user.id)
+    if outfit is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Outfit not found", status_code=404)
+    outfit_item_ids = {outfit_item.item_id for outfit_item in outfit.items}
+    if item_id not in outfit_item_ids:
+        raise FriendlyException(error_codes.NOT_FOUND, "Item not found in outfit", status_code=404)
+    target = await session.scalar(
+        select(WardrobeItem).where(
+            WardrobeItem.id == item_id,
+            WardrobeItem.user_id == current_user.id,
+            WardrobeItem.deleted_at.is_(None),
+        )
+    )
+    if target is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Item not found", status_code=404)
+
+    candidates = await find_replacement_candidates(
+        session,
+        target,
+        exclude_ids=outfit_item_ids - {item_id},
+        k=8,
+    )
+    thumbnail_sources = await _preferred_thumbnail_sources(
+        session, [candidate.item.id for candidate in candidates]
+    )
+    replacements = []
+    for candidate in candidates:
+        object_key, fallback_url = thumbnail_sources.get(
+            candidate.item.id, (None, candidate.item.cover_image_url)
+        )
+        replacements.append(
+            ReplacementCandidateResponse(
+                item_id=candidate.item.id,
+                title=candidate.item.title,
+                category=candidate.item.category,
+                color_main=candidate.item.color_main,
+                thumbnail_url=resolve_render_url(object_key, fallback_url),
+                similarity=candidate.similarity,
+            )
+        )
+    return ResponseModel(data=ReplacementCandidatesResponse(replacements=replacements))
+
+
+@router.post("/outfits/{outfit_id}/favorite", response_model=ResponseModel[FavoriteOutfitResponse])
+async def favorite_outfit(
+    outfit_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[FavoriteOutfitResponse]:
+    repository = SqlAlchemyRecommendationRepository(session)
+    outfit = await repository.get_outfit_for_user(outfit_id, current_user.id)
+    if outfit is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Outfit not found", status_code=404)
+    await repository.add_outfit_favorite(current_user.id, outfit_id)
+    return ResponseModel(data=FavoriteOutfitResponse(success=True))
+
+
+@router.delete("/outfits/{outfit_id}/favorite", response_model=ResponseModel[FavoriteOutfitResponse])
+async def unfavorite_outfit(
+    outfit_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[FavoriteOutfitResponse]:
+    repository = SqlAlchemyRecommendationRepository(session)
+    outfit = await repository.get_outfit_for_user(outfit_id, current_user.id)
+    if outfit is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Outfit not found", status_code=404)
+    await repository.remove_outfit_favorite(current_user.id, outfit_id)
+    return ResponseModel(data=FavoriteOutfitResponse(success=True))
 
 
 @router.post("/outfits/{outfit_id}/wear", response_model=ResponseModel[WearOutfitResponse])

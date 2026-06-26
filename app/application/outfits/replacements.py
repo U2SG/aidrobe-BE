@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 import structlog
 from sqlalchemy import select
@@ -29,6 +30,14 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 logger = structlog.get_logger(__name__)
 
 DEFAULT_K = 3
+SIMILARITY_CATEGORY_COLOR = 0.9
+SIMILARITY_CATEGORY = 0.6
+
+
+@dataclass(frozen=True)
+class ReplacementCandidate:
+    item: WardrobeItem
+    similarity: float
 
 
 def _pgvector_enabled() -> bool:
@@ -83,6 +92,108 @@ async def find_replacements(
 
     logger.warning("replacement.exhausted", item_id=str(item.id), category=category)
     return []
+
+
+async def find_replacement_candidates(
+    session: AsyncSession,
+    item: WardrobeItem,
+    *,
+    exclude_ids: Iterable[uuid.UUID] = (),
+    k: int = 8,
+) -> list[ReplacementCandidate]:
+    """Return detailed replacement candidates for API read paths.
+
+    This mirrors the existing replacement cascade: pgvector neighbours when
+    enabled, otherwise deterministic in-memory category/color ranking from the
+    JSONB/dev path. The older `find_replacements()` stays ID-only for obstacle
+    callers.
+    """
+    if k <= 0:
+        return []
+    exclude = {item.id, *exclude_ids}
+
+    if _pgvector_enabled():
+        candidates = await _candidates_by_embedding(session, item, exclude, k)
+        if candidates:
+            return candidates
+        logger.info(
+            "replacement.fallback",
+            item_id=str(item.id),
+            from_tier="embedding",
+            to_tier="category_color",
+        )
+
+    candidates = await _candidates_by_category_rank(session, item, exclude, k)
+    if not candidates:
+        logger.warning("replacement.exhausted", item_id=str(item.id), category=item.category)
+    return candidates
+
+
+async def _candidates_by_embedding(
+    session: AsyncSession,
+    item: WardrobeItem,
+    exclude: set[uuid.UUID],
+    k: int,
+) -> list[ReplacementCandidate]:
+    src_embedding = await session.scalar(
+        select(ItemEmbedding).where(ItemEmbedding.item_id == item.id).limit(1)
+    )
+    if src_embedding is None:
+        return []
+    src_vector = src_embedding.vector
+    stmt = (
+        select(
+            WardrobeItem,
+            ItemEmbedding.vector.op("<->")(src_vector).label("dist"),
+        )
+        .join(ItemEmbedding, ItemEmbedding.item_id == WardrobeItem.id)
+        .where(
+            WardrobeItem.user_id == item.user_id,
+            WardrobeItem.category == item.category,
+            WardrobeItem.status == ItemStatus.WEARABLE.value,
+            WardrobeItem.deleted_at.is_(None),
+            WardrobeItem.id.notin_(exclude),
+        )
+        .order_by("dist")
+        .limit(k)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [
+        ReplacementCandidate(item=row[0], similarity=round(1.0 / (1.0 + float(row.dist)), 4))
+        for row in rows
+    ]
+
+
+async def _candidates_by_category_rank(
+    session: AsyncSession,
+    item: WardrobeItem,
+    exclude: set[uuid.UUID],
+    k: int,
+) -> list[ReplacementCandidate]:
+    rows = (
+        await session.execute(
+            select(WardrobeItem)
+            .where(
+                WardrobeItem.user_id == item.user_id,
+                WardrobeItem.category == item.category,
+                WardrobeItem.status == ItemStatus.WEARABLE.value,
+                WardrobeItem.deleted_at.is_(None),
+                WardrobeItem.id.notin_(exclude),
+            )
+            .order_by(WardrobeItem.created_at.desc())
+        )
+    ).scalars().all()
+    same_color = [
+        ReplacementCandidate(item=candidate, similarity=SIMILARITY_CATEGORY_COLOR)
+        for candidate in rows
+        if candidate.color_main == item.color_main
+    ]
+    other_color = [
+        ReplacementCandidate(item=candidate, similarity=SIMILARITY_CATEGORY)
+        for candidate in rows
+        if candidate.color_main != item.color_main
+    ]
+    return (same_color + other_color)[:k]
 
 
 async def _by_embedding(
