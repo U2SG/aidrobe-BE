@@ -164,6 +164,14 @@ async def test_skip_when_near_duplicate(
     assert str(dup.id) in sim_ids
     assert body["similar_items"][0]["similarity"] >= 0.9
     assert "top" not in body["wardrobe_gap"]
+    assert body["display_reason"]["key"] == "sense_check.skip.duplicate"
+    assert body["display_reason"]["params"] == {
+        "count": 1,
+        "color": "white",
+        "category": "top",
+    }
+    assert body["reason"] == body["display_reason"]["fallback_text"]
+    assert body["similar_item_count"] == 1
 
 
 async def test_buy_when_fills_gap(
@@ -185,6 +193,9 @@ async def test_buy_when_fills_gap(
     assert body["verdict"] == "buy"
     assert "top" in body["wardrobe_gap"]
     assert body["similar_items"] == []
+    assert body["display_reason"]["key"] == "sense_check.buy.gap"
+    assert body["display_reason"]["params"] == {"category": "top"}
+    assert body["reason"] == body["display_reason"]["fallback_text"]
 
 
 async def test_buy_when_high_outfit_potential(
@@ -215,6 +226,32 @@ async def test_buy_when_high_outfit_potential(
     # blue top is same category, different color → category-only similarity.
     assert body["similar_items"]
     assert body["similar_items"][0]["similarity"] < 0.9
+    assert body["display_reason"]["key"] == "sense_check.buy.versatile"
+    assert body["display_reason"]["params"] == {"category": "top", "count": body["outfit_potential"]}
+    assert body["reason"] == body["display_reason"]["fallback_text"]
+
+
+async def test_consider_when_some_category_but_low_pairability(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_flag(monkeypatch)
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    await _add_item(db_session, user_id, "top", "blue")
+
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/v1/shopping/sense-check",
+            headers={"X-User-Id": str(user_id)},
+            json={"image_url": "http://x/shirt.jpg"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["verdict"] == "consider"
+    assert body["display_reason"]["key"] == "sense_check.consider.some"
+    assert body["display_reason"]["params"] == {"category": "top", "count": 0}
+    assert body["similar_item_count"] == 0
 
 
 async def test_sense_check_persists_and_history_returns_it(
@@ -240,6 +277,8 @@ async def test_sense_check_persists_and_history_returns_it(
     assert len(items) == 1
     assert items[0]["verdict"] == post.json()["verdict"]
     assert items[0]["image_url"] == "http://x/shirt.jpg"
+    assert items[0]["display_reason"] == post.json()["display_reason"]
+    assert items[0]["similar_item_count"] == post.json()["similar_item_count"]
 
     # Row persisted to the table.
     row = await db_session.scalar(
@@ -248,6 +287,8 @@ async def test_sense_check_persists_and_history_returns_it(
     assert row is not None
     assert row.verdict == post.json()["verdict"]
     assert row.object_key is None
+    assert row.payload["display_reason"] == post.json()["display_reason"]
+    assert row.payload["similar_item_count"] == post.json()["similar_item_count"]
 
 
 async def test_sense_check_persists_internal_object_key_and_history_signs(

@@ -124,16 +124,40 @@ logger = structlog.get_logger(__name__)
 _PREAMBLES: dict[str, str] = {
     "zh": (
         "你是 Aidrobe 的穿搭助理。基于用户提供的衣橱结构化数据回答穿搭问题，"
-        "建议要具体、可执行，只用中文回答。以下是用户的衣橱（已脱敏，仅含结构化属性）：\n"
+        "建议要具体、可执行，并使用自然中文回答。\n"
     ),
     "en": (
         "You are Aidrobe's styling assistant. Answer styling questions using the "
         "user's structured wardrobe data. Be specific and actionable, and respond "
-        "only in English. The wardrobe (sanitized, structured attributes only) "
-        "follows:\n"
+        "only in English.\n"
     ),
 }
 _DEFAULT_LANG = "zh"
+
+_WARDROBE_CONTEXT_CLAUSE: dict[str, str] = {
+    "zh": (
+        "以下是用户的衣橱（已脱敏，仅含结构化属性）。只要 items 非空，"
+        "就表示你已经拿到了可用的衣橱上下文；不要说“无法查看衣橱”、"
+        "“无法直接查看您的衣橱内容”或类似表达。\n"
+    ),
+    "en": (
+        "The wardrobe context follows (sanitized, structured attributes only). "
+        "When items is non-empty, you do have usable wardrobe context; do not say "
+        "\"I can't view your wardrobe\" or similar.\n"
+    ),
+}
+
+_NO_WARDROBE_CONTEXT_CLAUSE: dict[str, str] = {
+    "zh": (
+        "本次没有可用的衣橱单品上下文。请只基于用户当前问题或当前单品信息回答，"
+        "不要编造衣橱内容或引用任何单品。\n"
+    ),
+    "en": (
+        "No wardrobe item context is available for this turn. Answer only from the "
+        "current question or current item information, and do not invent wardrobe "
+        "contents or reference any items.\n"
+    ),
+}
 
 # Appended when the caller scoped the Ask to one item; that item is placed
 # first in the candidate list, so the clause refers to position #1.
@@ -219,6 +243,7 @@ class AskResult:
     conversation_id: uuid.UUID
     answer: str
     item_refs: list[str]
+    has_wardrobe_context: bool
     tokens_used: int
     deltas: ConversationDeltas
     # Effective BCP-47 locale (request > settings > default) already resolved
@@ -430,6 +455,12 @@ def _build_system_prompt(
     # key, so a second pass would silently strip the entire wardrobe.
     lang = ctx.locale  # already resolved to a language subtag
     preamble = _PREAMBLES.get(lang, _PREAMBLES[_DEFAULT_LANG])
+    if items:
+        preamble += _WARDROBE_CONTEXT_CLAUSE.get(lang, _WARDROBE_CONTEXT_CLAUSE[_DEFAULT_LANG])
+    else:
+        preamble += _NO_WARDROBE_CONTEXT_CLAUSE.get(
+            lang, _NO_WARDROBE_CONTEXT_CLAUSE[_DEFAULT_LANG]
+        )
     if ctx.scope == "item":
         preamble += _FOCUS_CLAUSE.get(lang, _FOCUS_CLAUSE[_DEFAULT_LANG])
     payload = {
@@ -941,6 +972,7 @@ async def answer_question(
         conversation_id=conversation.id,
         answer=answer_text,
         item_refs=item_refs,
+        has_wardrobe_context=bool(items),
         tokens_used=tokens_used,
         deltas=response_deltas,
         effective_locale=effective_locale,

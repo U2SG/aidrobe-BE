@@ -48,9 +48,13 @@ class AskConversationDeltas(BaseModel):
 class AskResponse(BaseModel):
     ask_session_id: uuid.UUID
     conversation_id: uuid.UUID | None = None
-    answer: str
+    answer: str  # LLM prose, generated in the effective locale (prompt-driven)
     item_refs: list[str]
     item_ref_snapshots: list[AskItemRefSnapshot] = Field(default_factory=list)
+    # BE#60 — true when the answer was grounded in wardrobe context provided to
+    # the prompt. The prompt MUST NOT claim "无法查看衣橱" when this is true.
+    has_wardrobe_context: bool = False
+    locale: str = "zh-CN"  # effective resolved locale echoed back to the client
     tokens_used: int
     deltas: AskConversationDeltas | None = None
 

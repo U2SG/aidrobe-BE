@@ -28,6 +28,7 @@ from app.application.ports.vision import VisionPort, VisionResult
 from app.common import error_codes
 from app.common.enums import Category, ItemStatus
 from app.common.exceptions import FriendlyException
+from app.common.i18n import I18nMessage, make_message
 from app.config.settings import get_settings
 from app.infrastructure.importers.link_parser import _is_safe_url
 from app.infrastructure.persistence.models.embedding import ItemEmbedding
@@ -37,7 +38,7 @@ from app.infrastructure.storage.object_key import extract_internal_object_key
 
 # Similarity scores assigned by the deterministic fallback path. Real cosine
 # scores (pgvector branch) override these when available.
-_SIM_CATEGORY_COLOR = 0.9
+SIM_CATEGORY_COLOR = 0.9
 _SIM_CATEGORY_ONLY = 0.6
 
 # Complementary categories used to estimate outfit_potential. A top pairs with
@@ -67,6 +68,8 @@ class SimilarItem:
 class SenseCheckResult:
     verdict: str  # buy / consider / skip
     reason: str
+    display_reason: I18nMessage
+    similar_item_count: int = 0
     similar_items: list[SimilarItem] = field(default_factory=list)
     wardrobe_gap: list[str] = field(default_factory=list)
     outfit_potential: int = 0
@@ -126,11 +129,15 @@ class SenseCheck:
         similar = await self._find_similar(user_id, vision_result)
         gap = await self._wardrobe_gap(user_id)
         outfit_potential = await self._outfit_potential(user_id, vision_result)
-        verdict, reason = self._decide(vision_result, similar, gap, outfit_potential)
+        verdict, display_reason, similar_item_count = self._decide(
+            vision_result, similar, gap, outfit_potential
+        )
 
         result = SenseCheckResult(
             verdict=verdict,
-            reason=reason,
+            reason=display_reason.fallback_text,
+            display_reason=display_reason,
+            similar_item_count=similar_item_count,
             similar_items=similar,
             wardrobe_gap=gap,
             outfit_potential=outfit_potential,
@@ -221,7 +228,7 @@ class SenseCheck:
         ).all()
         # Same category + same color ranks above same-category-only.
         color_match = [
-            SimilarItem(item_id=r.id, similarity=_SIM_CATEGORY_COLOR)
+            SimilarItem(item_id=r.id, similarity=SIM_CATEGORY_COLOR)
             for r in rows
             if r.color_main == candidate.color_main
         ]
@@ -270,37 +277,72 @@ class SenseCheck:
         similar: list[SimilarItem],
         gap: list[str],
         outfit_potential: int,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, I18nMessage, int]:
         """Rule-based verdict (no LLM).
 
         - skip: already owns a near-identical item (same category + color).
         - buy: fills a category gap, or pairs with many existing items.
         - consider: everything else.
         """
-        near_duplicates = [s for s in similar if s.similarity >= _SIM_CATEGORY_COLOR]
+        near_duplicates = [s for s in similar if s.similarity >= SIM_CATEGORY_COLOR]
+        near_duplicate_count = len(near_duplicates)
         fills_gap = candidate.category in gap
 
         if near_duplicates and not fills_gap:
+            params = {
+                "count": near_duplicate_count,
+                "color": candidate.color_main,
+                "category": candidate.category,
+            }
             return (
                 "skip",
-                f"You already own {len(near_duplicates)} similar {candidate.color_main} "
-                f"{candidate.category} item(s); this would likely duplicate your wardrobe.",
+                make_message(
+                    "sense_check.skip.duplicate",
+                    (
+                        f"你已经有 {near_duplicate_count} 件相似的 "
+                        f"{candidate.color_main} {candidate.category}，这件大概率会重复。"
+                    ),
+                    params,
+                ),
+                near_duplicate_count,
             )
         if fills_gap:
+            params = {"category": candidate.category}
             return (
                 "buy",
-                f"You have no {candidate.category} yet — this fills a gap in your wardrobe.",
+                make_message(
+                    "sense_check.buy.gap",
+                    f"你的衣橱里还没有 {candidate.category}，这件可以补上一个空缺。",
+                    params,
+                ),
+                near_duplicate_count,
             )
         if outfit_potential >= 3:
+            params = {"category": candidate.category, "count": outfit_potential}
             return (
                 "buy",
-                f"This {candidate.category} pairs with {outfit_potential}+ existing items, "
-                "adding real outfit variety.",
+                make_message(
+                    "sense_check.buy.versatile",
+                    (
+                        f"这件 {candidate.category} 可以和 {outfit_potential} 件现有单品搭配，"
+                        "能带来明显的搭配变化。"
+                    ),
+                    params,
+                ),
+                near_duplicate_count,
             )
+        params = {"category": candidate.category, "count": outfit_potential}
         return (
             "consider",
-            f"You own some {candidate.category} items already; "
-            f"it can pair with {outfit_potential} of your current pieces.",
+            make_message(
+                "sense_check.consider.some",
+                (
+                    f"你已经有一些 {candidate.category}，"
+                    f"它还能和 {outfit_potential} 件现有单品搭配。"
+                ),
+                params,
+            ),
+            near_duplicate_count,
         )
 
     async def _persist(
@@ -313,6 +355,8 @@ class SenseCheck:
         payload = {
             "verdict": result.verdict,
             "reason": result.reason,
+            "display_reason": result.display_reason.model_dump(mode="json"),
+            "similar_item_count": result.similar_item_count,
             "similar_items": [
                 {"item_id": str(s.item_id), "similarity": s.similarity}
                 for s in result.similar_items

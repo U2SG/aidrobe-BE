@@ -126,6 +126,21 @@ def test_build_prompt_honors_locale() -> None:
     assert _build_system_prompt(uuid.uuid4(), [], _ctx(locale="zh"), _TODAY).startswith("你是 Aidrobe")
 
 
+def test_build_prompt_prevents_wardrobe_denial_when_context_exists() -> None:
+    items = _items()
+    zh_prompt = _build_system_prompt(uuid.uuid4(), items, _ctx(locale="zh", items=items), _TODAY)
+    en_prompt = _build_system_prompt(uuid.uuid4(), items, _ctx(locale="en", items=items), _TODAY)
+    assert "不要说“无法查看衣橱”" in zh_prompt
+    assert "do not say \"I can't view your wardrobe\"" in en_prompt
+
+
+def test_build_prompt_marks_no_wardrobe_context() -> None:
+    zh_prompt = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="zh"), _TODAY)
+    en_prompt = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en"), _TODAY)
+    assert "本次没有可用的衣橱单品上下文" in zh_prompt
+    assert "No wardrobe item context is available" in en_prompt
+
+
 def test_focus_clause_added_only_when_focused() -> None:
     plain = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en", scope="wardrobe"), _TODAY)
     focused = _build_system_prompt(uuid.uuid4(), [], _ctx(locale="en", scope="item"), _TODAY)
@@ -315,6 +330,14 @@ def test_parse_structured_drops_hallucinated_dupe_and_nonint_positions() -> None
 def test_parse_structured_defaults_missing_refs_to_empty() -> None:
     assert _parse_structured('{"answer": "none"}', 3) == ("none", [], [])
     assert _parse_structured('{"answer": "none", "referenced_items": []}', 3) == (
+        "none",
+        [],
+        [],
+    )
+
+
+def test_parse_structured_drops_refs_when_no_context_items() -> None:
+    assert _parse_structured('{"answer": "none", "referenced_items": [1]}', 0) == (
         "none",
         [],
         [],

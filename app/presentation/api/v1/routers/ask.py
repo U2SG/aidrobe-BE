@@ -96,6 +96,8 @@ async def ask(
         answer=result.answer,
         item_refs=result.item_refs,
         item_ref_snapshots=_to_schema(snapshots),
+        has_wardrobe_context=result.has_wardrobe_context,
+        locale=result.effective_locale,
         tokens_used=result.tokens_used,
         deltas=(
             AskConversationDeltas(
