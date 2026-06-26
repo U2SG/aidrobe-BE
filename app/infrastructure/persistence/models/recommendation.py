@@ -12,6 +12,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -128,6 +129,22 @@ class OutfitFeedback(UUIDPrimaryKeyMixin, Base):
     )
     reason_tags: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OutfitFavorite(Base):
+    __tablename__ = "outfit_favorites"
+    # Composite PK (user_id, outfit_id) already enforces uniqueness — no extra
+    # UniqueConstraint needed.
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    outfit_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("outfits.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class OutfitPlan(UUIDPrimaryKeyMixin, TimestampMixin, Base):

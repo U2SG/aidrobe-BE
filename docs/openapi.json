@@ -1506,6 +1506,239 @@
         }
       }
     },
+    "/v1/recommendations/outfits/{outfit_id}/items/{item_id}/replacements": {
+      "get": {
+        "tags": [
+          "recommendations"
+        ],
+        "summary": "Get Replacement Candidates",
+        "operationId": "get_replacement_candidates_v1_recommendations_outfits__outfit_id__items__item_id__replacements_get",
+        "parameters": [
+          {
+            "name": "outfit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Outfit Id"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Item Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_ReplacementCandidatesResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/recommendations/outfits/{outfit_id}/favorite": {
+      "post": {
+        "tags": [
+          "recommendations"
+        ],
+        "summary": "Favorite Outfit",
+        "operationId": "favorite_outfit_v1_recommendations_outfits__outfit_id__favorite_post",
+        "parameters": [
+          {
+            "name": "outfit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Outfit Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_FavoriteOutfitResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "recommendations"
+        ],
+        "summary": "Unfavorite Outfit",
+        "operationId": "unfavorite_outfit_v1_recommendations_outfits__outfit_id__favorite_delete",
+        "parameters": [
+          {
+            "name": "outfit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Outfit Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_FavoriteOutfitResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/recommendations/outfits/{outfit_id}/wear": {
       "post": {
         "tags": [
@@ -6363,6 +6596,19 @@
         ],
         "title": "DeleteWardrobeItemResponse"
       },
+      "FavoriteOutfitResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "FavoriteOutfitResponse"
+      },
       "FeedbackBundleRequest": {
         "properties": {
           "overall": {
@@ -7327,6 +7573,11 @@
             "title": "Time Sensitivity",
             "default": "standard"
           },
+          "is_favorited": {
+            "type": "boolean",
+            "title": "Is Favorited",
+            "default": false
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/RecommendationItemResponse"
@@ -7866,6 +8117,67 @@
         ],
         "title": "RefreshTokenRequest"
       },
+      "ReplacementCandidateResponse": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category"
+          },
+          "color_main": {
+            "type": "string",
+            "title": "Color Main"
+          },
+          "thumbnail_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thumbnail Url"
+          },
+          "similarity": {
+            "type": "number",
+            "title": "Similarity"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "title",
+          "category",
+          "color_main",
+          "similarity"
+        ],
+        "title": "ReplacementCandidateResponse"
+      },
+      "ReplacementCandidatesResponse": {
+        "properties": {
+          "replacements": {
+            "items": {
+              "$ref": "#/components/schemas/ReplacementCandidateResponse"
+            },
+            "type": "array",
+            "title": "Replacements"
+          }
+        },
+        "type": "object",
+        "required": [
+          "replacements"
+        ],
+        "title": "ReplacementCandidatesResponse"
+      },
       "ReportCostPerWear": {
         "properties": {
           "item_id": {
@@ -8282,6 +8594,32 @@
         "type": "object",
         "title": "ResponseModel[DeleteWardrobeItemResponse]"
       },
+      "ResponseModel_FavoriteOutfitResponse_": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FavoriteOutfitResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ResponseModel[FavoriteOutfitResponse]"
+      },
       "ResponseModel_FeedbackBundleResponse_": {
         "properties": {
           "code": {
@@ -8613,6 +8951,32 @@
         },
         "type": "object",
         "title": "ResponseModel[PresignUploadResponse]"
+      },
+      "ResponseModel_ReplacementCandidatesResponse_": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReplacementCandidatesResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ResponseModel[ReplacementCandidatesResponse]"
       },
       "ResponseModel_StsTokenResponse_": {
         "properties": {

@@ -56,6 +56,7 @@ class OutfitResponse(BaseModel):
     title: str
     reason: str
     time_sensitivity: str = "standard"
+    is_favorited: bool = False
     items: list[RecommendationItemResponse]
     # Phase B explainability — all None when their feature flag is off.
     scores: OutfitScoresResponse | None = None
@@ -121,6 +122,23 @@ class WearOutfitRequest(BaseModel):
 
 class WearOutfitResponse(BaseModel):
     success: bool
+
+
+class FavoriteOutfitResponse(BaseModel):
+    success: bool
+
+
+class ReplacementCandidateResponse(BaseModel):
+    item_id: UUID
+    title: str
+    category: str
+    color_main: str
+    thumbnail_url: str | None = None
+    similarity: float
+
+
+class ReplacementCandidatesResponse(BaseModel):
+    replacements: list[ReplacementCandidateResponse]
 
 
 class FeedbackRequest(BaseModel):

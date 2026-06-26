@@ -18,6 +18,7 @@ from app.infrastructure.persistence.models.preference_memory import UserPreferen
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
+    OutfitFavorite,
     OutfitFeedback,
     OutfitItem,
     RecommendationEvent,
@@ -45,6 +46,7 @@ __all__ = [
     "ItemEmbedding",
     "OperationLog",
     "Outfit",
+    "OutfitFavorite",
     "OutfitFeedback",
     "OutfitItem",
     "PackingList",
