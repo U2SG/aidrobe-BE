@@ -46,9 +46,7 @@ class SqlAlchemyRecommendationRepository:
         )
         return {str(item_id) for item_id in result}
 
-    async def get_daily(
-        self, user_id: uuid.UUID, recommendation_date: date
-    ) -> DailyRecommendation | None:
+    async def get_daily(self, user_id: uuid.UUID, recommendation_date: date) -> DailyRecommendation | None:
         # Filter to is_current=True so reads always see the latest revision.
         # Legacy single-row data already has is_current default=True so this
         # doesn't change behavior for pre-revision rows.
@@ -65,9 +63,7 @@ class SqlAlchemyRecommendationRepository:
             ),
         )
 
-    async def count_revisions_for_date(
-        self, user_id: uuid.UUID, recommendation_date: date
-    ) -> int:
+    async def count_revisions_for_date(self, user_id: uuid.UUID, recommendation_date: date) -> int:
         """How many daily rows exist for this (user, date) regardless of
         is_current. Used by the refresh rate limit so 3 refreshes ⇒ 4 rows
         (rev 1 from background gen + 3 from refresh)."""
@@ -86,9 +82,7 @@ class SqlAlchemyRecommendationRepository:
             or 0,
         )
 
-    async def archive_current_and_revise(
-        self, daily: DailyRecommendation
-    ) -> DailyRecommendation:
+    async def archive_current_and_revise(self, daily: DailyRecommendation) -> DailyRecommendation:
         """Phase D3 — refresh path. Flips the current row to is_current=False
         (engagement, wear_history, feedback all stay attached to the OLD
         outfit_ids — that's the whole point of versioning), then inserts a
@@ -114,13 +108,9 @@ class SqlAlchemyRecommendationRepository:
         # SHA1 first 8 bytes gives a stable 64-bit key; signed-int cast just
         # for Postgres bigint range. Collisions across different (user, date)
         # pairs are statistically irrelevant at our scale.
-        digest = hashlib.sha1(
-            f"refresh:{daily.user_id}:{daily.recommendation_date.isoformat()}".encode()
-        ).digest()[:8]
+        digest = hashlib.sha1(f"refresh:{daily.user_id}:{daily.recommendation_date.isoformat()}".encode()).digest()[:8]
         lock_key = int.from_bytes(digest, "big", signed=True)
-        await self.session.execute(
-            text("SELECT pg_advisory_xact_lock(:k)"), {"k": lock_key}
-        )
+        await self.session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": lock_key})
 
         # Under the lock now: serialize UPDATE → INSERT.
         await self.session.execute(
@@ -147,20 +137,18 @@ class SqlAlchemyRecommendationRepository:
         await self.session.flush()
         return daily
 
-    async def get_latest_before(
-        self, user_id: uuid.UUID, target_date: date
-    ) -> DailyRecommendation | None:
+    async def get_latest_before(self, user_id: uuid.UUID, target_date: date) -> DailyRecommendation | None:
         return cast(
             DailyRecommendation | None,
             await self.session.scalar(
-            select(DailyRecommendation)
-            .options(selectinload(DailyRecommendation.outfits).selectinload(Outfit.items))
-            .where(
-                DailyRecommendation.user_id == user_id,
-                DailyRecommendation.recommendation_date < target_date,
-            )
-            .order_by(DailyRecommendation.recommendation_date.desc())
-            .limit(1)
+                select(DailyRecommendation)
+                .options(selectinload(DailyRecommendation.outfits).selectinload(Outfit.items))
+                .where(
+                    DailyRecommendation.user_id == user_id,
+                    DailyRecommendation.recommendation_date < target_date,
+                )
+                .order_by(DailyRecommendation.recommendation_date.desc())
+                .limit(1)
             ),
         )
 
@@ -169,9 +157,7 @@ class SqlAlchemyRecommendationRepository:
         if existing is not None:
             if await self.daily_has_engagement(existing.id):
                 return existing
-            await self.session.execute(
-                delete(Outfit).where(Outfit.daily_recommendation_id == existing.id)
-            )
+            await self.session.execute(delete(Outfit).where(Outfit.daily_recommendation_id == existing.id))
             existing.status = daily.status
             existing.generation_source = daily.generation_source
             existing.score_breakdown = daily.score_breakdown
@@ -195,9 +181,9 @@ class SqlAlchemyRecommendationRepository:
         return cast(
             Outfit | None,
             await self.session.scalar(
-            select(Outfit)
-            .options(selectinload(Outfit.items))
-            .where(Outfit.id == outfit_id, Outfit.user_id == user_id)
+                select(Outfit)
+                .options(selectinload(Outfit.items))
+                .where(Outfit.id == outfit_id, Outfit.user_id == user_id)
             ),
         )
 
@@ -223,9 +209,7 @@ class SqlAlchemyRecommendationRepository:
         )
         await self.session.flush()
 
-    async def list_favorited_outfit_ids(
-        self, user_id: uuid.UUID, outfit_ids: list[uuid.UUID]
-    ) -> set[uuid.UUID]:
+    async def list_favorited_outfit_ids(self, user_id: uuid.UUID, outfit_ids: list[uuid.UUID]) -> set[uuid.UUID]:
         if not outfit_ids:
             return set()
         result = await self.session.scalars(
@@ -236,17 +220,15 @@ class SqlAlchemyRecommendationRepository:
         )
         return set(result.all())
 
-    async def get_wear_history(
-        self, outfit_id: uuid.UUID, user_id: uuid.UUID, worn_date: date
-    ) -> WearHistory | None:
+    async def get_wear_history(self, outfit_id: uuid.UUID, user_id: uuid.UUID, worn_date: date) -> WearHistory | None:
         return cast(
             WearHistory | None,
             await self.session.scalar(
-            select(WearHistory).where(
-                WearHistory.outfit_id == outfit_id,
-                WearHistory.user_id == user_id,
-                WearHistory.worn_date == worn_date,
-            )
+                select(WearHistory).where(
+                    WearHistory.outfit_id == outfit_id,
+                    WearHistory.user_id == user_id,
+                    WearHistory.worn_date == worn_date,
+                )
             ),
         )
 
@@ -255,9 +237,7 @@ class SqlAlchemyRecommendationRepository:
         await self.session.flush()
         return wear_history
 
-    async def insert_wear_history_idempotent(
-        self, wear_history: WearHistory
-    ) -> tuple[WearHistory, bool]:
+    async def insert_wear_history_idempotent(self, wear_history: WearHistory) -> tuple[WearHistory, bool]:
         """Insert wear_history with ON CONFLICT DO NOTHING on (user_id, outfit_id, worn_date).
 
         Returns (row, inserted) — when conflict, returns the existing row and inserted=False.
@@ -274,9 +254,7 @@ class SqlAlchemyRecommendationRepository:
                 created_at=wear_history.created_at,
                 ootd_image_url=wear_history.ootd_image_url,
             )
-            .on_conflict_do_nothing(
-                index_elements=["user_id", "outfit_id", "worn_date"]
-            )
+            .on_conflict_do_nothing(index_elements=["user_id", "outfit_id", "worn_date"])
             .returning(WearHistory.id)
         )
         result = await self.session.execute(stmt)
@@ -286,9 +264,7 @@ class SqlAlchemyRecommendationRepository:
             row = await self.session.get(WearHistory, new_id)
             assert row is not None
             return row, True
-        existing = await self.get_wear_history(
-            wear_history.outfit_id, wear_history.user_id, wear_history.worn_date
-        )
+        existing = await self.get_wear_history(wear_history.outfit_id, wear_history.user_id, wear_history.worn_date)
         assert existing is not None, "ON CONFLICT path but no existing row found"
         return existing, False
 
@@ -307,7 +283,17 @@ class SqlAlchemyRecommendationRepository:
             .where(Outfit.daily_recommendation_id == daily_recommendation_id)
             .limit(1)
         )
-        return wear_history_id is not None
+        if wear_history_id is not None:
+            return True
+        # A favorited outfit is engagement too — otherwise a background recompute
+        # could replace_daily() and cascade-delete the user's saved favorite.
+        favorite_outfit_id = await self.session.scalar(
+            select(OutfitFavorite.outfit_id)
+            .join(Outfit, Outfit.id == OutfitFavorite.outfit_id)
+            .where(Outfit.daily_recommendation_id == daily_recommendation_id)
+            .limit(1)
+        )
+        return favorite_outfit_id is not None
 
     async def add_feedback(self, feedback: OutfitFeedback) -> OutfitFeedback:
         self.session.add(feedback)
@@ -341,9 +327,7 @@ class SqlAlchemyRecommendationRepository:
         stmt = stmt.order_by(RecommendationEvent.created_at.desc()).limit(limit)
         return list(await self.session.scalars(stmt))
 
-    async def get_feedback_for_user(
-        self, outfit_id: uuid.UUID, user_id: uuid.UUID
-    ) -> OutfitFeedback | None:
+    async def get_feedback_for_user(self, outfit_id: uuid.UUID, user_id: uuid.UUID) -> OutfitFeedback | None:
         return cast(
             OutfitFeedback | None,
             await self.session.scalar(
@@ -406,9 +390,7 @@ class SqlAlchemyRecommendationRepository:
             and _time_in_next_window(user.settings.departure_time, now_time, minutes=90)
         ]
 
-    async def get_recent_wear_history(
-        self, user_id: uuid.UUID, days: int = 30
-    ) -> list[WearHistory]:
+    async def get_recent_wear_history(self, user_id: uuid.UUID, days: int = 30) -> list[WearHistory]:
         since = datetime.now(UTC).date() - timedelta(days=days)
         result = await self.session.scalars(
             select(WearHistory).where(
@@ -419,9 +401,7 @@ class SqlAlchemyRecommendationRepository:
         return list(result)
 
     async def get_user_location(self, user_id: uuid.UUID) -> str | None:
-        return await self.session.scalar(
-            select(UserSettings.location).where(UserSettings.user_id == user_id)
-        )
+        return await self.session.scalar(select(UserSettings.location).where(UserSettings.user_id == user_id))
 
     async def get_recent_worn_outfit_item_ids(
         self, user_id: uuid.UUID, target_date: date, days: int = 7
@@ -464,9 +444,7 @@ class SqlAlchemyRecommendationRepository:
             outfit_items.setdefault(outfit_id, set()).add(str(item_id))
         return list(outfit_items.values())
 
-    async def recent_recommended_main_item_ids(
-        self, user_id: uuid.UUID, target_date: date, days: int = 7
-    ) -> set[str]:
+    async def recent_recommended_main_item_ids(self, user_id: uuid.UUID, target_date: date, days: int = 7) -> set[str]:
         """BE#39 — hero (top/dress) item ids RECOMMENDED within the window, so
         the freshness signal also rotates recently-recommended hero pieces, not
         only worn ones."""
@@ -485,9 +463,7 @@ class SqlAlchemyRecommendationRepository:
         )
         return {str(item_id) for item_id in result}
 
-    async def get_recent_feedback(
-        self, user_id: uuid.UUID, days: int = 30
-    ) -> list[OutfitFeedback]:
+    async def get_recent_feedback(self, user_id: uuid.UUID, days: int = 30) -> list[OutfitFeedback]:
         since = datetime.now(UTC) - timedelta(days=days)
         result = await self.session.scalars(
             select(OutfitFeedback).where(
@@ -497,9 +473,7 @@ class SqlAlchemyRecommendationRepository:
         )
         return list(result)
 
-    async def get_outfit_main_item_ids(
-        self, outfit_ids: list[uuid.UUID]
-    ) -> dict[str, str]:
+    async def get_outfit_main_item_ids(self, outfit_ids: list[uuid.UUID]) -> dict[str, str]:
         """Return {outfit_id_str: main_wardrobe_item_id_str} for the given outfit ids.
 
         Main item is the first OutfitItem with role 'top' or 'dress', falling back to
@@ -528,15 +502,11 @@ class SqlAlchemyRecommendationRepository:
         await self.session.flush()
         return plan
 
-    async def get_outfit_plan_for_user(
-        self, plan_id: uuid.UUID, user_id: uuid.UUID
-    ) -> OutfitPlan | None:
+    async def get_outfit_plan_for_user(self, plan_id: uuid.UUID, user_id: uuid.UUID) -> OutfitPlan | None:
         return cast(
             OutfitPlan | None,
             await self.session.scalar(
-                select(OutfitPlan).where(
-                    OutfitPlan.id == plan_id, OutfitPlan.user_id == user_id
-                )
+                select(OutfitPlan).where(OutfitPlan.id == plan_id, OutfitPlan.user_id == user_id)
             ),
         )
 
@@ -559,9 +529,7 @@ class SqlAlchemyRecommendationRepository:
         )
         return list(result)
 
-    async def list_wear_history_in_range(
-        self, user_id: uuid.UUID, start: date, end: date
-    ) -> list[WearHistory]:
+    async def list_wear_history_in_range(self, user_id: uuid.UUID, start: date, end: date) -> list[WearHistory]:
         result = await self.session.scalars(
             select(WearHistory)
             .where(
@@ -583,15 +551,11 @@ class SqlAlchemyRecommendationRepository:
         await self.session.refresh(plan)
         return plan
 
-    async def get_outfit_summaries(
-        self, outfit_ids: list[uuid.UUID]
-    ) -> dict[uuid.UUID, Outfit]:
+    async def get_outfit_summaries(self, outfit_ids: list[uuid.UUID]) -> dict[uuid.UUID, Outfit]:
         """Batch-load outfits for calendar cells, avoiding N+1."""
         if not outfit_ids:
             return {}
-        result = await self.session.scalars(
-            select(Outfit).where(Outfit.id.in_(outfit_ids))
-        )
+        result = await self.session.scalars(select(Outfit).where(Outfit.id.in_(outfit_ids)))
         return {o.id: o for o in result}
 
 

@@ -22,6 +22,7 @@ async def _add_item(
     title: str,
     category: str = "top",
     color: str = "white",
+    fit_status: str = "unknown",
 ) -> WardrobeItem:
     item = WardrobeItem(
         user_id=user_id,
@@ -29,6 +30,7 @@ async def _add_item(
         category=category,
         color_main=color,
         status=ItemStatus.WEARABLE.value,
+        fit_status=fit_status,
     )
     session.add(item)
     await session.flush()
@@ -68,4 +70,18 @@ async def test_find_replacement_candidates_excludes_self_peers_and_foreign_items
     )
 
     assert [candidate.item.id for candidate in candidates] == [owned.id]
+
+
+async def test_find_replacement_candidates_excludes_no_longer_fits(
+    db_session: AsyncSession,
+) -> None:
+    user_id = await _seed_user(db_session)
+    target = await _add_item(db_session, user_id, title="target")
+    wearable = await _add_item(db_session, user_id, title="wearable")
+    await _add_item(db_session, user_id, title="no longer fits", fit_status="no_longer_fits")
+
+    candidates = await find_replacement_candidates(db_session, target, k=8)
+
+    # A no-longer-fitting item must not be suggested as a replacement.
+    assert [candidate.item.id for candidate in candidates] == [wearable.id]
 

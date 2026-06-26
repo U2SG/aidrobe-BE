@@ -23,7 +23,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.enums import ItemStatus
+from app.common.enums import FitStatus, ItemStatus
 from app.infrastructure.persistence.models.embedding import ItemEmbedding
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
@@ -135,9 +135,7 @@ async def _candidates_by_embedding(
     exclude: set[uuid.UUID],
     k: int,
 ) -> list[ReplacementCandidate]:
-    src_embedding = await session.scalar(
-        select(ItemEmbedding).where(ItemEmbedding.item_id == item.id).limit(1)
-    )
+    src_embedding = await session.scalar(select(ItemEmbedding).where(ItemEmbedding.item_id == item.id).limit(1))
     if src_embedding is None:
         return []
     src_vector = src_embedding.vector
@@ -152,16 +150,14 @@ async def _candidates_by_embedding(
             WardrobeItem.category == item.category,
             WardrobeItem.status == ItemStatus.WEARABLE.value,
             WardrobeItem.deleted_at.is_(None),
+            WardrobeItem.fit_status != FitStatus.NO_LONGER_FITS.value,
             WardrobeItem.id.notin_(exclude),
         )
         .order_by("dist")
         .limit(k)
     )
     rows = (await session.execute(stmt)).all()
-    return [
-        ReplacementCandidate(item=row[0], similarity=round(1.0 / (1.0 + float(row.dist)), 4))
-        for row in rows
-    ]
+    return [ReplacementCandidate(item=row[0], similarity=round(1.0 / (1.0 + float(row.dist)), 4)) for row in rows]
 
 
 async def _candidates_by_category_rank(
@@ -171,18 +167,23 @@ async def _candidates_by_category_rank(
     k: int,
 ) -> list[ReplacementCandidate]:
     rows = (
-        await session.execute(
-            select(WardrobeItem)
-            .where(
-                WardrobeItem.user_id == item.user_id,
-                WardrobeItem.category == item.category,
-                WardrobeItem.status == ItemStatus.WEARABLE.value,
-                WardrobeItem.deleted_at.is_(None),
-                WardrobeItem.id.notin_(exclude),
+        (
+            await session.execute(
+                select(WardrobeItem)
+                .where(
+                    WardrobeItem.user_id == item.user_id,
+                    WardrobeItem.category == item.category,
+                    WardrobeItem.status == ItemStatus.WEARABLE.value,
+                    WardrobeItem.deleted_at.is_(None),
+                    WardrobeItem.fit_status != FitStatus.NO_LONGER_FITS.value,
+                    WardrobeItem.id.notin_(exclude),
+                )
+                .order_by(WardrobeItem.created_at.desc())
             )
-            .order_by(WardrobeItem.created_at.desc())
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     same_color = [
         ReplacementCandidate(item=candidate, similarity=SIMILARITY_CATEGORY_COLOR)
         for candidate in rows
@@ -205,9 +206,7 @@ async def _by_embedding(
     """Cosine-distance neighbours of `item` within the same category. Requires
     pgvector + an `ItemEmbedding` row for the source item; otherwise empty
     and the cascade moves on."""
-    src_embedding = await session.scalar(
-        select(ItemEmbedding).where(ItemEmbedding.item_id == item.id).limit(1)
-    )
+    src_embedding = await session.scalar(select(ItemEmbedding).where(ItemEmbedding.item_id == item.id).limit(1))
     if src_embedding is None:
         return []
     src_vector = src_embedding.vector
@@ -222,6 +221,7 @@ async def _by_embedding(
             WardrobeItem.category == item.category,
             WardrobeItem.status == ItemStatus.WEARABLE.value,
             WardrobeItem.deleted_at.is_(None),
+            WardrobeItem.fit_status != FitStatus.NO_LONGER_FITS.value,
             WardrobeItem.id.notin_(exclude),
         )
         .order_by(ItemEmbedding.vector.op("<->")(src_vector))
@@ -249,6 +249,7 @@ async def _by_category_color(
             WardrobeItem.color_main == color_main,
             WardrobeItem.status == ItemStatus.WEARABLE.value,
             WardrobeItem.deleted_at.is_(None),
+            WardrobeItem.fit_status != FitStatus.NO_LONGER_FITS.value,
             WardrobeItem.id.notin_(exclude),
         )
         .order_by(WardrobeItem.created_at.desc())
@@ -272,6 +273,7 @@ async def _by_category(
             WardrobeItem.category == category,
             WardrobeItem.status == ItemStatus.WEARABLE.value,
             WardrobeItem.deleted_at.is_(None),
+            WardrobeItem.fit_status != FitStatus.NO_LONGER_FITS.value,
             WardrobeItem.id.notin_(exclude),
         )
         .order_by(WardrobeItem.created_at.desc())
@@ -310,6 +312,7 @@ async def find_replacements_batch(
                 WardrobeItem.category.in_(categories),
                 WardrobeItem.status == ItemStatus.WEARABLE.value,
                 WardrobeItem.deleted_at.is_(None),
+                WardrobeItem.fit_status != FitStatus.NO_LONGER_FITS.value,
                 WardrobeItem.id.notin_(exclude),
             )
             .order_by(WardrobeItem.created_at.desc())
