@@ -38,7 +38,7 @@ from app.infrastructure.storage.object_key import extract_internal_object_key
 
 # Similarity scores assigned by the deterministic fallback path. Real cosine
 # scores (pgvector branch) override these when available.
-_SIM_CATEGORY_COLOR = 0.9
+SIM_CATEGORY_COLOR = 0.9
 _SIM_CATEGORY_ONLY = 0.6
 
 # Complementary categories used to estimate outfit_potential. A top pairs with
@@ -228,7 +228,7 @@ class SenseCheck:
         ).all()
         # Same category + same color ranks above same-category-only.
         color_match = [
-            SimilarItem(item_id=r.id, similarity=_SIM_CATEGORY_COLOR)
+            SimilarItem(item_id=r.id, similarity=SIM_CATEGORY_COLOR)
             for r in rows
             if r.color_main == candidate.color_main
         ]
@@ -284,7 +284,7 @@ class SenseCheck:
         - buy: fills a category gap, or pairs with many existing items.
         - consider: everything else.
         """
-        near_duplicates = [s for s in similar if s.similarity >= _SIM_CATEGORY_COLOR]
+        near_duplicates = [s for s in similar if s.similarity >= SIM_CATEGORY_COLOR]
         near_duplicate_count = len(near_duplicates)
         fills_gap = candidate.category in gap
 

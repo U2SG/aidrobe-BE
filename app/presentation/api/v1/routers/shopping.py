@@ -11,7 +11,11 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.vision import VisionPort
-from app.application.shopping.sense_check import ListSenseChecks, SenseCheck
+from app.application.shopping.sense_check import (
+    SIM_CATEGORY_COLOR,
+    ListSenseChecks,
+    SenseCheck,
+)
 from app.bootstrap.container import vision_service
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
@@ -63,7 +67,7 @@ def _similar_item_count(payload: dict[str, object], raw_similar: object) -> int:
     return sum(
         1
         for item in raw_similar
-        if isinstance(item, dict) and float(item.get("similarity", 0.0)) >= 0.9
+        if isinstance(item, dict) and float(item.get("similarity", 0.0)) >= SIM_CATEGORY_COLOR
     )
 
 

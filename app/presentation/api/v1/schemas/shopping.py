@@ -20,7 +20,7 @@ class SimilarItemResponse(BaseModel):
 
 class SenseCheckResponse(BaseModel):
     verdict: str  # buy / consider / skip — stable English enum, FE localizes the tag
-    reason: str  # legacy raw English reason; kept for back-compat (= display_reason.fallback_text)
+    reason: str  # mirrors display_reason.fallback_text (zh-CN); retained for pre-display_reason clients
     # BE#60 — locale-safe structured display field. FE renders from key+params
     # (see sense_check.* keys), never the legacy `reason`.
     display_reason: I18nMessage | None = None
