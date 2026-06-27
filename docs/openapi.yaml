@@ -436,6 +436,15 @@ paths:
           minimum: 0
           default: 0
           title: Offset
+      - name: locale
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Locale
       - name: Authorization
         in: header
         required: false
@@ -479,6 +488,15 @@ paths:
           type: string
           format: uuid
           title: Item Id
+      - name: locale
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Locale
       - name: Authorization
         in: header
         required: false
@@ -5703,6 +5721,12 @@ components:
           - type: string
           - type: 'null'
           title: Source Url
+        locale:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Locale
       type: object
       title: SenseCheckRequest
     SenseCheckResponse:
@@ -5751,6 +5775,26 @@ components:
         similarity:
           type: number
           title: Similarity
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Category
+        color_main:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Color Main
+        thumbnail_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Thumbnail Url
       type: object
       required:
       - item_id
@@ -6307,6 +6351,9 @@ components:
         title:
           type: string
           title: Title
+        display_name:
+          type: string
+          title: Display Name
         canonical_name:
           anyOf:
           - type: string
@@ -6437,6 +6484,7 @@ components:
       required:
       - item_id
       - title
+      - display_name
       - category
       - color_main
       - status

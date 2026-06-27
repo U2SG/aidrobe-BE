@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.common.i18n import I18nMessage
 
@@ -11,11 +11,16 @@ from app.common.i18n import I18nMessage
 class SenseCheckRequest(BaseModel):
     image_url: str | None = None
     source_url: str | None = None
+    locale: str | None = Field(default=None, max_length=16)
 
 
 class SimilarItemResponse(BaseModel):
     item_id: uuid.UUID
     similarity: float
+    name: str | None = None
+    category: str | None = None
+    color_main: str | None = None
+    thumbnail_url: str | None = None
 
 
 class SenseCheckResponse(BaseModel):

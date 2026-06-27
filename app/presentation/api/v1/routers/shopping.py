@@ -5,7 +5,7 @@ the user's wardrobe → assess duplication & gap → verdict. No LLM. History is
 persisted regardless of the flag; the flag only gates exposure (503 when off).
 """
 
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,7 @@ from app.application.shopping.sense_check import (
     SIM_CATEGORY_COLOR,
     ListSenseChecks,
     SenseCheck,
+    SimilarItem,
 )
 from app.bootstrap.container import vision_service
 from app.common import error_codes
@@ -71,11 +72,47 @@ def _similar_item_count(payload: dict[str, object], raw_similar: object) -> int:
     )
 
 
+def _similar_item_response(item: SimilarItem) -> SimilarItemResponse:
+    return SimilarItemResponse(
+        item_id=item.item_id,
+        similarity=item.similarity,
+        name=item.name,
+        category=item.category,
+        color_main=item.color_main,
+        thumbnail_url=resolve_render_url(
+            item.thumbnail_object_key,
+            item.thumbnail_fallback_url,
+        ),
+    )
+
+
+def _history_similar_item_response(item: dict[object, object]) -> SimilarItemResponse:
+    object_key = item.get("thumbnail_object_key")
+    fallback_url = item.get("thumbnail_fallback_url")
+    raw_similarity = item["similarity"]
+    similarity = (
+        float(raw_similarity)
+        if isinstance(raw_similarity, str | int | float)
+        else 0.0
+    )
+    return SimilarItemResponse(
+        item_id=cast(Any, item["item_id"]),
+        similarity=similarity,
+        name=item.get("name") if isinstance(item.get("name"), str) else None,
+        category=item.get("category") if isinstance(item.get("category"), str) else None,
+        color_main=item.get("color_main") if isinstance(item.get("color_main"), str) else None,
+        thumbnail_url=resolve_render_url(
+            object_key if isinstance(object_key, str) else None,
+            fallback_url if isinstance(fallback_url, str) else None,
+        ),
+    )
+
+
 def _history_item(record: ShoppingSenseCheck) -> SenseCheckHistoryItem:
     payload = record.payload or {}
     raw_similar = payload.get("similar_items", [])
     similar = [
-        SimilarItemResponse(item_id=s["item_id"], similarity=s["similarity"])
+        _history_similar_item_response(s)
         for s in raw_similar
         if isinstance(s, dict)
     ]
@@ -112,16 +149,14 @@ async def sense_check(
         current_user.id,
         image_url=payload.image_url,
         source_url=payload.source_url,
+        locale=payload.locale,
     )
     return SenseCheckResponse(
         verdict=result.verdict,
         reason=result.reason,
         display_reason=result.display_reason,
         similar_item_count=result.similar_item_count,
-        similar_items=[
-            SimilarItemResponse(item_id=s.item_id, similarity=s.similarity)
-            for s in result.similar_items
-        ],
+        similar_items=[_similar_item_response(s) for s in result.similar_items],
         wardrobe_gap=result.wardrobe_gap,
         outfit_potential=result.outfit_potential,
     )

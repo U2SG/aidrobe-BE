@@ -18,10 +18,11 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.enums import ImageType
 from app.config.settings import Settings
 from app.infrastructure.persistence.models.shopping import ShoppingSenseCheck
 from app.infrastructure.persistence.models.user import User
-from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.session import get_db_session
 from app.infrastructure.vision.fake_vision import FakeVision
 from app.presentation.api.v1.routers import shopping
@@ -93,19 +94,34 @@ async def _add_item(
     category: str,
     color_main: str,
     *,
+    title: str | None = None,
+    localized_names: dict[str, str] | None = None,
+    object_key: str | None = None,
     status: str = "wearable",
 ) -> WardrobeItem:
     item = WardrobeItem(
         user_id=user_id,
-        title=f"{color_main} {category}",
+        title=title or f"{color_main} {category}",
         category=category,
         color_main=color_main,
         status=status,
+        localized_names=localized_names,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
     )
     session.add(item)
     await session.flush()
+    if object_key is not None:
+        session.add(
+            WardrobeItemImage(
+                item_id=item.id,
+                image_type=ImageType.STANDARD.value,
+                image_url="https://example.com/standard.jpg",
+                object_key=object_key,
+                created_at=datetime.now(UTC),
+            )
+        )
+        await session.flush()
     return item
 
 
@@ -172,6 +188,47 @@ async def test_skip_when_near_duplicate(
     }
     assert body["reason"] == body["display_reason"]["fallback_text"]
     assert body["similar_item_count"] == 1
+
+
+async def test_sense_check_similar_items_include_resolved_name_and_thumbnail(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_flag(monkeypatch)
+    signing_stub = _SigningStub()
+    monkeypatch.setattr(
+        "app.bootstrap.container.object_storage", lambda: signing_stub
+    )
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    item = await _add_item(
+        db_session,
+        user_id,
+        "top",
+        "white",
+        title="White top",
+        object_key="users/u1/items/top-standard.jpg",
+    )
+    await _add_item(db_session, user_id, "bottom", "black")
+    await _add_item(db_session, user_id, "shoes", "black")
+
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/v1/shopping/sense-check",
+            headers={"X-User-Id": str(user_id)},
+            json={"image_url": "http://x/shirt.jpg", "locale": "zh-CN"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    similar = {s["item_id"]: s for s in resp.json()["similar_items"]}
+    assert similar[str(item.id)]["name"] == "白色上衣"
+    assert similar[str(item.id)]["category"] == "top"
+    assert similar[str(item.id)]["color_main"] == "white"
+    assert (
+        similar[str(item.id)]["thumbnail_url"]
+        == "https://signed.local/users/u1/items/top-standard.jpg?token=stub"
+    )
+    assert signing_stub.calls == ["users/u1/items/top-standard.jpg"]
 
 
 async def test_buy_when_fills_gap(

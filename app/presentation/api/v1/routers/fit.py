@@ -2,12 +2,15 @@ import uuid
 from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.wardrobe.submit_fit_feedback import SubmitFitFeedback
 from app.application.wardrobe.update_fit import FitUpdateValue, UpdateWardrobeFit
 from app.common.enums import FitFeedbackType, FitScene
-from app.infrastructure.persistence.models.user import User
+from app.common.item_labels import localized_item_name
+from app.common.locale import resolve_locale
+from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
@@ -23,10 +26,22 @@ from app.presentation.api.v1.schemas.wardrobe import WardrobeItemResponse
 router = APIRouter(tags=["fit"])
 
 
-def item_response(item: WardrobeItem) -> WardrobeItemResponse:
+def item_response(item: WardrobeItem, locale: str) -> WardrobeItemResponse:
+    localized_names = cast(dict[str, object] | None, item.localized_names)
     return WardrobeItemResponse(
         item_id=item.id,
         title=item.title,
+        display_name=localized_item_name(
+            title=item.title,
+            color_main=item.color_main,
+            category=item.category,
+            locale=locale,
+            localized_names=localized_names,
+            name_source=item.name_source,
+        ),
+        canonical_name=item.canonical_name,
+        localized_names=cast(dict[str, str] | None, item.localized_names),
+        name_source=item.name_source,
         category=item.category,
         color_main=item.color_main,
         status=item.status,
@@ -63,7 +78,8 @@ async def update_fit(
         current_user.id,
         updates,
     )
-    return ResponseModel(data=item_response(item))
+    settings_locale = await session.scalar(select(UserSettings.locale).where(UserSettings.user_id == current_user.id))
+    return ResponseModel(data=item_response(item, resolve_locale(settings_locale=settings_locale)))
 
 
 @router.post("/v1/fit-feedback", response_model=ResponseModel[FitFeedbackResponse])
