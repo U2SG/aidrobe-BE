@@ -431,3 +431,151 @@ async def test_history_flag_off_returns_503(db_session: AsyncSession, monkeypatc
             headers={"X-User-Id": str(uuid.uuid4())},
         )
     assert resp.status_code == 503
+
+
+# ── BE#69 wardrobe-aware purchase evaluator ───────────────────────────────────
+def _enable_evaluator(monkeypatch: pytest.MonkeyPatch, *, preference_memory: bool = False) -> None:
+    """Enable the evaluator. The router gate (ENABLE_SENSE_CHECK) and the use
+    case's evaluator/preference flags live in two different lru-cached
+    get_settings; patch both, mirroring _enable_flag."""
+    from app.application.shopping import sense_check as sense_check_module
+
+    settings = Settings(
+        APP_ENV="dev",
+        ENABLE_SENSE_CHECK=True,
+        ENABLE_PURCHASE_EVALUATOR=True,
+        ENABLE_PREFERENCE_MEMORY=preference_memory,
+    )
+    monkeypatch.setattr(shopping, "get_settings", lambda: settings)
+    monkeypatch.setattr(sense_check_module, "get_settings", lambda: settings)
+    monkeypatch.setattr("app.application.shopping.sense_check._is_safe_url", lambda _url: True)
+
+
+async def _sense_check(client: AsyncClient, user_id: uuid.UUID, *, price: float | None = None) -> dict:
+    body: dict[str, object] = {"image_url": "http://x/shirt.jpg"}  # FakeVision → white top
+    if price is not None:
+        body["price"] = price
+    resp = await client.post(
+        "/v1/shopping/sense-check", headers={"X-User-Id": str(user_id)}, json=body
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+async def test_evaluator_redundant_purchase_is_skip(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_evaluator(monkeypatch)
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    owned = await _add_item(db_session, user_id, "top", "white")  # same category+color
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        body = await _sense_check(client, user_id, price=300)
+    assert body["verdict"] == "skip"
+    ev = body["evaluation"]
+    assert ev is not None
+    assert ev["redundancy"]["level"] == "high"
+    assert any(s["item_id"] == str(owned.id) for s in ev["redundancy"]["similar_owned_items"])
+    assert any(f["factor"] == "redundancy" and f["direction"] == "skip" for f in ev["factors"])
+    assert ev["cost_per_wear_hint"]  # price given
+
+
+async def test_evaluator_gap_filling_purchase_is_buy(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_evaluator(monkeypatch)
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    # Owns bottom + shoes but NO top → a white top fills the gap + has pairings.
+    await _add_item(db_session, user_id, "bottom", "black")
+    await _add_item(db_session, user_id, "shoes", "brown")
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        body = await _sense_check(client, user_id)
+    assert body["verdict"] == "buy"
+    ev = body["evaluation"]
+    assert any(g["category"] == "top" and g["severity"] == "high" for g in ev["wardrobe_gap_detail"])
+    assert any(f["factor"] == "wardrobe_gap" and f["direction"] == "buy" for f in ev["factors"])
+    assert ev["confidence"] is not None
+
+
+async def test_evaluator_preference_conflict_softens_and_flags(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.infrastructure.persistence.models.preference_memory import UserPreferenceMemory
+
+    _enable_evaluator(monkeypatch, preference_memory=True)
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    await _add_item(db_session, user_id, "bottom", "black")
+    await _add_item(db_session, user_id, "shoes", "brown")
+    # User explicitly dislikes white → conflicts with the white-top candidate.
+    db_session.add(
+        UserPreferenceMemory(
+            user_id=user_id, preference_type="color", preference_value="white",
+            polarity="negative", confidence=0.9, source="explicit_user_statement",
+        )
+    )
+    await db_session.flush()
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        body = await _sense_check(client, user_id)
+    ev = body["evaluation"]
+    # Gap-fill would be "buy"; the conflict softens it to "consider" + a factor.
+    assert body["verdict"] == "consider"
+    assert any(f["factor"] == "preference_conflict" and f["direction"] == "skip" for f in ev["factors"])
+
+
+async def test_evaluator_insufficient_wardrobe_is_graceful(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_evaluator(monkeypatch)
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)  # empty wardrobe
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        body = await _sense_check(client, user_id)
+    ev = body["evaluation"]
+    assert ev is not None
+    assert ev["redundancy"]["level"] == "low"
+    assert ev["outfit_samples"] == []  # nothing to pair with
+    assert ev["wardrobe_gap_detail"]  # gaps surfaced
+    assert ev["cost_per_wear_hint"] is None  # no price given
+
+
+async def test_evaluator_off_leaves_evaluation_null(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_flag(monkeypatch)  # sense-check on, evaluator off
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    await _add_item(db_session, user_id, "bottom", "black")
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        body = await _sense_check(client, user_id)
+    assert body["evaluation"] is None
+
+
+async def test_evaluator_history_gated_by_flag(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # BE#69 review: a persisted evaluation must stop surfacing (incl. via /history)
+    # once the flag is turned off — flag-off is a clean rollback.
+    _enable_evaluator(monkeypatch)
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    await _add_item(db_session, user_id, "bottom", "black")
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        created = await _sense_check(client, user_id)
+        assert created["evaluation"] is not None  # persisted with the flag on
+
+        # Flip the flag off: the same persisted row must now return evaluation=None.
+        monkeypatch.setattr(
+            shopping, "get_settings", lambda: Settings(APP_ENV="dev", ENABLE_SENSE_CHECK=True)
+        )
+        hist = await client.get("/v1/shopping/history", headers={"X-User-Id": str(user_id)})
+    assert hist.status_code == 200
+    items = hist.json()["items"]
+    assert items and all(it["evaluation"] is None for it in items)
