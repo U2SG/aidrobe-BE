@@ -124,18 +124,29 @@ class FeedbackOutfit:
         pref_repo = SqlAlchemyPreferenceMemoryRepository(self.repository.session)
         for pref in signals.weak_preferences:
             try:
-                await record_preference(
-                    pref_repo,
-                    user_id=user_id,
-                    preference_type=pref.preference_type,
-                    preference_value=pref.preference_value,
-                    polarity=pref.polarity,
-                    confidence=_FEEDBACK_PREFERENCE_CONFIDENCE,
-                    source=SOURCE_FEEDBACK,
-                )
+                # Savepoint per row: a DBAPI/ON CONFLICT error rolls back only this
+                # write, never the user's feedback (which is already flushed). A
+                # bare DB error outside a savepoint would poison the session and
+                # abort the outer commit — the feedback would be lost.
+                async with self.repository.session.begin_nested():
+                    await record_preference(
+                        pref_repo,
+                        user_id=user_id,
+                        preference_type=pref.preference_type,
+                        preference_value=pref.preference_value,
+                        polarity=pref.polarity,
+                        confidence=_FEEDBACK_PREFERENCE_CONFIDENCE,
+                        source=SOURCE_FEEDBACK,
+                    )
             except PreferenceMemoryError as exc:
                 logger.warning(
                     "feedback_learning.preference_write_skipped",
                     user_id=str(user_id),
                     reason=str(exc),
+                )
+            except Exception as exc:  # noqa: BLE001 — learning must never fail feedback
+                logger.warning(
+                    "feedback_learning.preference_write_error",
+                    user_id=str(user_id),
+                    error=str(exc),
                 )

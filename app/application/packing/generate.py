@@ -67,6 +67,15 @@ class GeneratePackingList:
 
         candidates = await self.repository.list_candidate_items(user_id)
 
+        # Skip items worn in the 7 days before departure — anchored to the trip,
+        # not today, so items packed for a future trip are still available now.
+        # Applied to BOTH paths (BE#68 review): the planner must also respect DB
+        # wear history, not only the looks it plans within this trip.
+        anchor = departure_date if departure_date is not None else date.today()
+        since = anchor - timedelta(days=RECENT_WEAR_DAYS)
+        recently_worn = await self.repository.recent_worn_item_ids(user_id, since, until=anchor)
+        candidates = [item for item in candidates if item.id not in recently_worn]
+
         # BE#68 — when the planner is on, build the rich per-day plan (engine +
         # preferences + graph), persist it, and derive the flat checklist from it
         # so both views stay consistent. Flag off → the legacy round-robin below.
@@ -75,16 +84,8 @@ class GeneratePackingList:
                 user_id, destination, days, scenes, weather_hint, departure_date, candidates
             )
 
-        # Skip items worn in the 7 days before departure — anchored to the trip,
-        # not today, so items packed for a future trip are still available now.
-        anchor = departure_date if departure_date is not None else date.today()
-        since = anchor - timedelta(days=RECENT_WEAR_DAYS)
-        recently_worn = await self.repository.recent_worn_item_ids(user_id, since)
-
         by_category: dict[str, list[WardrobeItem]] = {}
         for item in candidates:
-            if item.id in recently_worn:
-                continue
             by_category.setdefault(item.category.lower(), []).append(item)
 
         # Round-robin a pointer per category so successive days rotate items
@@ -250,6 +251,10 @@ class UpdatePackingList:
             )
         if items is not None:
             packing_list.items = items
+            # BE#68 review: a user-edited checklist no longer matches the planner
+            # snapshot, so drop the now-stale rich plan rather than serve an
+            # inconsistent items-vs-plan response.
+            packing_list.plan_json = None
         if status is not None:
             packing_list.status = status
         return await self.repository.update(packing_list)
