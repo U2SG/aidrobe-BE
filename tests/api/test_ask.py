@@ -972,9 +972,10 @@ async def test_ask_item_ref_snapshots_batch_and_localized(
     assert set(body["item_refs"]) == {str(id1), str(id2)}
     snaps = {s["item_id"]: s for s in body["item_ref_snapshots"]}
     assert set(snaps) == {str(id1), str(id2)}
-    # Localized name resolved for the locale; title fallback for the other.
+    # Localized name resolved for the locale; deterministic color+category
+    # fallback for the other (no English leak in zh-CN).
     assert snaps[str(id1)]["name"] == "白色衬衫"
-    assert snaps[str(id2)]["name"] == "Black pants"
+    assert snaps[str(id2)]["name"] == "黑色下装"
     assert snaps[str(id1)]["category"] == Category.TOP.value
     assert snaps[str(id2)]["color_main"] == "black"
     # Thumbnail is a signed/render URL (local backend echoes a files URL).

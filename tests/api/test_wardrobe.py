@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from fastapi import FastAPI
@@ -7,6 +8,8 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import Settings, get_settings
+from app.infrastructure.persistence.models.user import User, UserSettings
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import import_tasks as import_tasks_router
 from app.presentation.api.v1.routers import wardrobe as wardrobe_router
@@ -97,6 +100,78 @@ async def test_get_wardrobe_item_enforces_ownership(db_session: AsyncSession) ->
     assert response.json()["code"] == 4041
 
 
+async def test_wardrobe_detail_and_list_include_resolved_display_name(
+    db_session: AsyncSession,
+) -> None:
+    user_id = uuid.uuid4()
+    db_session.add(User(id=user_id))
+    item = WardrobeItem(
+        user_id=user_id,
+        title="Sneaker",
+        category="shoes",
+        color_main="white",
+        status="wearable",
+        name_source="ai",
+        localized_names=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    db_session.add(item)
+    await db_session.flush()
+
+    app = build_wardrobe_app(db_session)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        detail = await client.get(
+            f"/v1/wardrobe-items/{item.id}",
+            headers={"X-User-Id": str(user_id)},
+            params={"locale": "zh-CN"},
+        )
+        listing = await client.get(
+            "/v1/wardrobe-items",
+            headers={"X-User-Id": str(user_id)},
+            params={"locale": "en-US"},
+        )
+
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["data"]["display_name"] == "白色运动鞋"
+    assert listing.status_code == 200, listing.text
+    assert listing.json()["data"]["items"][0]["display_name"] == "White sneakers"
+
+
+async def test_wardrobe_display_name_uses_user_settings_locale(
+    db_session: AsyncSession,
+) -> None:
+    user_id = uuid.uuid4()
+    db_session.add(User(id=user_id))
+    db_session.add(UserSettings(user_id=user_id, locale="en-US"))
+    item = WardrobeItem(
+        user_id=user_id,
+        title="Sneaker",
+        category="shoes",
+        color_main="white",
+        status="wearable",
+        name_source="ai",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    db_session.add(item)
+    await db_session.flush()
+
+    app = build_wardrobe_app(db_session)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            f"/v1/wardrobe-items/{item.id}",
+            headers={"X-User-Id": str(user_id)},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["display_name"] == "White sneakers"
+
+
 async def test_patch_wardrobe_item_updates_fields(db_session: AsyncSession) -> None:
     user_id = uuid.uuid4()
     app = build_wardrobe_app(db_session)
@@ -117,6 +192,7 @@ async def test_patch_wardrobe_item_updates_fields(db_session: AsyncSession) -> N
 
     assert response.status_code == 200
     assert response.json()["data"]["title"] == "Updated"
+    assert response.json()["data"]["display_name"] == "Updated"
     assert response.json()["data"]["status"] == "unavailable"
     # BE#30 — a user rename takes ownership of the display name.
     assert response.json()["data"]["name_source"] == "user"

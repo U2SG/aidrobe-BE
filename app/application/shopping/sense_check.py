@@ -26,14 +26,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.vision import VisionPort, VisionResult
 from app.common import error_codes
-from app.common.enums import Category, ItemStatus
+from app.common.enums import Category, ImageType, ItemStatus
 from app.common.exceptions import FriendlyException
 from app.common.i18n import I18nMessage, make_message
+from app.common.item_labels import localized_item_name
+from app.common.locale import resolve_locale
 from app.config.settings import get_settings
 from app.infrastructure.importers.link_parser import _is_safe_url
 from app.infrastructure.persistence.models.embedding import ItemEmbedding
 from app.infrastructure.persistence.models.shopping import ShoppingSenseCheck
-from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.models.user import UserSettings
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.storage.object_key import extract_internal_object_key
 
 # Similarity scores assigned by the deterministic fallback path. Real cosine
@@ -62,6 +65,11 @@ def _pgvector_enabled() -> bool:
 class SimilarItem:
     item_id: uuid.UUID
     similarity: float
+    name: str
+    category: str
+    color_main: str
+    thumbnail_object_key: str | None = None
+    thumbnail_fallback_url: str | None = None
 
 
 @dataclass
@@ -91,6 +99,7 @@ class SenseCheck:
         *,
         image_url: str | None = None,
         source_url: str | None = None,
+        locale: str | None = None,
     ) -> tuple[SenseCheckResult, ShoppingSenseCheck]:
         if image_url is None and source_url is None:
             raise FriendlyException(
@@ -126,7 +135,11 @@ class SenseCheck:
                 status_code=422,
             ) from exc
 
-        similar = await self._find_similar(user_id, vision_result)
+        settings_locale = await self.session.scalar(
+            select(UserSettings.locale).where(UserSettings.user_id == user_id)
+        )
+        effective_locale = resolve_locale(locale, settings_locale)
+        similar = await self._find_similar(user_id, vision_result, effective_locale)
         gap = await self._wardrobe_gap(user_id)
         outfit_potential = await self._outfit_potential(user_id, vision_result)
         verdict, display_reason, similar_item_count = self._decide(
@@ -148,7 +161,7 @@ class SenseCheck:
         return result, record
 
     async def _find_similar(
-        self, user_id: uuid.UUID, candidate: VisionResult
+        self, user_id: uuid.UUID, candidate: VisionResult, locale: str
     ) -> list[SimilarItem]:
         """Up to K wardrobe items most similar to the candidate.
 
@@ -157,13 +170,13 @@ class SenseCheck:
         category/color heuristic, which is the deterministic CI path."""
         k = 5
         if _pgvector_enabled():
-            embedded = await self._by_embedding(user_id, candidate, k)
+            embedded = await self._by_embedding(user_id, candidate, k, locale)
             if embedded:
                 return embedded
-        return await self._by_category_color(user_id, candidate, k)
+        return await self._by_category_color(user_id, candidate, k, locale)
 
     async def _by_embedding(
-        self, user_id: uuid.UUID, candidate: VisionResult, k: int
+        self, user_id: uuid.UUID, candidate: VisionResult, k: int, locale: str
     ) -> list[SimilarItem]:
         """Rank same-category wardrobe items by cosine distance to the
         candidate's nearest already-embedded sibling. We have no vector for the
@@ -189,7 +202,7 @@ class SenseCheck:
             return []
         stmt = (
             select(
-                WardrobeItem.id,
+                WardrobeItem,
                 ItemEmbedding.vector.op("<->")(anchor_vec).label("dist"),
             )
             .join(ItemEmbedding, ItemEmbedding.item_id == WardrobeItem.id)
@@ -204,19 +217,19 @@ class SenseCheck:
             .limit(k)
         )
         rows = (await self.session.execute(stmt)).all()
-        out: list[SimilarItem] = []
-        for row in rows:
+        scored: list[tuple[WardrobeItem, float]] = []
+        for item, dist in rows:
             # Map L2 distance → a bounded similarity in (0, 1]; monotone decreasing.
-            similarity = round(1.0 / (1.0 + float(row.dist)), 4)
-            out.append(SimilarItem(item_id=row.id, similarity=similarity))
-        return out
+            similarity = round(1.0 / (1.0 + float(dist)), 4)
+            scored.append((item, similarity))
+        return await self._build_similar_items(scored, locale)
 
     async def _by_category_color(
-        self, user_id: uuid.UUID, candidate: VisionResult, k: int
+        self, user_id: uuid.UUID, candidate: VisionResult, k: int, locale: str
     ) -> list[SimilarItem]:
         rows = (
             await self.session.execute(
-                select(WardrobeItem.id, WardrobeItem.color_main)
+                select(WardrobeItem)
                 .where(
                     WardrobeItem.user_id == user_id,
                     WardrobeItem.category == candidate.category,
@@ -225,19 +238,71 @@ class SenseCheck:
                 )
                 .order_by(WardrobeItem.created_at.desc())
             )
-        ).all()
+        ).scalars().all()
         # Same category + same color ranks above same-category-only.
         color_match = [
-            SimilarItem(item_id=r.id, similarity=SIM_CATEGORY_COLOR)
-            for r in rows
-            if r.color_main == candidate.color_main
+            (item, SIM_CATEGORY_COLOR)
+            for item in rows
+            if item.color_main == candidate.color_main
         ]
         other = [
-            SimilarItem(item_id=r.id, similarity=_SIM_CATEGORY_ONLY)
-            for r in rows
-            if r.color_main != candidate.color_main
+            (item, _SIM_CATEGORY_ONLY)
+            for item in rows
+            if item.color_main != candidate.color_main
         ]
-        return (color_match + other)[:k]
+        return await self._build_similar_items((color_match + other)[:k], locale)
+
+    async def _build_similar_items(
+        self, scored: list[tuple[WardrobeItem, float]], locale: str
+    ) -> list[SimilarItem]:
+        if not scored:
+            return []
+        sources = await self._thumbnail_sources([item.id for item, _ in scored])
+        out: list[SimilarItem] = []
+        for item, similarity in scored:
+            object_key, fallback_url = sources.get(item.id, (None, item.cover_image_url))
+            out.append(
+                SimilarItem(
+                    item_id=item.id,
+                    similarity=similarity,
+                    name=localized_item_name(
+                        title=item.title,
+                        color_main=item.color_main,
+                        category=item.category,
+                        locale=locale,
+                        localized_names=item.localized_names
+                        if isinstance(item.localized_names, dict)
+                        else None,
+                        name_source=item.name_source,
+                    ),
+                    category=item.category,
+                    color_main=item.color_main,
+                    thumbnail_object_key=object_key,
+                    thumbnail_fallback_url=fallback_url,
+                )
+            )
+        return out
+
+    async def _thumbnail_sources(
+        self, item_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, tuple[str | None, str | None]]:
+        images = list(
+            await self.session.scalars(
+                select(WardrobeItemImage).where(WardrobeItemImage.item_id.in_(item_ids))
+            )
+        )
+        preferred: dict[uuid.UUID, WardrobeItemImage] = {}
+        for image in images:
+            existing = preferred.get(image.item_id)
+            if existing is None or (
+                existing.image_type != ImageType.STANDARD.value
+                and image.image_type == ImageType.STANDARD.value
+            ):
+                preferred[image.item_id] = image
+        return {
+            item_id: (image.object_key, image.image_url)
+            for item_id, image in preferred.items()
+        }
 
     async def _wardrobe_gap(self, user_id: uuid.UUID) -> list[str]:
         """`Category` values for which the user owns zero wearable items."""
@@ -358,7 +423,15 @@ class SenseCheck:
             "display_reason": result.display_reason.model_dump(mode="json"),
             "similar_item_count": result.similar_item_count,
             "similar_items": [
-                {"item_id": str(s.item_id), "similarity": s.similarity}
+                {
+                    "item_id": str(s.item_id),
+                    "similarity": s.similarity,
+                    "name": s.name,
+                    "category": s.category,
+                    "color_main": s.color_main,
+                    "thumbnail_object_key": s.thumbnail_object_key,
+                    "thumbnail_fallback_url": s.thumbnail_fallback_url,
+                }
                 for s in result.similar_items
             ],
             "wardrobe_gap": result.wardrobe_gap,

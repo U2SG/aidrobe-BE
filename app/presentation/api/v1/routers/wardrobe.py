@@ -13,12 +13,14 @@ from app.application.wardrobe.list_items import ListWardrobeItems
 from app.application.wardrobe.update_item import UpdateWardrobeItem
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
+from app.common.item_labels import localized_item_name
+from app.common.locale import resolve_locale
 from app.infrastructure.cache.client import (
     get_redis_client,
     invalidate_daily_recommendation_cache,
 )
 from app.infrastructure.persistence.models.recommendation import Outfit, OutfitItem, WearHistory
-from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.operation_log_repo import (
     SqlAlchemyOperationLogRepository,
@@ -43,10 +45,28 @@ from app.presentation.api.v1.schemas.wardrobe import (
 router = APIRouter(prefix="/v1/wardrobe-items", tags=["wardrobe"])
 
 
-def item_response(item: WardrobeItem) -> WardrobeItemResponse:
+async def _effective_locale(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    request_locale: str | None = None,
+) -> str:
+    settings_locale = await session.scalar(select(UserSettings.locale).where(UserSettings.user_id == user_id))
+    return resolve_locale(request_locale, settings_locale)
+
+
+def item_response(item: WardrobeItem, locale: str) -> WardrobeItemResponse:
+    localized_names = cast(dict[str, object] | None, item.localized_names)
     return WardrobeItemResponse(
         item_id=item.id,
         title=item.title,
+        display_name=localized_item_name(
+            title=item.title,
+            color_main=item.color_main,
+            category=item.category,
+            locale=locale,
+            localized_names=localized_names,
+            name_source=item.name_source,
+        ),
         canonical_name=item.canonical_name,
         localized_names=cast(dict[str, str] | None, item.localized_names),
         name_source=item.name_source,
@@ -74,12 +94,14 @@ async def list_wardrobe_items(
     category: str | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
+    locale: Annotated[str | None, Query(max_length=16)] = None,
 ) -> ResponseModel[WardrobeListResponse]:
     use_case = ListWardrobeItems(SqlAlchemyWardrobeRepository(session))
     items, total = await use_case.execute(current_user.id, category, limit, offset)
+    effective_locale = await _effective_locale(session, current_user.id, locale)
     return ResponseModel(
         data=WardrobeListResponse(
-            items=[item_response(item) for item in items],
+            items=[item_response(item, effective_locale) for item in items],
             limit=limit,
             offset=offset,
             total=total,
@@ -92,11 +114,13 @@ async def get_wardrobe_item(
     item_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    locale: Annotated[str | None, Query(max_length=16)] = None,
 ) -> ResponseModel[WardrobeItemResponse]:
     item = await SqlAlchemyWardrobeRepository(session).get_for_user(item_id, current_user.id)
     if item is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Wardrobe item not found", status_code=404)
-    return ResponseModel(data=item_response(item))
+    effective_locale = await _effective_locale(session, current_user.id, locale)
+    return ResponseModel(data=item_response(item, effective_locale))
 
 
 @router.patch("/{item_id}", response_model=ResponseModel[WardrobeItemResponse])
@@ -123,7 +147,8 @@ async def update_wardrobe_item(
         purchase_date=payload.purchase_date,
     )
     await invalidate_daily_recommendation_cache(redis_client, current_user.id)
-    return ResponseModel(data=item_response(item))
+    effective_locale = await _effective_locale(session, current_user.id)
+    return ResponseModel(data=item_response(item, effective_locale))
 
 
 @router.delete("/{item_id}", response_model=ResponseModel[DeleteWardrobeItemResponse])

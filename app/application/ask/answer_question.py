@@ -41,6 +41,7 @@ from app.application.preferences.memory import (
 from app.common import error_codes
 from app.common.enums import ItemStatus
 from app.common.exceptions import FriendlyException
+from app.common.item_labels import localized_item_name
 from app.common.locale import lang_subtag, resolve_locale
 from app.config.settings import get_settings
 from app.infrastructure.llm.sanitizer import hash_user_token, sanitize_for_llm, sanitize_llm_text
@@ -269,15 +270,14 @@ class ItemRefSnapshot:
 
 
 def _resolve_item_name(item: WardrobeItem, locale: str) -> str:
-    # BE#30 — prefer the localized display name for the resolved locale, else
-    # the user-visible title. `localized_names` keys are full BCP-47 locales
-    # (e.g. "zh-CN"); resolve_locale yields exactly those.
-    names = item.localized_names
-    if isinstance(names, dict):
-        localized = names.get(locale)
-        if isinstance(localized, str) and localized:
-            return localized
-    return item.title
+    return localized_item_name(
+        title=item.title,
+        color_main=item.color_main,
+        category=item.category,
+        locale=locale,
+        localized_names=item.localized_names if isinstance(item.localized_names, dict) else None,
+        name_source=item.name_source,
+    )
 
 
 async def build_item_ref_snapshots(
