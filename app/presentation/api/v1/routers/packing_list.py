@@ -31,6 +31,7 @@ from app.presentation.api.v1.schemas.packing_list import (
     CreatePackingListRequest,
     PackingItem,
     PackingListResponse,
+    PackingPlan,
     UpdatePackingListRequest,
 )
 
@@ -47,6 +48,7 @@ def _gate() -> None:
 def _to_response(packing_list: PackingList) -> PackingListResponse:
     raw_items = cast(list[dict[str, object]], packing_list.items or [])
     raw_scenes = cast(list[str], packing_list.scenes or [])
+    plan_json = cast("dict[str, object] | None", packing_list.plan_json)
     return PackingListResponse(
         packing_list_id=packing_list.id,
         destination=packing_list.destination,
@@ -55,6 +57,7 @@ def _to_response(packing_list: PackingList) -> PackingListResponse:
         departure_date=packing_list.departure_date,
         items=[PackingItem.model_validate(item) for item in raw_items],
         status=packing_list.status,
+        plan=PackingPlan.model_validate(plan_json) if plan_json else None,
     )
 
 

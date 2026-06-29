@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.packing import generate as packing_generate
 from app.config.settings import Settings
 from app.infrastructure.persistence.models.packing_list import PackingList
 from app.infrastructure.persistence.models.recommendation import (
@@ -330,3 +331,81 @@ async def test_patch_invalid_status_returns_422(
             json={"status": "bogus"},
         )
     assert resp.status_code == 422
+
+
+def _enable_planner(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Router gate (ENABLE_PACKING_LIST) + the use case's planner flag live in two
+    # different modules' lru-cached get_settings; patch both.
+    settings = Settings(APP_ENV="dev", ENABLE_PACKING_LIST=True, ENABLE_PACKING_PLANNER=True)
+    monkeypatch.setattr(packing_list, "get_settings", lambda: settings)
+    monkeypatch.setattr(packing_generate, "get_settings", lambda: settings)
+
+
+async def test_planner_returns_persisted_plan_with_daily_outfits_and_missing_items(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_planner(monkeypatch)
+    user_id = uuid.uuid4()
+    await _ensure_user(db_session, user_id)
+    # Top/bottom/shoes enough for outfits; light shoes + no outerwear → warnings.
+    owned = {
+        str((await _seed_item(db_session, user_id, "top")).id),
+        str((await _seed_item(db_session, user_id, "bottom")).id),
+    }
+    shoes = await _seed_item(db_session, user_id, "shoes")
+    shoes.color_main = "white"
+    await db_session.flush()
+    owned.add(str(shoes.id))
+
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        created = await client.post(
+            "/v1/packing-lists",
+            headers={"X-User-Id": str(user_id)},
+            json={
+                "destination": "Tokyo",
+                "days": 2,
+                "scenes": ["business", "casual"],
+                "weather_hint": "cold and rainy",
+            },
+        )
+        assert created.status_code == 200
+        body = created.json()
+        plan = body["plan"]
+        assert plan is not None
+        # Per-day plan cycles the two occasions and references only owned items.
+        assert [d["occasion"] for d in plan["daily_outfits"]] == ["business", "casual"]
+        referenced = {iid for d in plan["daily_outfits"] for iid in d["item_ids"]}
+        assert referenced and referenced <= owned
+        assert "rain" in (plan["weather_summary"] or "")
+        # business needs outerwear (absent) + rain/light-shoes → missing warnings.
+        categories = {m["category"] for m in plan["missing_items"]}
+        assert "outerwear" in categories
+        assert "waterproof shoes" in categories
+        assert plan["packing_items"]
+
+        # Persisted: GET returns the same plan snapshot.
+        pl_id = body["packing_list_id"]
+        fetched = await client.get(
+            f"/v1/packing-lists/{pl_id}", headers={"X-User-Id": str(user_id)}
+        )
+    assert fetched.status_code == 200
+    assert fetched.json()["plan"]["summary"] == plan["summary"]
+
+
+async def test_planner_off_leaves_plan_null(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_flag(monkeypatch)  # packing list on, planner off
+    user_id = uuid.uuid4()
+    await _ensure_user(db_session, user_id)
+    await _seed_item(db_session, user_id, "top")
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/v1/packing-lists",
+            headers={"X-User-Id": str(user_id)},
+            json={"days": 1, "scenes": ["casual"]},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["plan"] is None

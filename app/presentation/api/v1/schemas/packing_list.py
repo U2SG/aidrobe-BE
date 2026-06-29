@@ -28,6 +28,34 @@ class UpdatePackingListRequest(BaseModel):
     status: str | None = None
 
 
+class PackingPlanItem(BaseModel):
+    item_id: str
+    role: str
+    reason: str
+
+
+class PackingDailyOutfit(BaseModel):
+    day: int
+    occasion: str
+    item_ids: list[str]
+    reasoning: list[str]
+
+
+class PackingMissingItem(BaseModel):
+    category: str
+    reason: str
+
+
+class PackingPlan(BaseModel):
+    """BE#68 — rich planner snapshot (present only when ENABLE_PACKING_PLANNER)."""
+
+    summary: str
+    weather_summary: str | None = None
+    packing_items: list[PackingPlanItem] = []
+    daily_outfits: list[PackingDailyOutfit] = []
+    missing_items: list[PackingMissingItem] = []
+
+
 class PackingListResponse(BaseModel):
     packing_list_id: uuid.UUID
     destination: str | None = None
@@ -36,3 +64,5 @@ class PackingListResponse(BaseModel):
     departure_date: date | None = None
     items: list[PackingItem]
     status: str
+    # BE#68 — additive; None for legacy / planner-off lists (FE ignores it).
+    plan: PackingPlan | None = None

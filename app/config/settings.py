@@ -232,6 +232,12 @@ class Settings(BaseSettings):
     # M16 Travel Packing List — generate/edit endpoints. Off by default;
     # lists persist regardless of the flag, the flag only gates exposure.
     ENABLE_PACKING_LIST: bool = False
+    # BE#68 — travel packing PLANNER enrichment: per-day outfit plan (via the
+    # recommendation engine) + missing-item warnings + weather/occasion reasoning,
+    # persisted in packing_lists.plan_json. Off by default; gates both the
+    # enrichment and its persistence so legacy packing behavior is the clean
+    # rollback. Requires ENABLE_PACKING_LIST for the endpoint to be reachable.
+    ENABLE_PACKING_PLANNER: bool = False
 
     # V4 M21 — half-year / annual wardrobe report (Spotify-Wrapped style).
     # Pure aggregation over existing wear/item data; off by default. The flag

@@ -34,6 +34,9 @@ class PackingList(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     departure_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     # [{item_id, day, scene, notes}]
     items: Mapped[JsonDict | list[JsonDict] | None] = mapped_column(JSONB, nullable=True)
+    # BE#68 — rich planner snapshot {summary, weather_summary, packing_items,
+    # daily_outfits, missing_items}. NULL for legacy / planner-off lists.
+    plan_json: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="draft", server_default="draft"
     )
