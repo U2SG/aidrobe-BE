@@ -1,6 +1,6 @@
 import dataclasses
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -12,6 +12,10 @@ from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo, WeatherPort
 from app.application.preferences.memory import live_negative_values_by_type
 from app.application.recommendations.engine import EngineItem, RecommendationEngine, RelationshipEdge
+from app.application.recommendations.feedback_learning import (
+    DEFAULT_SUPPRESSION_DAYS,
+    derive_learning_signals,
+)
 from app.application.recommendations.fit_profile import build_fit_profile
 from app.application.style.build_style_profile import build_style_profile
 from app.common.enums import OutfitType, RecommendationStatus, TimeSensitivity
@@ -117,6 +121,10 @@ class RecommendationGenerator:
         # outfits. Read only when the flag is on (rows persist regardless), so a
         # flag-off generation is byte-identical to the legacy one.
         disliked_colors = await self._load_disliked_colors(user_id, settings)
+        # BE#67 — down-rank looks the user recently dismissed/disliked. Derived at
+        # read time from the event stream (no persistence), gated by the flag so a
+        # flag-off generation is byte-identical to the legacy one.
+        suppressed_outfit_item_ids = await self._load_suppressed_signatures(user_id, settings)
 
         result = await self.engine.generate(
             [
@@ -140,6 +148,7 @@ class RecommendationGenerator:
             avoid_exact_repeats=avoid_exact_repeats,
             disliked_colors=disliked_colors,
             relationship_edges=relationship_edges,
+            suppressed_outfit_item_ids=suppressed_outfit_item_ids,
         )
 
         daily = DailyRecommendation(
@@ -322,6 +331,27 @@ class RecommendationGenerator:
         except Exception as exc:
             logger.warning("preference_memory_load_failed", user_id=str(user_id), error=str(exc))
             return set()
+
+    async def _load_suppressed_signatures(
+        self, user_id: uuid.UUID, settings: Any
+    ) -> list[set[str]]:
+        """BE#67 — item-set signatures the user recently dismissed/disliked.
+
+        Off (empty) unless ENABLE_FEEDBACK_LEARNING is on. Derived from the event
+        stream and recomputed each generation (no persistence → clean rollback).
+        Fail-soft: a read/derivation error must not abort the daily generation."""
+        if not settings.ENABLE_FEEDBACK_LEARNING:
+            return []
+        try:
+            now = datetime.now(UTC)
+            events = await self.repository.list_recommendation_events(
+                user_id, since=now - timedelta(days=DEFAULT_SUPPRESSION_DAYS)
+            )
+            signals = derive_learning_signals(events, now=now)
+            return [set(sig) for sig in signals.suppressed_signatures]
+        except Exception as exc:
+            logger.warning("feedback_learning_load_failed", user_id=str(user_id), error=str(exc))
+            return []
 
     async def _load_style_profile(self, user_id: uuid.UUID) -> dict[str, Any]:
         if self.style_repository is None:

@@ -19,6 +19,22 @@ default:
   - key: itchy
     label_zh_cn: 扎人不舒服
     applies_to: [item]
+  # BE#67 — negative reasons that map to durable learning signals (feedback_learning.py).
+  - key: too_formal
+    label_zh_cn: 偏正式
+    applies_to: [overall]
+  - key: too_casual
+    label_zh_cn: 偏随意
+    applies_to: [overall]
+  - key: not_my_style
+    label_zh_cn: 不是我的风格
+    applies_to: [overall]
+  - key: wrong_fit
+    label_zh_cn: 版型不合适
+    applies_to: [item]
+  - key: wrong_color
+    label_zh_cn: 颜色不喜欢
+    applies_to: [item]
 commute:
   - key: easy_to_move
     label_zh_cn: 通勤方便

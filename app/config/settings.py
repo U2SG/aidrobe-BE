@@ -271,6 +271,13 @@ class Settings(BaseSettings):
     # and the ranking boost/penalty in Today recommendations. User/feedback edges
     # (when added) are user data and follow the persist-regardless convention.
     ENABLE_WARDROBE_GRAPH: bool = False
+    # BE#67 feedback learning. Converts recent feedback events into (a) a
+    # ranking suppression signal for dismissed/disliked outfit item-sets and
+    # (b) controlled WEAK preference-memory updates from repeated feedback. The
+    # weak WRITE is new behavior, so — unlike the read-gated preference convention
+    # — this flag gates the write too, keeping flag-off a clean rollback. The
+    # suppression signal is recomputed at generation time (no persistence).
+    ENABLE_FEEDBACK_LEARNING: bool = False
 
     # Comma-separated UUIDs allowed to hit `/v1/admin/*`. Empty in dev means
     # every authenticated user is admin (DX); empty in prod means the admin
