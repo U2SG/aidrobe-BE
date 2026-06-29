@@ -38,6 +38,14 @@ _SUPPRESSION_EVENT_TYPES = {
     RecommendationEventType.DISLIKED.value,
     RecommendationEventType.DISMISSED.value,
 }
+# Positive signals on the SAME look that revoke a suppression (the user changed
+# their mind). A signature is suppressed only if its most recent dislike/dismiss
+# is newer than its most recent positive event.
+_POSITIVE_EVENT_TYPES = {
+    RecommendationEventType.LIKED.value,
+    RecommendationEventType.SAVED.value,
+    RecommendationEventType.WORN.value,
+}
 
 # Reason-tag key → canonical signal. Only the self-describing reasons that map to
 # a durable preference are listed; contextual reasons (too_warm/too_cold/itchy)
@@ -133,27 +141,38 @@ def derive_learning_signals(
     times so a single interaction never becomes a durable preference.
     """
     cutoff = now - timedelta(days=suppression_days)
-    suppressed: list[frozenset[str]] = []
-    seen_signatures: set[frozenset[str]] = set()
     signal_counts: Counter[str] = Counter()
+    # Per signature, the most-recent suppression vs positive timestamps. A later
+    # like/save/wear on the same look revokes an earlier dislike/dismiss.
+    suppress_at: dict[frozenset[str], datetime] = {}
+    positive_at: dict[frozenset[str], datetime] = {}
+    # Preserve first-seen order of suppressed signatures for a stable result.
+    order: list[frozenset[str]] = []
 
     for event in events:
         created = event.created_at
         if created is not None and created < cutoff:
             continue
-        signals = normalize_event(event.event_type, _reason_tags(event.event_metadata))
-        if not signals:
-            continue
-        # Suppression: any dismissed/disliked event with a stored item signature.
-        if signals & _SUPPRESSION_EVENT_TYPES:
-            signature = _signature(event.event_metadata)
-            if signature is not None and signature not in seen_signatures:
-                seen_signatures.add(signature)
-                suppressed.append(signature)
+        stamp = created if created is not None else now
+        signature = _signature(event.event_metadata)
+        if signature is not None:
+            if event.event_type in _SUPPRESSION_EVENT_TYPES:
+                if signature not in suppress_at:
+                    order.append(signature)
+                suppress_at[signature] = max(suppress_at.get(signature, stamp), stamp)
+            elif event.event_type in _POSITIVE_EVENT_TYPES:
+                positive_at[signature] = max(positive_at.get(signature, stamp), stamp)
         # Durable-preference counting (only the self-describing reason signals).
+        signals = normalize_event(event.event_type, _reason_tags(event.event_metadata))
         for signal in signals:
             if signal in _SIGNAL_TO_PREFERENCE:
                 signal_counts[signal] += 1
+
+    suppressed = [
+        sig
+        for sig in order
+        if sig not in positive_at or suppress_at[sig] > positive_at[sig]
+    ]
 
     weak: list[WeakPreference] = []
     for signal, count in signal_counts.items():

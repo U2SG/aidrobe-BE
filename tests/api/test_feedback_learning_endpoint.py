@@ -16,6 +16,7 @@ from app.infrastructure.persistence.models.preference_memory import UserPreferen
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
+    OutfitFeedback,
     OutfitItem,
 )
 from app.infrastructure.persistence.models.user import User
@@ -105,3 +106,40 @@ async def test_repeated_feedback_writes_weak_preference_but_one_off_does_not(
         assert pref.polarity == "negative"
         assert pref.source == "feedback_signal"
         assert float(pref.confidence) <= 0.4  # weak-source cap honored
+
+
+async def test_preference_write_db_error_does_not_fail_feedback(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    """BE#69 review: a non-PreferenceMemoryError during the weak-pref write (e.g. a
+    DBAPI error) must be swallowed via the per-row savepoint — the user's feedback
+    still persists and the request stays 200, not 500."""
+    monkeypatch.setattr(
+        feedback_module,
+        "get_settings",
+        lambda: Settings(APP_ENV="dev", ENABLE_FEEDBACK_LEARNING=True),
+    )
+
+    async def _boom(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("simulated DBAPI failure")
+
+    monkeypatch.setattr(feedback_module, "record_preference", _boom)
+
+    user_id = uuid.uuid4()
+    outfit_id = await _seed_outfit(db_session, user_id)
+    app = build_outfit_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        for _ in range(3):  # cross the durable threshold so the write path runs
+            resp = await client.post(
+                f"/v1/recommendations/outfits/{outfit_id}/feedback",
+                headers={"X-User-Id": str(user_id)},
+                json={"feedback_type": "dislike", "reason_tags": ["too_formal"]},
+            )
+            assert resp.status_code == 200  # learning error never surfaces as 500
+
+    # No preference was written (every attempt failed), but feedback persisted.
+    assert await _formality_prefs(db_session, user_id) == []
+    persisted = await db_session.scalar(
+        select(OutfitFeedback).where(OutfitFeedback.outfit_id == outfit_id)
+    )
+    assert persisted is not None and persisted.feedback_type == "dislike"

@@ -32,6 +32,14 @@ def _dislike(item_ids: list[str], reason_tags: list[str] | None = None, *, age_d
     )
 
 
+def _event(event_type: str, item_ids: list[str], *, age_days: int = 0) -> _Event:
+    return _Event(
+        event_type=event_type,
+        event_metadata={"item_ids": item_ids, "reason_tags": []},
+        created_at=_NOW - timedelta(days=age_days),
+    )
+
+
 # ── normalization ────────────────────────────────────────────────────
 def test_normalize_maps_event_types_and_known_tags() -> None:
     assert normalize_event(RecommendationEventType.DISLIKED.value, None) == {"disliked"}
@@ -55,6 +63,25 @@ def test_suppression_dedupes_signatures_and_respects_window() -> None:
     ]
     signals = derive_learning_signals(events, now=_NOW, suppression_days=14)
     assert signals.suppressed_signatures == [frozenset({"a", "b"})]
+
+
+def test_corrected_feedback_revokes_suppression() -> None:
+    # BE#69 review: user disliked a look, then later liked the same look → the
+    # later positive event wins, so the signature is NOT suppressed.
+    events = [
+        _dislike(["a", "b"], age_days=5),
+        _event(RecommendationEventType.LIKED.value, ["a", "b"], age_days=1),  # newer
+    ]
+    assert derive_learning_signals(events, now=_NOW).suppressed_signatures == []
+
+
+def test_redisliked_after_like_is_suppressed_again() -> None:
+    # like then a newer dislike → suppression stands (most-recent wins).
+    events = [
+        _event(RecommendationEventType.LIKED.value, ["a", "b"], age_days=5),
+        _dislike(["a", "b"], age_days=1),  # newer
+    ]
+    assert derive_learning_signals(events, now=_NOW).suppressed_signatures == [frozenset({"a", "b"})]
 
 
 def test_dismissed_without_signature_is_skipped() -> None:

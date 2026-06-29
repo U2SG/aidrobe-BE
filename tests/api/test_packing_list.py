@@ -409,3 +409,89 @@ async def test_planner_off_leaves_plan_null(
         )
     assert resp.status_code == 200
     assert resp.json()["plan"] is None
+
+
+async def test_planner_patch_items_clears_stale_plan(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # BE#69 review: editing items must drop the now-inconsistent planner snapshot.
+    _enable_planner(monkeypatch)
+    user_id = uuid.uuid4()
+    await _ensure_user(db_session, user_id)
+    await _seed_item(db_session, user_id, "top")
+    await _seed_item(db_session, user_id, "bottom")
+    await _seed_item(db_session, user_id, "shoes")
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        created = await client.post(
+            "/v1/packing-lists",
+            headers={"X-User-Id": str(user_id)},
+            json={"days": 1, "scenes": ["casual"]},
+        )
+        body = created.json()
+        assert body["plan"] is not None  # planner ran
+        pl_id = body["packing_list_id"]
+        patched = await client.patch(
+            f"/v1/packing-lists/{pl_id}",
+            headers={"X-User-Id": str(user_id)},
+            json={"items": []},
+        )
+        assert patched.status_code == 200
+        assert patched.json()["plan"] is None  # stale plan cleared
+        fetched = await client.get(
+            f"/v1/packing-lists/{pl_id}", headers={"X-User-Id": str(user_id)}
+        )
+    assert fetched.json()["plan"] is None
+
+
+async def test_planner_excludes_recently_worn(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # BE#69 review: the planner path must also honor DB recent-wear history.
+    _enable_planner(monkeypatch)
+    user_id = uuid.uuid4()
+    await _ensure_user(db_session, user_id)
+    recent_top = await _seed_item(db_session, user_id, "top")
+    fresh_top = await _seed_item(db_session, user_id, "top")
+    await _seed_item(db_session, user_id, "bottom")
+    await _seed_item(db_session, user_id, "shoes")
+
+    departure = date(2026, 7, 10)
+    daily = DailyRecommendation(
+        user_id=user_id, recommendation_date=departure, status="ready", generation_source="manual"
+    )
+    db_session.add(daily)
+    await db_session.flush()
+    outfit = Outfit(
+        daily_recommendation_id=daily.id, user_id=user_id, outfit_type="safe",
+        title="Worn", reason_text="x", score_total=0.5, rank_order=1,
+        created_at=datetime.now(UTC),
+    )
+    db_session.add(outfit)
+    await db_session.flush()
+    db_session.add(
+        OutfitItem(
+            outfit_id=outfit.id, item_id=recent_top.id, role="top",
+            display_order=1, created_at=datetime.now(UTC),
+        )
+    )
+    db_session.add(
+        WearHistory(
+            user_id=user_id, outfit_id=outfit.id, worn_date=date(2026, 7, 7),
+            selected_at=datetime.now(UTC), created_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/v1/packing-lists",
+            headers={"X-User-Id": str(user_id)},
+            json={"days": 2, "scenes": ["casual"], "departure_date": "2026-07-10"},
+        )
+    assert resp.status_code == 200
+    plan = resp.json()["plan"]
+    referenced = {iid for d in plan["daily_outfits"] for iid in d["item_ids"]}
+    assert str(recent_top.id) not in referenced  # recently worn, excluded
+    assert str(fresh_top.id) in referenced  # the un-worn top is used instead

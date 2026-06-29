@@ -59,6 +59,26 @@ def test_render_preferences_prioritizes_negatives_first() -> None:
     assert "navy" in rendered
 
 
+def test_render_preferences_weak_negative_is_soft_not_hard() -> None:
+    # BE#69 review: a low-confidence (feedback-derived) negative must NOT be
+    # rendered as a hard "MUST AVOID" rule; a high-confidence one must.
+    rendered = render_preferences(
+        {
+            "negative": [
+                {"type": "color", "value": "red", "confidence": 0.9},
+                {"type": "fit", "value": "oversized", "confidence": 0.3},
+            ]
+        },
+        "en",
+    )
+    assert rendered is not None
+    assert "MUST AVOID" in rendered and "LEAN AWAY" in rendered
+    # The strong one sits under MUST AVOID, the weak one under LEAN AWAY.
+    assert rendered.index("MUST AVOID") < rendered.index("red")
+    assert rendered.index("LEAN AWAY") < rendered.index("oversized")
+    assert rendered.index("red") < rendered.index("LEAN AWAY")
+
+
 def test_render_preferences_bounds_user_text() -> None:
     # Control chars / newlines (injection vehicle) are stripped, length capped.
     rendered = render_preferences(
