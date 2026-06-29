@@ -41,10 +41,12 @@ _SUPPRESSION_EVENT_TYPES = {
 # Positive signals on the SAME look that revoke a suppression (the user changed
 # their mind). A signature is suppressed only if its most recent dislike/dismiss
 # is newer than its most recent positive event.
+# Only LIKED qualifies today: revocation matches on item-set signature, and the
+# ONLY emitter that stores `event_metadata["item_ids"]` is `FeedbackOutfit`
+# (love/like → LIKED). SAVED/WORN events (save/wear endpoints) carry no signature,
+# so they can't match a suppressed look — including them would be dead code.
 _POSITIVE_EVENT_TYPES = {
     RecommendationEventType.LIKED.value,
-    RecommendationEventType.SAVED.value,
-    RecommendationEventType.WORN.value,
 }
 
 # Reason-tag key → canonical signal. Only the self-describing reasons that map to

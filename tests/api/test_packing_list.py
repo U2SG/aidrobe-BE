@@ -495,3 +495,54 @@ async def test_planner_excludes_recently_worn(
     referenced = {iid for d in plan["daily_outfits"] for iid in d["item_ids"]}
     assert str(recent_top.id) not in referenced  # recently worn, excluded
     assert str(fresh_top.id) in referenced  # the un-worn top is used instead
+
+
+async def test_wear_after_departure_not_treated_as_recent(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # BE#69 review: a wear-history row dated AFTER the trip anchor must not drop
+    # the item from candidates (the window is bounded at the anchor).
+    _enable_flag(monkeypatch)  # legacy path; same shared recent-wear query
+    user_id = uuid.uuid4()
+    await _ensure_user(db_session, user_id)
+    top = await _seed_item(db_session, user_id, "top")
+    await _seed_item(db_session, user_id, "bottom")
+    await _seed_item(db_session, user_id, "shoes")
+
+    departure = date(2026, 7, 10)
+    daily = DailyRecommendation(
+        user_id=user_id, recommendation_date=departure, status="ready", generation_source="manual"
+    )
+    db_session.add(daily)
+    await db_session.flush()
+    outfit = Outfit(
+        daily_recommendation_id=daily.id, user_id=user_id, outfit_type="safe",
+        title="Future wear", reason_text="x", score_total=0.5, rank_order=1,
+        created_at=datetime.now(UTC),
+    )
+    db_session.add(outfit)
+    await db_session.flush()
+    db_session.add(
+        OutfitItem(
+            outfit_id=outfit.id, item_id=top.id, role="top",
+            display_order=1, created_at=datetime.now(UTC),
+        )
+    )
+    db_session.add(
+        WearHistory(
+            user_id=user_id, outfit_id=outfit.id, worn_date=date(2026, 7, 12),  # AFTER departure
+            selected_at=datetime.now(UTC), created_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/v1/packing-lists",
+            headers={"X-User-Id": str(user_id)},
+            json={"days": 1, "scenes": ["casual"], "departure_date": "2026-07-10"},
+        )
+    assert resp.status_code == 200
+    picked = {item["item_id"] for item in resp.json()["items"]}
+    assert str(top.id) in picked  # future-dated wear did NOT exclude it

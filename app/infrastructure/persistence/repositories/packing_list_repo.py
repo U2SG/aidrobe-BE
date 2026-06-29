@@ -68,15 +68,19 @@ class SqlAlchemyPackingListRepository:
         return list(result)
 
     async def recent_worn_item_ids(
-        self, user_id: uuid.UUID, since: date
+        self, user_id: uuid.UUID, since: date, until: date | None = None
     ) -> set[uuid.UUID]:
-        """Item ids worn (via any outfit) on/after `since` — for the 7-day skip."""
+        """Item ids worn (via any outfit) in `[since, until]` — for the 7-day skip.
+
+        `until` (the trip anchor) bounds the window so a future-dated wear row
+        (the wear endpoint accepts a caller-supplied `worn_date`) can't be counted
+        as "worn before the trip" and wrongly drop an item from the candidates."""
+        conditions = [WearHistory.user_id == user_id, WearHistory.worn_date >= since]
+        if until is not None:
+            conditions.append(WearHistory.worn_date <= until)
         result = await self.session.scalars(
             select(OutfitItem.item_id)
             .join(WearHistory, WearHistory.outfit_id == OutfitItem.outfit_id)
-            .where(
-                WearHistory.user_id == user_id,
-                WearHistory.worn_date >= since,
-            )
+            .where(*conditions)
         )
         return set(result)

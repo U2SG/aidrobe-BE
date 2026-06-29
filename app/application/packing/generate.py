@@ -73,7 +73,7 @@ class GeneratePackingList:
         # wear history, not only the looks it plans within this trip.
         anchor = departure_date if departure_date is not None else date.today()
         since = anchor - timedelta(days=RECENT_WEAR_DAYS)
-        recently_worn = await self.repository.recent_worn_item_ids(user_id, since)
+        recently_worn = await self.repository.recent_worn_item_ids(user_id, since, until=anchor)
         candidates = [item for item in candidates if item.id not in recently_worn]
 
         # BE#68 — when the planner is on, build the rich per-day plan (engine +
