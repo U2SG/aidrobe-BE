@@ -546,3 +546,35 @@ async def test_wear_after_departure_not_treated_as_recent(
     assert resp.status_code == 200
     picked = {item["item_id"] for item in resp.json()["items"]}
     assert str(top.id) in picked  # future-dated wear did NOT exclude it
+
+
+async def test_planner_plan_gated_by_flag_on_read(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # BE#68 review: a persisted plan must stop surfacing once the planner flag is
+    # off, even while ENABLE_PACKING_LIST stays on — flag-off is a clean rollback.
+    _enable_planner(monkeypatch)
+    user_id = uuid.uuid4()
+    await _ensure_user(db_session, user_id)
+    await _seed_item(db_session, user_id, "top")
+    await _seed_item(db_session, user_id, "bottom")
+    await _seed_item(db_session, user_id, "shoes")
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        created = await client.post(
+            "/v1/packing-lists",
+            headers={"X-User-Id": str(user_id)},
+            json={"days": 1, "scenes": ["casual"]},
+        )
+        pl_id = created.json()["packing_list_id"]
+        assert created.json()["plan"] is not None  # planner on → plan present
+
+        # Flip the planner flag off (packing-list endpoint stays enabled).
+        monkeypatch.setattr(
+            packing_list, "get_settings", lambda: Settings(APP_ENV="dev", ENABLE_PACKING_LIST=True)
+        )
+        fetched = await client.get(
+            f"/v1/packing-lists/{pl_id}", headers={"X-User-Id": str(user_id)}
+        )
+    assert fetched.status_code == 200
+    assert fetched.json()["plan"] is None  # gated off on read

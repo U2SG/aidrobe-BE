@@ -48,7 +48,15 @@ def _gate() -> None:
 def _to_response(packing_list: PackingList) -> PackingListResponse:
     raw_items = cast(list[dict[str, object]], packing_list.items or [])
     raw_scenes = cast(list[str], packing_list.scenes or [])
+    # BE#68 review: gate the persisted plan on the CURRENT flag so a plan saved
+    # while ENABLE_PACKING_PLANNER was on stops surfacing (incl. via GET/list)
+    # once it's turned off — keeping flag-off a clean rollback.
     plan_json = cast("dict[str, object] | None", packing_list.plan_json)
+    plan = (
+        PackingPlan.model_validate(plan_json)
+        if plan_json and get_settings().ENABLE_PACKING_PLANNER
+        else None
+    )
     return PackingListResponse(
         packing_list_id=packing_list.id,
         destination=packing_list.destination,
@@ -57,7 +65,7 @@ def _to_response(packing_list: PackingList) -> PackingListResponse:
         departure_date=packing_list.departure_date,
         items=[PackingItem.model_validate(item) for item in raw_items],
         status=packing_list.status,
-        plan=PackingPlan.model_validate(plan_json) if plan_json else None,
+        plan=plan,
     )
 
 
