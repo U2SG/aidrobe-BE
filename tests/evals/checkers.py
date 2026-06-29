@@ -39,6 +39,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from app.application.llm_prompts.self_critique import (
+    disliked_attribute_offenders,
+    unknown_item_refs,
+)
 from app.presentation.api.v1.schemas.recommendations import TodayRecommendationResponse
 
 # --------------------------------------------------------------------------- #
@@ -117,8 +121,7 @@ def check_schema_valid(output: dict[str, Any]) -> CheckResult:
 def check_no_hallucinated_items(output: dict[str, Any], wardrobe: list[dict[str, Any]]) -> CheckResult:
     """Every referenced item id must exist in the provided wardrobe."""
     known = set(_wardrobe_by_id(wardrobe))
-    referenced = output_item_ids(output)
-    unknown = sorted({i for i in referenced if i not in known})
+    unknown = unknown_item_refs(output_item_ids(output), known)
     if unknown:
         return CheckResult.failed(
             "no_hallucinated_items",
@@ -281,19 +284,15 @@ def _assert_no_negative_preference_items(fixture: dict[str, Any], spec: dict[str
     {"type": "no_attribute_value", "attribute": "fit", "values": ["oversized"]}.
     """
     attribute = str(spec["attribute"])
-    bad_values = {str(v).lower() for v in spec["values"]}
+    bad_values = [str(v) for v in spec["values"]]
     by_id = _wardrobe_by_id(fixture["wardrobe"])
-    offenders: list[str] = []
-    for item_id in output_item_ids(fixture["output"]):
-        item = by_id.get(item_id)
-        if item is None:
-            continue
-        if str(item.get(attribute, "")).lower() in bad_values:
-            offenders.append(item_id)
+    referenced_items = [by_id[i] for i in output_item_ids(fixture["output"]) if i in by_id]
+    offenders = disliked_attribute_offenders(referenced_items, attribute, bad_values)
     if offenders:
         return CheckResult.failed(
             "no_attribute_value",
-            f"recommended items violate negative preference {attribute}∈{sorted(bad_values)}: {offenders}",
+            f"recommended items violate negative preference "
+            f"{attribute}∈{sorted(v.lower() for v in bad_values)}: {offenders}",
         )
     return CheckResult.passed("no_attribute_value")
 

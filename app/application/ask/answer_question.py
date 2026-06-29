@@ -31,6 +31,12 @@ from app.application.ask.wardrobe_context import (
     context_snapshot,
 )
 from app.application.cost_guard import assert_within_quota
+from app.application.llm_prompts.assemble import assemble_system_prompt
+from app.application.llm_prompts.persona import stylist_persona
+from app.application.llm_prompts.preference_memory import render_preferences
+from app.application.llm_prompts.reasoning_policy import reasoning_policy
+from app.application.llm_prompts.response_contracts import ask_structured_contract
+from app.application.llm_prompts.self_critique import negative_preference_violations
 from app.application.ports.llm import LlmPort
 from app.application.preferences.memory import (
     SOURCE_EXPLICIT,
@@ -119,19 +125,14 @@ def _project_tokens(item_count: int) -> int:
 
 logger = structlog.get_logger(__name__)
 
-# Locale-keyed system preambles. Default (and any unknown locale) falls back
-# to Chinese to preserve the pre-locale behavior. Match on the language
-# subtag only ("en-US" -> "en") so client BCP-47 variants all resolve.
-_PREAMBLES: dict[str, str] = {
-    "zh": (
-        "你是 Aidrobe 的穿搭助理。基于用户提供的衣橱结构化数据回答穿搭问题，"
-        "建议要具体、可执行，并使用自然中文回答。\n"
-    ),
-    "en": (
-        "You are Aidrobe's styling assistant. Answer styling questions using the "
-        "user's structured wardrobe data. Be specific and actionable, and respond "
-        "only in English.\n"
-    ),
+# BE#66 — the persona voice now lives in the shared `llm_prompts.persona` module
+# (one consistent stylist across Ask + Today). This Ask-specific directive only
+# pins the RESPONSE LANGUAGE; everything else composes from the shared modules.
+# Default (and any unknown locale) falls back to Chinese to preserve pre-locale
+# behavior; match on the language subtag only ("en-US" -> "en").
+_LANG_DIRECTIVE: dict[str, str] = {
+    "zh": "请使用自然、地道的中文回答，建议要具体、可执行。",
+    "en": "Respond only in natural English; keep advice specific and actionable.",
 }
 _DEFAULT_LANG = "zh"
 
@@ -172,61 +173,16 @@ _FOCUS_CLAUSE: dict[str, str] = {
 # High, but not 1.0 — they may revise it later, and the row is user-correctable.
 _EXPLICIT_PREFERENCE_CONFIDENCE = 0.9
 
-# The vocabulary the model may tag a stated preference with — mirrors the write
-# service allowlist. Embedded in the prompt so the model emits storable types;
-# the write path re-validates, so a bad type is dropped, never persisted.
-_PREFERENCE_TYPE_VOCAB = (
-    "style, color, fit, occasion, brand, material, formality, climate, footwear, negative_preference"
-)
-
-# Appended when ENABLE_ASK_STRUCTURED_OUTPUT is on. Asks for a strict JSON
-# envelope so the server can validate which items the model actually cited.
-# `referenced_items` are 1-based positions into the items list above.
-# `stated_preferences` captures ONLY durable preferences the user explicitly
-# stated this turn (the trusted write path) — never inferences from a one-off
-# request; an empty array is the default.
-# `conversation_deltas` (incl. `rejected_focused_item`) lives INSIDE this one
-# canonical JSON object — a single coherent envelope the model returns — so a
-# separate trailing instruction can't make the deltas silently vanish.
-_STRUCTURED_INSTRUCTION: dict[str, str] = {
-    "zh": (
-        "\n请只返回一个 JSON 对象，不要包含任何其它文字："
-        '{"answer": "你的中文建议", "referenced_items": [引用到的单品在上面列表中的序号，从 1 开始], '
-        '"stated_preferences": [{"type": "类型", "value": "简短的值", "polarity": "positive 或 negative"}], '
-        '"conversation_deltas": {"reasoning": "一句话说明如何延续上一轮", '
-        '"applied_constraints": ["本轮临时约束"], '
-        '"rejected_focused_item": 仅当用户明确表示不要/换掉当前聚焦的那件单品时为 true，否则为 false}}。'
-        "若没有引用任何单品，referenced_items 返回空数组。"
-        f"stated_preferences 只收录用户本轮明确表达的长期偏好（如「我不喜欢宽松衬衫」），"
-        f"type 必须是以下之一：{_PREFERENCE_TYPE_VOCAB}；不要从一次性的请求里推断，没有就返回空数组。"
-    ),
-    "en": (
-        "\nRespond with a single JSON object and nothing else: "
-        '{"answer": "your advice in English", "referenced_items": [1-based positions '
-        'of the items above you reference], '
-        '"stated_preferences": [{"type": "...", "value": "short value", "polarity": "positive" or "negative"}], '
-        '"conversation_deltas": {"reasoning": "one sentence on how this refines the previous turn", '
-        '"applied_constraints": ["temporary constraints applied this turn"], '
-        '"rejected_focused_item": true only when the user explicitly rejects / wants to swap out the '
-        'focused item, otherwise false}}. '
-        "If you reference no item, return an empty array. "
-        "stated_preferences captures ONLY durable preferences the user explicitly stated this turn "
-        '(e.g. "I dislike oversized shirts"); '
-        f"type must be one of: {_PREFERENCE_TYPE_VOCAB}. Do not infer from a one-off request; "
-        "return an empty array when there are none."
-    ),
-}
-
-
 def _resolve_lang(locale: str | None, settings_locale: str | None = None) -> str:
     # BE#30 — request locale wins, else the user's persisted settings locale,
     # else the zh-CN product default. resolve_locale always returns a supported
-    # BCP-47 locale, so its subtag is guaranteed present in _PREAMBLES.
+    # BCP-47 locale, so its subtag is guaranteed in the persona/clause maps.
     return lang_subtag(resolve_locale(locale, settings_locale))
 
 
 def _preamble_for(locale: str | None) -> str:
-    return _PREAMBLES[_resolve_lang(locale)]
+    # BE#66 — the preamble is now the shared stylist persona.
+    return stylist_persona(_resolve_lang(locale))
 
 
 @dataclass(frozen=True)
@@ -448,30 +404,39 @@ def _build_system_prompt(
     *,
     structured: bool = False,
 ) -> str:
-    # Items are already field-sanitized by `_item_to_sanitized`; the context
-    # block is derived/bounded (see wardrobe_context safety story). Build the
-    # final payload directly and attach the opaque user token. Do NOT re-run
-    # the container through `sanitize_for_llm` — its whitelist has no "items"
-    # key, so a second pass would silently strip the entire wardrobe.
+    # BE#66 — compose the system prompt from the shared `llm_prompts` modules
+    # (persona / preference rules / reasoning policy / response contract) instead
+    # of one monolith. Persona stays FIRST so the response-language behavior and
+    # locale tests hold. Items are already field-sanitized by `_item_to_sanitized`;
+    # the context block is derived/bounded (see wardrobe_context safety story).
+    # The payload is attached directly with the opaque user token — do NOT re-run
+    # the container through `sanitize_for_llm` (its whitelist has no "items" key,
+    # so a second pass would silently strip the entire wardrobe).
     lang = ctx.locale  # already resolved to a language subtag
-    preamble = _PREAMBLES.get(lang, _PREAMBLES[_DEFAULT_LANG])
     if items:
-        preamble += _WARDROBE_CONTEXT_CLAUSE.get(lang, _WARDROBE_CONTEXT_CLAUSE[_DEFAULT_LANG])
+        wardrobe_clause = _WARDROBE_CONTEXT_CLAUSE.get(lang, _WARDROBE_CONTEXT_CLAUSE[_DEFAULT_LANG])
     else:
-        preamble += _NO_WARDROBE_CONTEXT_CLAUSE.get(
-            lang, _NO_WARDROBE_CONTEXT_CLAUSE[_DEFAULT_LANG]
-        )
-    if ctx.scope == "item":
-        preamble += _FOCUS_CLAUSE.get(lang, _FOCUS_CLAUSE[_DEFAULT_LANG])
+        wardrobe_clause = _NO_WARDROBE_CONTEXT_CLAUSE.get(lang, _NO_WARDROBE_CONTEXT_CLAUSE[_DEFAULT_LANG])
+    focus_clause = _FOCUS_CLAUSE.get(lang, _FOCUS_CLAUSE[_DEFAULT_LANG]) if ctx.scope == "item" else None
     payload = {
         "context": context_for_prompt(ctx),
         "items": [_item_to_sanitized(i, today) for i in items],
         "usr": hash_user_token(user_id),
     }
-    prompt = preamble + json.dumps(payload, ensure_ascii=False)
-    if structured:
-        prompt += _STRUCTURED_INSTRUCTION.get(lang, _STRUCTURED_INSTRUCTION[_DEFAULT_LANG])
-    return prompt
+    return assemble_system_prompt(
+        [
+            stylist_persona(lang),
+            _LANG_DIRECTIVE.get(lang, _LANG_DIRECTIVE[_DEFAULT_LANG]),
+            wardrobe_clause,
+            focus_clause,
+            # Durable preferences as PRIORITIZED avoid/prefer rules (fixes
+            # "included but not prioritized"); None when there are none.
+            render_preferences(ctx.preference_memory, lang),
+            json.dumps(payload, ensure_ascii=False),
+            reasoning_policy(lang),
+            ask_structured_contract(lang) if structured else None,
+        ]
+    )
 
 
 def _extract_structured(
@@ -822,8 +787,29 @@ async def answer_question(
             parsed_deltas = ConversationDeltas(reasoning=None, applied_constraints=[])
         else:
             answer_text, indices, stated_preferences = parsed
-            item_refs = [str(items[i].id) for i in indices]
+            referenced_items = [items[i] for i in indices]
+            item_refs = [str(it.id) for it in referenced_items]
             parsed_deltas = _extract_conversation_deltas(cast(dict[str, Any], parsed_data))
+            # BE#66 — deterministic self-critique: surface (do NOT mutate) any
+            # cited item that contradicts an explicit negative preference, so the
+            # regression is observable without risking suppressing a valid answer.
+            negatives = preference_memory.get("negative") or []
+            if negatives:
+                violations = negative_preference_violations(
+                    [
+                        {
+                            "id": str(it.id),
+                            "color_main": it.color_main,
+                            "material": it.material,
+                            "fit_status": it.fit_status,
+                            "sub_category": it.sub_category,
+                        }
+                        for it in referenced_items
+                    ],
+                    negatives,
+                )
+                if violations:
+                    logger.warning("ask.self_critique.negative_preference", violations=violations)
         focus_is_rejection = focused_item_id is not None and parsed_deltas.rejected_focused_item
     else:
         # Structured output disabled: we can't tell which items the model
