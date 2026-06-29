@@ -135,8 +135,12 @@ def _deterministic_name(
 ) -> str | None:
     color = _label(COLOR_LABELS, color_main, locale)
     noun = _known_term(title, locale) or _label(CATEGORY_LABELS, category, locale)
-    if color is None or noun is None:
+    if noun is None:
         return None
+    # A localized noun alone still beats leaking the raw English title when the
+    # color is unknown (e.g. ivory/khaki not in COLOR_LABELS).
+    if color is None:
+        return noun
     if locale == "zh-CN":
         return f"{color}{noun}"
     return f"{color} {noun}"
