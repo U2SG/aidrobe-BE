@@ -41,6 +41,12 @@ FIT_DOWNGRADE_STATUSES = {"tight", "needs_alteration"}
 NO_LONGER_FITS = "no_longer_fits"
 REPETITION_SIMILARITY_THRESHOLD = 0.6
 REPETITION_PENALTY = 0.2
+# BE#67 — feedback suppression: an outfit whose item-set closely matches one the
+# user recently dismissed/disliked is down-ranked. Stronger than the repetition
+# penalty (explicit negative feedback > "you wore this lately"), but a bounded
+# soft penalty — never a hard exclude — so it stays reversible.
+SUPPRESSION_SIMILARITY_THRESHOLD = REPETITION_SIMILARITY_THRESHOLD
+SUPPRESSION_PENALTY = 0.5
 # BE#46 — per-item penalty applied when an item's color matches an explicit
 # user-stated NEGATIVE color preference. Multiplied by how many items in the
 # combo match, so an outfit built mostly of disliked colors is pushed well below
@@ -117,6 +123,7 @@ class RecommendationEngine:
         avoid_exact_repeats: bool = False,
         disliked_colors: set[str] | None = None,
         relationship_edges: list[RelationshipEdge] | None = None,
+        suppressed_outfit_item_ids: list[set[str]] | None = None,
     ) -> EngineResult:
         recent_worn_main_item_ids = recent_worn_main_item_ids or set()
         recent_worn_outfit_item_ids = recent_worn_outfit_item_ids or []
@@ -147,6 +154,10 @@ class RecommendationEngine:
         candidates = self._apply_relationship_ranking(
             candidates,
             relationship_edges or [],
+        )
+        candidates = self._apply_suppression(
+            candidates,
+            suppressed_outfit_item_ids or [],
         )
 
         # Fill one outfit per type (safe / fast / stylish) via a de-dup *ladder*,
@@ -560,6 +571,42 @@ class RecommendationEngine:
                 replace(
                     candidate,
                     score_total=round(max(0.0, candidate.score_total + boost - penalty), 4),
+                    score_breakdown=score_breakdown,
+                )
+            )
+        return adjusted
+
+    def _apply_suppression(
+        self,
+        candidates: list[EngineOutfit],
+        suppressed_outfit_item_ids: list[set[str]],
+    ) -> list[EngineOutfit]:
+        """BE#67 — down-rank candidates whose item-set closely matches a recently
+        dismissed/disliked outfit (Jaccard ≥ threshold). Mirrors the relationship
+        post-scoring step; records the penalty in score_breakdown for auditability."""
+        if not suppressed_outfit_item_ids:
+            return candidates
+        suppressed_sets = [set(s) for s in suppressed_outfit_item_ids if s]
+        if not suppressed_sets:
+            return candidates
+        adjusted: list[EngineOutfit] = []
+        for candidate in candidates:
+            current = set(candidate.item_ids)
+            penalize = False
+            for disliked in suppressed_sets:
+                union = current | disliked
+                if union and len(current & disliked) / len(union) >= SUPPRESSION_SIMILARITY_THRESHOLD:
+                    penalize = True
+                    break
+            if not penalize:
+                adjusted.append(candidate)
+                continue
+            score_breakdown = dict(candidate.score_breakdown)
+            score_breakdown["feedback_suppression_penalty"] = SUPPRESSION_PENALTY
+            adjusted.append(
+                replace(
+                    candidate,
+                    score_total=round(max(0.0, candidate.score_total - SUPPRESSION_PENALTY), 4),
                     score_breakdown=score_breakdown,
                 )
             )

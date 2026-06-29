@@ -377,7 +377,11 @@ async def test_feedback_emits_attributed_recommendation_event(db_session: AsyncS
     assert event.user_id == user_id
     assert event.recommendation_id is not None  # attributed to the daily
     assert event.source == "outfit_feedback"
-    assert event.event_metadata == {"feedback_type": "love", "reason_tags": ["sharp"]}
+    assert event.event_metadata["feedback_type"] == "love"
+    assert event.event_metadata["reason_tags"] == ["sharp"]
+    # BE#67 — the outfit's item-set signature rides along for feedback learning.
+    assert isinstance(event.event_metadata["item_ids"], list)
+    assert event.event_metadata["item_ids"]
 
 
 async def test_neutral_feedback_emits_neutral_event(db_session: AsyncSession) -> None:
@@ -399,7 +403,9 @@ async def test_neutral_feedback_emits_neutral_event(db_session: AsyncSession) ->
     event = await db_session.scalar(select(RecommendationEvent))
     assert event is not None
     assert event.event_type == RecommendationEventType.NEUTRAL.value
-    assert event.event_metadata == {"feedback_type": "neutral", "reason_tags": []}
+    assert event.event_metadata["feedback_type"] == "neutral"
+    assert event.event_metadata["reason_tags"] == []
+    assert isinstance(event.event_metadata["item_ids"], list)  # BE#67 signature
 
 
 async def test_wear_emits_single_worn_event_idempotent(db_session: AsyncSession) -> None:
