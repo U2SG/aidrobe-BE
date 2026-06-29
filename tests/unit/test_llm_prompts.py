@@ -1,0 +1,146 @@
+"""Pure-function coverage for the composable stylist prompt modules (BE#66)."""
+
+from __future__ import annotations
+
+import json
+
+from app.application.ask.answer_question import _extract_structured
+from app.application.llm_prompts.assemble import assemble_system_prompt
+from app.application.llm_prompts.persona import stylist_persona
+from app.application.llm_prompts.preference_memory import render_preferences
+from app.application.llm_prompts.reasoning_policy import reasoning_policy
+from app.application.llm_prompts.response_contracts import (
+    PREFERENCE_TYPE_VOCAB,
+    ask_structured_contract,
+)
+from app.application.llm_prompts.self_critique import (
+    disliked_attribute_offenders,
+    negative_preference_violations,
+    unknown_item_refs,
+)
+
+
+# ── persona ──────────────────────────────────────────────────────────
+def test_persona_is_locale_aware_with_zh_default() -> None:
+    assert stylist_persona("zh").startswith("你是 Aidrobe")
+    assert stylist_persona("en").startswith("You are Aidrobe")
+    assert stylist_persona("fr").startswith("你是 Aidrobe")  # unknown -> zh default
+
+
+# ── reasoning policy ─────────────────────────────────────────────────
+def test_reasoning_policy_names_the_required_dimensions() -> None:
+    zh = reasoning_policy("zh")
+    en = reasoning_policy("en")
+    assert "天气" in zh and "场合" in zh and "偏好" in zh
+    for token in ("weather", "occasion", "preferences", "dislikes", "variety"):
+        assert token in en
+    assert reasoning_policy("fr") == zh  # unknown -> zh default
+
+
+# ── preference memory rendering ──────────────────────────────────────
+def test_render_preferences_returns_none_when_empty() -> None:
+    assert render_preferences(None, "zh") is None
+    assert render_preferences({}, "zh") is None
+    assert render_preferences({"positive": [], "negative": []}, "zh") is None
+
+
+def test_render_preferences_prioritizes_negatives_first() -> None:
+    rendered = render_preferences(
+        {
+            "positive": [{"type": "color", "value": "navy"}],
+            "negative": [{"type": "fit", "value": "oversized"}],
+        },
+        "en",
+    )
+    assert rendered is not None
+    # MUST AVOID block appears before the PREFER block (priority ordering).
+    assert rendered.index("MUST AVOID") < rendered.index("PREFER")
+    assert "oversized" in rendered
+    assert "navy" in rendered
+
+
+def test_render_preferences_bounds_user_text() -> None:
+    # Control chars / newlines (injection vehicle) are stripped, length capped.
+    rendered = render_preferences(
+        {"negative": [{"type": "style", "value": "bad\nstuff" + "x" * 500}]},
+        "zh",
+    )
+    assert rendered is not None
+    assert "badstuff" in rendered  # embedded newline stripped (injection vehicle gone)
+    assert "bad\nstuff" not in rendered
+    assert "x" * 500 not in rendered  # length capped (sanitize_preference_value)
+
+
+# ── response contract (centralized) + parser alignment ───────────────
+def test_ask_contract_carries_one_canonical_envelope() -> None:
+    for lang in ("zh", "en"):
+        contract = ask_structured_contract(lang)
+        assert contract.count('"answer"') == 1
+        for token in (
+            '"referenced_items"',
+            '"stated_preferences"',
+            '"conversation_deltas"',
+            '"rejected_focused_item"',
+        ):
+            assert token in contract
+        assert PREFERENCE_TYPE_VOCAB in contract
+    assert ask_structured_contract("fr") == ask_structured_contract("zh")
+
+
+def test_contract_shape_round_trips_through_the_parser() -> None:
+    # The contract advertises this exact envelope; the parser must accept it.
+    response = json.dumps(
+        {
+            "answer": "穿这套",
+            "referenced_items": [1, 2],
+            "stated_preferences": [{"type": "color", "value": "navy", "polarity": "positive"}],
+            "conversation_deltas": {
+                "reasoning": "r",
+                "applied_constraints": ["c"],
+                "rejected_focused_item": False,
+            },
+        }
+    )
+    parsed = _extract_structured(json.loads(response), item_count=2)
+    assert parsed is not None
+    answer, indices, prefs = parsed
+    assert answer == "穿这套"
+    assert indices == [0, 1]
+    assert prefs == [{"type": "color", "value": "navy", "polarity": "positive"}]
+
+
+# ── deterministic self-critique validators ──────────────────────────
+def test_unknown_item_refs_flags_hallucinations() -> None:
+    assert unknown_item_refs(["a", "b", "c"], {"a", "b"}) == ["c"]
+    assert unknown_item_refs(["a"], {"a", "b"}) == []
+
+
+def test_disliked_attribute_offenders_matches_case_insensitively() -> None:
+    items = [
+        {"id": "1", "color_main": "Red"},
+        {"id": "2", "color_main": "navy"},
+    ]
+    assert disliked_attribute_offenders(items, "color_main", ["red"]) == ["1"]
+    assert disliked_attribute_offenders(items, "color_main", []) == []
+
+
+def test_negative_preference_violations_maps_types_to_attributes() -> None:
+    items = [
+        {"id": "1", "color_main": "red", "material": "cotton", "fit_status": "regular"},
+        {"id": "2", "color_main": "navy", "material": "linen", "fit_status": "oversized"},
+    ]
+    negatives = [
+        {"type": "color", "value": "red"},
+        {"type": "fit", "value": "oversized"},
+        {"type": "occasion", "value": "gala"},  # unmapped type -> ignored
+    ]
+    violations = negative_preference_violations(items, negatives)
+    assert any("item 1" in v and "color_main" in v for v in violations)
+    assert any("item 2" in v and "fit_status" in v for v in violations)
+    assert len(violations) == 2
+
+
+# ── assembler ────────────────────────────────────────────────────────
+def test_assemble_drops_blank_sections_and_preserves_order() -> None:
+    out = assemble_system_prompt(["a", None, "  ", "b", ""])
+    assert out == "a\n\nb"

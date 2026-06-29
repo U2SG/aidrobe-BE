@@ -4,16 +4,27 @@ from datetime import date
 from itertools import combinations
 from typing import Any
 
+from app.application.llm_prompts.persona import stylist_persona
 from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.colors import color_score
 from app.application.recommendations.reasoning import build_reasoning
 from app.application.style.build_style_profile import aesthetic_score as compute_aesthetic_score
 from app.common.enums import Category, OutfitType
+from app.infrastructure.llm.sanitizer import sanitize_llm_text
 from app.infrastructure.persistence.models.wardrobe_relationship import (
     POSITIVE_RELATIONSHIP_TYPES,
     REJECTED_RELATIONSHIP_TYPES,
 )
+
+# BE#66 — short cap for any value that enters the reason-polish prompt. These are
+# enum/derived strings today, but bounding them keeps the "no unbounded user text
+# in a prompt" invariant if a free-text field is ever added to the combo.
+_PROMPT_VALUE_MAX_LEN = 40
+
+
+def _clip(value: str) -> str:
+    return sanitize_llm_text(value, max_len=_PROMPT_VALUE_MAX_LEN)
 
 LIGHT_SHOE_COLORS = {
     "white",
@@ -403,8 +414,11 @@ class RecommendationEngine:
         weather: WeatherInfo | None = None,
         is_fresh: bool = False,
     ) -> str:
+        # BE#66 — bound every value that reaches the prompt (closes the prior
+        # sanitizer bypass on raw weather.condition / item fields) and lead with
+        # the shared stylist persona so Today speaks the same voice as Ask.
         items_desc = "、".join(
-            f"{item.category}（{item.color_main}）" for item in combo
+            f"{_clip(item.category)}（{_clip(item.color_main)}）" for item in combo
         )
         type_labels = {
             OutfitType.SAFE.value: "稳妥通勤",
@@ -416,18 +430,21 @@ class RecommendationEngine:
         # that are actually true are added, so the model can't over-claim.
         context_lines = ""
         if weather is not None:
-            context_lines += f"今日天气：{weather.condition}，约 {round(weather.temperature_c)}°C"
+            context_lines += f"今日天气：{_clip(weather.condition)}，约 {round(weather.temperature_c)}°C"
             if weather.rain_probability > 0.5:
                 context_lines += "，可能有雨"
             context_lines += "\n"
         if is_fresh:
             context_lines += "这套的主要单品用户最近没穿过\n"
+        colors_desc = " + ".join(_clip(c) for c in colors)
+        categories_desc = " + ".join(_clip(c) for c in categories)
         return (
-            f"你是一个穿搭助手。请为一个推荐结果写一条简短的理由，15字以内，中文。\n"
+            f"{stylist_persona('zh')}\n"
+            f"请为一个推荐结果写一条简短的理由，15字以内，中文。\n"
             f"搭配风格：{type_labels.get(outfit_type, outfit_type)}\n"
             f"包含单品：{items_desc}\n"
-            f"颜色组合：{' + '.join(colors)}\n"
-            f"品类组合：{' + '.join(categories)}\n"
+            f"颜色组合：{colors_desc}\n"
+            f"品类组合：{categories_desc}\n"
             f"{context_lines}\n"
             f"结合今日天气与穿着情况，写出自然、有说服力的推荐理由，"
             f"不要重复\"经典颜色搭配\"等套话，不要编造未提供的信息。"
