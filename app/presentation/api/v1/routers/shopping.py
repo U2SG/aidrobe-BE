@@ -28,6 +28,7 @@ from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url
 from app.presentation.api.v1.schemas.shopping import (
+    PurchaseEvaluation,
     SenseCheckHistoryItem,
     SenseCheckHistoryResponse,
     SenseCheckRequest,
@@ -36,6 +37,16 @@ from app.presentation.api.v1.schemas.shopping import (
 )
 
 router = APIRouter(prefix="/v1/shopping", tags=["shopping"])
+
+
+def _evaluation(raw: object) -> PurchaseEvaluation | None:
+    """Map a persisted/in-memory evaluation dict → PurchaseEvaluation (BE#69)."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return PurchaseEvaluation.model_validate(raw)
+    except ValueError:
+        return None
 
 
 def _gate() -> None:
@@ -127,6 +138,7 @@ def _history_item(record: ShoppingSenseCheck) -> SenseCheckHistoryItem:
         similar_items=similar,
         wardrobe_gap=payload.get("wardrobe_gap", []),
         outfit_potential=payload.get("outfit_potential", 0),
+        evaluation=_evaluation(payload.get("evaluation")),
         created_at=record.created_at,
     )
 
@@ -150,6 +162,7 @@ async def sense_check(
         image_url=payload.image_url,
         source_url=payload.source_url,
         locale=payload.locale,
+        price=payload.price,
     )
     return SenseCheckResponse(
         verdict=result.verdict,
@@ -159,6 +172,7 @@ async def sense_check(
         similar_items=[_similar_item_response(s) for s in result.similar_items],
         wardrobe_gap=result.wardrobe_gap,
         outfit_potential=result.outfit_potential,
+        evaluation=_evaluation(result.evaluation),
     )
 
 

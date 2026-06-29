@@ -3934,6 +3934,23 @@ components:
       - scheduled_purge_at
       - grace_days
       title: DeactivateResponse
+    DecisionFactorResponse:
+      properties:
+        factor:
+          type: string
+          title: Factor
+        detail:
+          type: string
+          title: Detail
+        direction:
+          type: string
+          title: Direction
+      type: object
+      required:
+      - factor
+      - detail
+      - direction
+      title: DecisionFactorResponse
     DeleteWardrobeItemResponse:
       properties:
         deleted:
@@ -4664,6 +4681,24 @@ components:
       - reason
       - items
       title: OutfitResponse
+    OutfitSampleResponse:
+      properties:
+        item_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Item Ids
+        reasoning:
+          items:
+            type: string
+          type: array
+          title: Reasoning
+      type: object
+      required:
+      - item_ids
+      - reasoning
+      title: OutfitSampleResponse
     OutfitScoresResponse:
       properties:
         aesthetic:
@@ -5010,6 +5045,44 @@ components:
       - file_url
       - object_key
       title: PresignUploadResponse
+    PurchaseEvaluation:
+      properties:
+        confidence:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Confidence
+        redundancy:
+          anyOf:
+          - $ref: '#/components/schemas/RedundancyResponse'
+          - type: 'null'
+        outfit_samples:
+          items:
+            $ref: '#/components/schemas/OutfitSampleResponse'
+          type: array
+          title: Outfit Samples
+          default: []
+        wardrobe_gap_detail:
+          items:
+            $ref: '#/components/schemas/WardrobeGapDetailResponse'
+          type: array
+          title: Wardrobe Gap Detail
+          default: []
+        factors:
+          items:
+            $ref: '#/components/schemas/DecisionFactorResponse'
+          type: array
+          title: Factors
+          default: []
+        cost_per_wear_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cost Per Wear Hint
+      type: object
+      title: PurchaseEvaluation
+      description: BE#69 — present only when ENABLE_PURCHASE_EVALUATOR; null/empty
+        otherwise.
     ReasoningItem:
       properties:
         type:
@@ -5056,6 +5129,39 @@ components:
       required:
       - item_id
       title: RecommendationItemResponse
+    RedundancyResponse:
+      properties:
+        level:
+          type: string
+          title: Level
+        similar_owned_items:
+          items:
+            $ref: '#/components/schemas/RedundancySimilarItem'
+          type: array
+          title: Similar Owned Items
+          default: []
+      type: object
+      required:
+      - level
+      title: RedundancyResponse
+    RedundancySimilarItem:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        similarity:
+          type: number
+          title: Similarity
+        reason:
+          type: string
+          title: Reason
+      type: object
+      required:
+      - item_id
+      - similarity
+      - reason
+      title: RedundancySimilarItem
     RefreshTokenRequest:
       properties:
         refresh_token:
@@ -5774,6 +5880,10 @@ components:
         outfit_potential:
           type: integer
           title: Outfit Potential
+        evaluation:
+          anyOf:
+          - $ref: '#/components/schemas/PurchaseEvaluation'
+          - type: 'null'
         created_at:
           type: string
           format: date-time
@@ -5819,6 +5929,12 @@ components:
             maxLength: 16
           - type: 'null'
           title: Locale
+        price:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Price
       type: object
       title: SenseCheckRequest
     SenseCheckResponse:
@@ -5850,6 +5966,10 @@ components:
         outfit_potential:
           type: integer
           title: Outfit Potential
+        evaluation:
+          anyOf:
+          - $ref: '#/components/schemas/PurchaseEvaluation'
+          - type: 'null'
       type: object
       required:
       - verdict
@@ -6354,6 +6474,19 @@ components:
       - msg
       - type
       title: ValidationError
+    WardrobeGapDetailResponse:
+      properties:
+        category:
+          type: string
+          title: Category
+        severity:
+          type: string
+          title: Severity
+      type: object
+      required:
+      - category
+      - severity
+      title: WardrobeGapDetailResponse
     WardrobeHealthInsightItem:
       properties:
         type:

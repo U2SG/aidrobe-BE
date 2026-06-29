@@ -20,11 +20,13 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.vision import VisionPort, VisionResult
+from app.application.preferences.memory import live_negative_values_by_type
 from app.common import error_codes
 from app.common.enums import Category, ImageType, ItemStatus
 from app.common.exceptions import FriendlyException
@@ -56,6 +58,18 @@ _COMPLEMENTS: dict[str, tuple[str, ...]] = {
 }
 _OUTFIT_POTENTIAL_CAP = 10
 
+# BE#69 — redundancy level thresholds on the top similar-item score.
+_REDUNDANCY_HIGH = SIM_CATEGORY_COLOR  # 0.9 — same category + color
+_REDUNDANCY_MEDIUM = 0.7
+# Core categories whose absence is a high-severity wardrobe gap.
+_CORE_CATEGORIES = {
+    Category.TOP.value,
+    Category.BOTTOM.value,
+    Category.SHOES.value,
+    Category.OUTERWEAR.value,
+}
+_MAX_OUTFIT_SAMPLES = 2
+
 
 def _pgvector_enabled() -> bool:
     return os.getenv("PGVECTOR_ENABLED", "false").lower() in ("1", "true", "yes")
@@ -84,6 +98,10 @@ class SenseCheckResult:
     # Identified candidate attributes — echoed back and snapshotted in payload.
     category: str = ""
     color_main: str = ""
+    # BE#69 — wardrobe-aware evaluation block (None unless ENABLE_PURCHASE_EVALUATOR):
+    # {confidence, redundancy, outfit_samples, wardrobe_gap_detail, factors,
+    # cost_per_wear_hint}. Persisted in payload + surfaced on the response.
+    evaluation: dict[str, Any] | None = None
 
 
 class SenseCheck:
@@ -100,6 +118,7 @@ class SenseCheck:
         image_url: str | None = None,
         source_url: str | None = None,
         locale: str | None = None,
+        price: float | None = None,
     ) -> tuple[SenseCheckResult, ShoppingSenseCheck]:
         if image_url is None and source_url is None:
             raise FriendlyException(
@@ -146,6 +165,19 @@ class SenseCheck:
             vision_result, similar, gap, outfit_potential
         )
 
+        evaluation: dict[str, Any] | None = None
+        if get_settings().ENABLE_PURCHASE_EVALUATOR:
+            verdict, display_reason, evaluation = await self._evaluate(
+                user_id,
+                vision_result,
+                similar=similar,
+                gap=gap,
+                outfit_potential=outfit_potential,
+                verdict=verdict,
+                display_reason=display_reason,
+                price=price,
+            )
+
         result = SenseCheckResult(
             verdict=verdict,
             reason=display_reason.fallback_text,
@@ -156,6 +188,7 @@ class SenseCheck:
             outfit_potential=outfit_potential,
             category=vision_result.category,
             color_main=vision_result.color_main,
+            evaluation=evaluation,
         )
         record = await self._persist(user_id, image_url, source_url, result)
         return result, record
@@ -410,6 +443,165 @@ class SenseCheck:
             near_duplicate_count,
         )
 
+    async def _disliked_colors(self, user_id: uuid.UUID) -> set[str]:
+        """BE#69 — colors the user explicitly dislikes (lowercased). Gated by
+        ENABLE_PREFERENCE_MEMORY; fail-soft so a read error never blocks a verdict."""
+        if not get_settings().ENABLE_PREFERENCE_MEMORY:
+            return set()
+        try:
+            from app.infrastructure.persistence.repositories.preference_memory_repo import (
+                SqlAlchemyPreferenceMemoryRepository,
+            )
+
+            return await live_negative_values_by_type(
+                SqlAlchemyPreferenceMemoryRepository(self.session),
+                user_id,
+                "color",
+                "negative_preference",
+            )
+        except Exception:
+            return set()
+
+    async def _outfit_samples(
+        self, user_id: uuid.UUID, candidate: VisionResult
+    ) -> list[dict[str, Any]]:
+        """Deterministic grounded samples: pair the candidate with the top owned
+        item in each complementary category. Up to `_MAX_OUTFIT_SAMPLES` distinct
+        looks (rotating to the next item per category). Real owned ids only."""
+        complements = _COMPLEMENTS.get(candidate.category, ())
+        if not complements:
+            return []
+        by_category: dict[str, list[WardrobeItem]] = {}
+        for category in complements:
+            rows = (
+                await self.session.execute(
+                    select(WardrobeItem)
+                    .where(
+                        WardrobeItem.user_id == user_id,
+                        WardrobeItem.category == category,
+                        WardrobeItem.status == ItemStatus.WEARABLE.value,
+                        WardrobeItem.deleted_at.is_(None),
+                    )
+                    .order_by(WardrobeItem.created_at.desc())
+                    .limit(_MAX_OUTFIT_SAMPLES)
+                )
+            ).scalars().all()
+            if rows:
+                by_category[category] = list(rows)
+        if not by_category:
+            return []
+        samples: list[dict[str, Any]] = []
+        for rank in range(_MAX_OUTFIT_SAMPLES):
+            picks = [items[rank] for items in by_category.values() if rank < len(items)]
+            if not picks:
+                break
+            samples.append(
+                {
+                    "item_ids": [str(item.id) for item in picks],
+                    "reasoning": [f"搭配你现有的{item.category}" for item in picks],
+                }
+            )
+        return samples
+
+    async def _evaluate(
+        self,
+        user_id: uuid.UUID,
+        candidate: VisionResult,
+        *,
+        similar: list[SimilarItem],
+        gap: list[str],
+        outfit_potential: int,
+        verdict: str,
+        display_reason: I18nMessage,
+        price: float | None,
+    ) -> tuple[str, I18nMessage, dict[str, Any]]:
+        """BE#69 — build the wardrobe-aware evaluation block and apply the only
+        verdict adjustment (a negative-preference conflict softens a `buy`)."""
+        top_similarity = max((s.similarity for s in similar), default=0.0)
+        if top_similarity >= _REDUNDANCY_HIGH:
+            level = "high"
+        elif top_similarity >= _REDUNDANCY_MEDIUM:
+            level = "medium"
+        else:
+            level = "low"
+        redundancy = {
+            "level": level,
+            "similar_owned_items": [
+                {
+                    "item_id": str(s.item_id),
+                    "similarity": s.similarity,
+                    "reason": "同类同色" if s.similarity >= SIM_CATEGORY_COLOR else "同类",
+                }
+                for s in similar
+            ],
+        }
+
+        disliked = await self._disliked_colors(user_id)
+        preference_conflict = bool(
+            candidate.color_main and candidate.color_main.lower() in disliked
+        )
+        # The conflict softens an otherwise-positive verdict (never hardens), and
+        # is always surfaced as a factor regardless of the verdict.
+        if preference_conflict and verdict == "buy":
+            verdict = "consider"
+            display_reason = make_message(
+                "sense_check.consider.preference_conflict",
+                f"你之前表示不喜欢{candidate.color_main}，买之前先斟酌一下。",
+                {"color": candidate.color_main, "category": candidate.category},
+            )
+
+        fills_gap = candidate.category in gap
+        factors: list[dict[str, str]] = [
+            {"factor": "redundancy", "detail": level, "direction": "skip" if level == "high" else "neutral"},
+            {
+                "factor": "outfit_potential",
+                "detail": str(outfit_potential),
+                "direction": "buy" if outfit_potential >= 3 else "neutral",
+            },
+        ]
+        if fills_gap:
+            factors.append({"factor": "wardrobe_gap", "detail": candidate.category, "direction": "buy"})
+        if preference_conflict:
+            factors.append(
+                {"factor": "preference_conflict", "detail": candidate.color_main, "direction": "skip"}
+            )
+
+        confidence = self._confidence(verdict, level, fills_gap, preference_conflict=preference_conflict)
+        wardrobe_gap_detail = [
+            {"category": c, "severity": "high" if c in _CORE_CATEGORIES else "medium"} for c in gap
+        ]
+        evaluation: dict[str, Any] = {
+            "confidence": confidence,
+            "redundancy": redundancy,
+            "outfit_samples": await self._outfit_samples(user_id, candidate),
+            "wardrobe_gap_detail": wardrobe_gap_detail,
+            "factors": factors,
+            "cost_per_wear_hint": self._cost_per_wear_hint(price),
+        }
+        return verdict, display_reason, evaluation
+
+    @staticmethod
+    def _confidence(
+        verdict: str, redundancy_level: str, fills_gap: bool, *, preference_conflict: bool
+    ) -> float:
+        if verdict == "skip" and redundancy_level == "high":
+            base = 0.85
+        elif verdict == "buy" and fills_gap:
+            base = 0.85
+        elif verdict == "buy":
+            base = 0.7
+        else:
+            base = 0.5
+        if preference_conflict:
+            base -= 0.15
+        return round(max(0.3, min(1.0, base)), 2)
+
+    @staticmethod
+    def _cost_per_wear_hint(price: float | None) -> str | None:
+        if price is None or price <= 0:
+            return None
+        return f"按 {price:g} 元计，若每月至少穿 2 次，长期每次成本会很低；很少穿则不划算。"
+
     async def _persist(
         self,
         user_id: uuid.UUID,
@@ -437,6 +629,8 @@ class SenseCheck:
             "wardrobe_gap": result.wardrobe_gap,
             "outfit_potential": result.outfit_potential,
             "candidate": {"category": result.category, "color_main": result.color_main},
+            # BE#69 — present only when ENABLE_PURCHASE_EVALUATOR; replayed by /history.
+            "evaluation": result.evaluation,
         }
         record = ShoppingSenseCheck(
             user_id=user_id,

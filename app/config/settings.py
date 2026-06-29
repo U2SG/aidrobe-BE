@@ -251,6 +251,12 @@ class Settings(BaseSettings):
     # default; sense-check history persists regardless of the flag, the flag
     # only gates exposure.
     ENABLE_SENSE_CHECK: bool = False
+    # BE#69 — wardrobe-aware purchase evaluator: enrich the sense-check verdict
+    # with redundancy analysis, grounded outfit samples, structured wardrobe-gap
+    # evidence, decision factors, confidence, and a cost-per-wear hint. Additive
+    # (persisted in the existing payload JSONB); off → legacy verdict, clean
+    # rollback. Requires ENABLE_SENSE_CHECK for the endpoint to be reachable.
+    ENABLE_PURCHASE_EVALUATOR: bool = False
 
     # V4 M19 — PDF / magazine multi-page style ingest. When False, POST
     # /v1/style/sources returns 503 (kill switch). The parent row is still
