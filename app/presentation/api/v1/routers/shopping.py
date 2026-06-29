@@ -40,7 +40,13 @@ router = APIRouter(prefix="/v1/shopping", tags=["shopping"])
 
 
 def _evaluation(raw: object) -> PurchaseEvaluation | None:
-    """Map a persisted/in-memory evaluation dict → PurchaseEvaluation (BE#69)."""
+    """Map a persisted/in-memory evaluation dict → PurchaseEvaluation (BE#69).
+
+    Gated on the CURRENT flag so a persisted evaluation (saved while the flag was
+    on) stops surfacing — incl. via GET /history — once it's turned off, keeping
+    flag-off a clean rollback."""
+    if not get_settings().ENABLE_PURCHASE_EVALUATOR:
+        return None
     if not isinstance(raw, dict):
         return None
     try:

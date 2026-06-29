@@ -555,3 +555,27 @@ async def test_evaluator_off_leaves_evaluation_null(
     async with _client(app) as client:
         body = await _sense_check(client, user_id)
     assert body["evaluation"] is None
+
+
+async def test_evaluator_history_gated_by_flag(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # BE#69 review: a persisted evaluation must stop surfacing (incl. via /history)
+    # once the flag is turned off — flag-off is a clean rollback.
+    _enable_evaluator(monkeypatch)
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    await _add_item(db_session, user_id, "bottom", "black")
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        created = await _sense_check(client, user_id)
+        assert created["evaluation"] is not None  # persisted with the flag on
+
+        # Flip the flag off: the same persisted row must now return evaluation=None.
+        monkeypatch.setattr(
+            shopping, "get_settings", lambda: Settings(APP_ENV="dev", ENABLE_SENSE_CHECK=True)
+        )
+        hist = await client.get("/v1/shopping/history", headers={"X-User-Id": str(user_id)})
+    assert hist.status_code == 200
+    items = hist.json()["items"]
+    assert items and all(it["evaluation"] is None for it in items)
