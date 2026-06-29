@@ -4761,6 +4761,31 @@ components:
       - asset_id
       - generation_status
       title: OutfitVisualAssetResponse
+    PackingDailyOutfit:
+      properties:
+        day:
+          type: integer
+          title: Day
+        occasion:
+          type: string
+          title: Occasion
+        item_ids:
+          items:
+            type: string
+          type: array
+          title: Item Ids
+        reasoning:
+          items:
+            type: string
+          type: array
+          title: Reasoning
+      type: object
+      required:
+      - day
+      - occasion
+      - item_ids
+      - reasoning
+      title: PackingDailyOutfit
     PackingItem:
       properties:
         item_id:
@@ -4822,6 +4847,10 @@ components:
         status:
           type: string
           title: Status
+        plan:
+          anyOf:
+          - $ref: '#/components/schemas/PackingPlan'
+          - type: 'null'
       type: object
       required:
       - packing_list_id
@@ -4829,6 +4858,69 @@ components:
       - items
       - status
       title: PackingListResponse
+    PackingMissingItem:
+      properties:
+        category:
+          type: string
+          title: Category
+        reason:
+          type: string
+          title: Reason
+      type: object
+      required:
+      - category
+      - reason
+      title: PackingMissingItem
+    PackingPlan:
+      properties:
+        summary:
+          type: string
+          title: Summary
+        weather_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Weather Summary
+        packing_items:
+          items:
+            $ref: '#/components/schemas/PackingPlanItem'
+          type: array
+          title: Packing Items
+          default: []
+        daily_outfits:
+          items:
+            $ref: '#/components/schemas/PackingDailyOutfit'
+          type: array
+          title: Daily Outfits
+          default: []
+        missing_items:
+          items:
+            $ref: '#/components/schemas/PackingMissingItem'
+          type: array
+          title: Missing Items
+          default: []
+      type: object
+      required:
+      - summary
+      title: PackingPlan
+      description: BE#68 — rich planner snapshot (present only when ENABLE_PACKING_PLANNER).
+    PackingPlanItem:
+      properties:
+        item_id:
+          type: string
+          title: Item Id
+        role:
+          type: string
+          title: Role
+        reason:
+          type: string
+          title: Reason
+      type: object
+      required:
+      - item_id
+      - role
+      - reason
+      title: PackingPlanItem
     PdfStyleSourceRequest:
       properties:
         file_url:
