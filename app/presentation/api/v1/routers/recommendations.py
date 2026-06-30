@@ -446,6 +446,7 @@ async def get_today_recommendation(
         settings.departure_time,
         scene,
         reasoning=get_settings().ENABLE_TODAY_REASONING,
+        vision_style=get_settings().ENABLE_VISION_STYLE_LEARNING,
     )
     try:
         cached = await redis_client.get(cache_key)
@@ -527,6 +528,7 @@ async def refresh_today(
         user_settings.departure_time,
         scene,
         reasoning=get_settings().ENABLE_TODAY_REASONING,
+        vision_style=get_settings().ENABLE_VISION_STYLE_LEARNING,
     )
     try:
         await redis_client.delete(cache_key)

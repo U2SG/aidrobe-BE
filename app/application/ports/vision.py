@@ -21,5 +21,24 @@ class VisionResult:
     localized_names: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class StyleAnalysis:
+    """Result of analyzing a fashion-inspiration image for its aesthetic.
+
+    `style_tags` are lowercase English style descriptors (e.g. minimal, formal,
+    street) — the field the recommendation `style_context` template matcher and
+    `build_style_profile` consume. `color_palette` is the dominant colors; both
+    are folded into the persisted `style_tags` because the template rules key on
+    color words too. `avoid_tags` is captured for transparency / future use.
+    """
+
+    style_tags: list[str] = field(default_factory=list)
+    color_palette: list[str] = field(default_factory=list)
+    avoid_tags: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+
+
 class VisionPort(Protocol):
     async def analyze_image(self, image_url: str, locale: str = DEFAULT_LOCALE) -> VisionResult: ...
+
+    async def analyze_style(self, image_url: str, locale: str = DEFAULT_LOCALE) -> StyleAnalysis: ...
