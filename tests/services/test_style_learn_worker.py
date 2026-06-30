@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.config.settings import Settings
 from app.infrastructure.persistence.models.style import UserStyleProfile
 from app.infrastructure.persistence.models.user import User
+from app.infrastructure.vision.fake_vision import FakeVision
 from app.infrastructure.workers import style_learn_worker
 from app.infrastructure.workers.style_learn_worker import learn_style_source
 
@@ -40,9 +41,12 @@ async def factory(
 
 def _set_flag(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:
     # Flip the flag on the CONSUMING module — get_settings is lru_cached and
-    # bypasses dependency_overrides (CLAUDE.md test note).
-    settings = Settings(APP_ENV="test", ENABLE_VISION_STYLE_LEARNING=enabled)
+    # bypasses dependency_overrides (CLAUDE.md test note). VISION_PROVIDER must be
+    # non-"fake" (the worker guards against persisting FakeVision output), so we
+    # set "qwen" and inject FakeVision directly via the container factory.
+    settings = Settings(APP_ENV="test", ENABLE_VISION_STYLE_LEARNING=enabled, VISION_PROVIDER="qwen")
     monkeypatch.setattr(style_learn_worker, "get_settings", lambda: settings)
+    monkeypatch.setattr("app.bootstrap.container.vision_service", lambda: FakeVision())
 
 
 async def _seed(
@@ -127,6 +131,26 @@ async def test_flag_on_vision_failure_falls_back_to_heuristic(
         profile = await s.get(UserStyleProfile, profile_id)
         assert profile is not None
         # Still learned (never "failed") — a user's inspiration always finishes.
+        assert profile.learn_status == "learned"
+        assert profile.style_tags is None
+        assert profile.learned_summary is not None
+        assert profile.learned_summary["source"] == "heuristic"
+
+
+async def test_flag_on_with_fake_provider_degrades_to_heuristic(
+    factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flag on but VISION_PROVIDER still 'fake' → must NOT persist FakeVision's
+    deterministic output; degrade to the heuristic (no style_tags written)."""
+    settings = Settings(APP_ENV="test", ENABLE_VISION_STYLE_LEARNING=True, VISION_PROVIDER="fake")
+    monkeypatch.setattr(style_learn_worker, "get_settings", lambda: settings)
+    _user_id, profile_id = await _seed(factory, image_url="https://cdn.example.com/milan.jpg")
+
+    await learn_style_source(None, str(profile_id))
+
+    async with factory() as s:
+        profile = await s.get(UserStyleProfile, profile_id)
+        assert profile is not None
         assert profile.learn_status == "learned"
         assert profile.style_tags is None
         assert profile.learned_summary is not None

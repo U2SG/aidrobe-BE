@@ -46,6 +46,12 @@ async def _learn_from_image(
     """
     if not (settings.ENABLE_VISION_STYLE_LEARNING and image_url):
         return None
+    # A real vision provider must be configured. If the flag is flipped on while
+    # VISION_PROVIDER is still "fake" (e.g. a staging flip before Qwen is wired),
+    # the container would hand back FakeVision — never persist its deterministic
+    # output as learned style; degrade to the URL heuristic instead.
+    if settings.VISION_PROVIDER == "fake":
+        return None
     from app.bootstrap.container import vision_service
 
     try:
@@ -128,8 +134,21 @@ async def learn_style_source(ctx: object, profile_id: str) -> None:
                 }
             profile.learn_status = "learned"
             profile.learned_at = datetime.now(UTC)
+            user_id = profile.user_id
             await session.commit()
             logger.info("style_learn_completed", profile_id=profile_id, style_tags=style_tags)
+
+            # The vision path wrote recommendation-visible style_tags (consumed by
+            # style_context in /today). The request-time cache invalidation ran
+            # before this async work finished, so drop the now-stale /today cache
+            # for this user. Best-effort: the helper swallows Redis errors.
+            if learned is not None:
+                from app.infrastructure.cache.client import (
+                    get_redis_client,
+                    invalidate_daily_recommendation_cache,
+                )
+
+                await invalidate_daily_recommendation_cache(get_redis_client(), user_id)
 
         except Exception as exc:
             await session.rollback()
