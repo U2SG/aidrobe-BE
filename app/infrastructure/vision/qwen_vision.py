@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import httpx
 
-from app.application.ports.vision import VisionResult
+from app.application.ports.vision import StyleAnalysis, VisionResult
 from app.common.locale import DEFAULT_LOCALE, resolve_locale
 from app.config.settings import Settings
 
@@ -15,6 +15,19 @@ _LOCALE_LANGUAGE: dict[str, str] = {
     "zh-CN": "Simplified Chinese (简体中文)",
     "en-US": "English",
 }
+
+# Style descriptors we steer the model toward — these overlap the recommendation
+# template rules (`style_context._TEMPLATE_RULES`) so a learned tag can actually
+# select a template instead of falling through to the generic default. The model
+# may add others when clearly warranted; this is a bias, not a hard whitelist.
+_STYLE_VOCABULARY = (
+    "minimal, clean, monochrome, formal, professional, office, suit, tailored, "
+    "casual, street, sporty, denim, feminine, soft, floral, pastel, classic, "
+    "elegant, edgy, vintage, bohemian, oversized"
+)
+# Defensive bounds on model output before it is persisted / reaches a prompt.
+_MAX_TAGS = 8
+_MAX_TAG_LEN = 24
 
 
 def build_vision_prompt(locale: str) -> str:
@@ -32,6 +45,45 @@ def build_vision_prompt(locale: str) -> str:
         f"{language} name. "
         "confidence_score must be a number from 0 to 1."
     )
+
+
+def build_style_prompt() -> str:
+    # Tags must be stable English (the recommendation template rules key on
+    # English words), so — unlike the wardrobe prompt — this one is locale-free.
+    return (
+        "You are a fashion stylist. Analyze the overall STYLE aesthetic of this "
+        "outfit / editorial image (the vibe of the whole look, not individual "
+        "garments). Return only valid JSON with keys: style_tags, color_palette, "
+        "avoid_tags, confidence.\n"
+        "- style_tags: 3-6 lowercase English style descriptors capturing the "
+        f"aesthetic. Strongly prefer these words when they apply: {_STYLE_VOCABULARY}. "
+        "Add others only when clearly warranted.\n"
+        "- color_palette: 2-5 dominant lowercase English color words "
+        "(e.g. black, white, navy, beige, camel, pink).\n"
+        "- avoid_tags: only descriptors the look ACTIVELY rejects (usually 0-2). "
+        "Leave it as [] if unsure; do NOT list every word you did not choose.\n"
+        "- confidence: a number from 0 to 1.\n"
+        "All words must be stable lowercase English; never translate."
+    )
+
+
+def _bound_tags(raw: Any, *, limit: int = _MAX_TAGS) -> list[str]:
+    """Normalize a model-returned tag list: lowercase, trim, de-dupe, cap count
+    and per-tag length. Tolerant of a scalar or None."""
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    seen: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        tag = item.strip().lower()[:_MAX_TAG_LEN]
+        if tag and tag not in seen:
+            seen.append(tag)
+        if len(seen) >= limit:
+            break
+    return seen
 
 
 class QwenVision:
@@ -89,6 +141,52 @@ class QwenVision:
             localized_names={resolved: display} if display else {},
         )
 
+    async def analyze_style(self, image_url: str, locale: str = DEFAULT_LOCALE) -> StyleAnalysis:
+        # `locale` is accepted for interface parity but ignored: style tags must
+        # be stable English so the recommendation template matcher can key on
+        # them (same reason category/color stay English in analyze_image).
+        image_payload_url = await self._to_data_uri(image_url)
+        payload = {
+            "model": self.settings.QWEN_VISION_MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": build_style_prompt()},
+                        {"type": "image_url", "image_url": {"url": image_payload_url}},
+                    ],
+                }
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        headers = {
+            "Authorization": f"Bearer {self.settings.QWEN_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=self.settings.VISION_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                self.settings.QWEN_VISION_BASE_URL,
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+
+        content = response.json()["choices"][0]["message"]["content"]
+        data = cast(dict[str, Any], json.loads(self._strip_json_fence(content)))
+        style_tags = _bound_tags(data.get("style_tags"))
+        if not style_tags:
+            raise ValueError("Style response missing style_tags")
+        try:
+            confidence = max(0.0, min(1.0, float(data.get("confidence", 0.5))))
+        except (TypeError, ValueError):
+            confidence = 0.5
+        return StyleAnalysis(
+            style_tags=style_tags,
+            color_palette=_bound_tags(data.get("color_palette")),
+            avoid_tags=_bound_tags(data.get("avoid_tags")),
+            confidence=confidence,
+        )
+
     async def _to_data_uri(self, image_url: str) -> str:
         # Already inlined (e.g. a caller passed a data URI) — pass through.
         if image_url.startswith("data:"):
@@ -109,11 +207,15 @@ class QwenVision:
         encoded = base64.b64encode(response.content).decode("ascii")
         return f"data:{content_type};base64,{encoded}"
 
-    def _parse_json_content(self, content: str) -> dict[str, Any]:
+    @staticmethod
+    def _strip_json_fence(content: str) -> str:
         text = content.strip()
         if text.startswith("```"):
             text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        data = cast(dict[str, Any], json.loads(text))
+        return text
+
+    def _parse_json_content(self, content: str) -> dict[str, Any]:
+        data = cast(dict[str, Any], json.loads(self._strip_json_fence(content)))
         for key in ("category", "color_main", "confidence_score"):
             if key not in data:
                 raise ValueError(f"Vision response missing {key}")

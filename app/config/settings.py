@@ -265,6 +265,14 @@ class Settings(BaseSettings):
     # binary (pdf2image dep) on the worker host to actually run.
     ENABLE_PDF_STYLE_INGEST: bool = False
 
+    # Real visual style learning. When on (and VISION_PROVIDER != fake),
+    # the style-learn worker runs Qwen-VL over an inspiration image to extract
+    # style_tags / color_palette, persisted into style_tags so they drive the
+    # recommendation template matcher (style_context). Off → the legacy URL-domain
+    # tag heuristic. Requires QWEN_API_KEY; falls back to the heuristic on any
+    # vision error so user inspirations never fail to "learn".
+    ENABLE_VISION_STYLE_LEARNING: bool = False
+
     # M18 — receipt / order-screenshot / shopping-email import pipeline.
     # When False, POST /v1/import-tasks with receipt input_types returns 400.
     ENABLE_RECEIPT_IMPORT: bool = False

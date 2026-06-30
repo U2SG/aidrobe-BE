@@ -1,12 +1,16 @@
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
-from app.config.settings import get_settings
+from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.session import AsyncSessionLocal
 
 logger = structlog.get_logger(__name__)
+
+# Cap the combined (style + color) tag list persisted into style_tags.
+_MAX_LEARNED_TAGS = 10
 
 _DOMAIN_STYLE_TAGS: list[tuple[str, list[str]]] = [
     ("xiaohongshu", ["lifestyle", "fashion", "korean"]),
@@ -30,6 +34,44 @@ def _infer_style_tags(source_url: str | None) -> list[str]:
     return ["general"]
 
 
+async def _learn_from_image(
+    image_url: str, profile_id: str, settings: Settings
+) -> dict[str, Any] | None:
+    """Run real visual style analysis (Qwen-VL) over an inspiration image.
+
+    Returns a ``learned_summary`` dict (with a combined ``tags`` list ready for
+    the consumed ``style_tags`` column), or ``None`` to signal the caller should
+    fall back to the URL-domain heuristic. Fail-soft: any vision error returns
+    ``None`` so a user's inspiration always finishes "learning".
+    """
+    if not (settings.ENABLE_VISION_STYLE_LEARNING and image_url):
+        return None
+    from app.bootstrap.container import vision_service
+
+    try:
+        analysis = await vision_service().analyze_style(image_url)
+    except Exception as exc:
+        logger.warning("style_learn_vision_failed", profile_id=profile_id, error=str(exc))
+        return None
+
+    # The template matcher (style_context._TEMPLATE_RULES) keys on both style
+    # descriptors and color words, so persist them combined (deduped, capped).
+    combined: list[str] = []
+    for tag in [*analysis.style_tags, *analysis.color_palette]:
+        if tag not in combined:
+            combined.append(tag)
+    if not combined:
+        return None
+    return {
+        "tags": combined[:_MAX_LEARNED_TAGS],
+        "style_tags": analysis.style_tags,
+        "color_palette": analysis.color_palette,
+        "avoid_tags": analysis.avoid_tags,
+        "confidence": analysis.confidence,
+        "source": "vision",
+    }
+
+
 async def learn_style_source(ctx: object, profile_id: str) -> None:
     settings = get_settings()
     from sqlalchemy import select
@@ -50,8 +92,6 @@ async def learn_style_source(ctx: object, profile_id: str) -> None:
             profile.learn_status = "processing"
             await session.flush()
 
-            style_tags = _infer_style_tags(profile.source_url or profile.image_url)
-
             # attempt link extraction for source_url (best-effort, no hard failure)
             if profile.source_url:
                 try:
@@ -66,12 +106,26 @@ async def learn_style_source(ctx: object, profile_id: str) -> None:
                         error=str(exc),
                     )
 
-            profile.learned_summary = {
-                "style_tags": style_tags,
-                "color_palette": [],
-                "avoid_tags": [],
-                "confidence": 0.5,
-            }
+            # Real visual learning (flag-gated) when we have an image; else the
+            # legacy URL-domain heuristic. Only the vision path writes the
+            # consumed style_tags (so it can drive the template matcher); the
+            # heuristic path stays summary-only to keep flag-off a clean rollback.
+            learned = await _learn_from_image(profile.image_url or "", profile_id, settings)
+            if learned is not None:
+                style_tags = learned["tags"]
+                profile.style_tags = {"tags": style_tags}
+                profile.learned_summary = learned
+            else:
+                # Flag off, no image, or vision failed → today's behavior exactly:
+                # learned_summary only, style_tags untouched (clean rollback).
+                style_tags = _infer_style_tags(profile.source_url or profile.image_url)
+                profile.learned_summary = {
+                    "style_tags": style_tags,
+                    "color_palette": [],
+                    "avoid_tags": [],
+                    "confidence": 0.5,
+                    "source": "heuristic",
+                }
             profile.learn_status = "learned"
             profile.learned_at = datetime.now(UTC)
             await session.commit()

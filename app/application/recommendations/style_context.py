@@ -32,9 +32,14 @@ async def build_style_context(
 
     tag_counter: Counter[str] = Counter()
     for p in profiles:
-        tags: Any = p.style_tags or []
+        # style_tags is persisted as {"tags": [...]} everywhere (style_repo and
+        # the style-learn worker); tolerate a bare list too for safety. The dict
+        # form was previously ignored, so learned/user tags never reached the
+        # template matcher — reading it here is what makes learning visible.
+        raw: Any = p.style_tags
+        tags = raw.get("tags") if isinstance(raw, dict) else raw
         if isinstance(tags, list):
-            tag_counter.update(tags)
+            tag_counter.update(t for t in tags if isinstance(t, str))
 
     if not tag_counter:
         return {

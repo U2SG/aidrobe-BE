@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from app.application.ports.vision import VisionResult
+from app.application.ports.vision import StyleAnalysis, VisionResult
 from app.common.locale import DEFAULT_LOCALE, resolve_locale
 
 
@@ -50,4 +50,23 @@ class FakeVision:
             canonical_name=spec.canonical_name,
             display_name=display_name,
             localized_names=dict(spec.names),
+        )
+
+    async def analyze_style(self, image_url: str, locale: str = DEFAULT_LOCALE) -> StyleAnalysis:
+        if "fail" in image_url:
+            raise ValueError("fake vision failure")
+        # Deterministic style by URL keyword so tests can assert the wire-through
+        # (and that learned tags drive template selection in style_context).
+        if "feminine" in image_url:
+            return StyleAnalysis(
+                style_tags=["feminine", "soft", "floral"],
+                color_palette=["pink", "white"],
+                avoid_tags=["edgy"],
+                confidence=0.8,
+            )
+        return StyleAnalysis(
+            style_tags=["minimal", "clean", "tailored"],
+            color_palette=["black", "white"],
+            avoid_tags=[],
+            confidence=0.85,
         )
