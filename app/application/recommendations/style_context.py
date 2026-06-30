@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config.settings import get_settings
 from app.infrastructure.persistence.models.style import UserStyleProfile
 
 # Template mapping: dominant tag sets → template_id
@@ -30,8 +31,19 @@ async def build_style_context(
     )
     profiles = list(result.scalars().all())
 
+    vision_on = get_settings().ENABLE_VISION_STYLE_LEARNING
     tag_counter: Counter[str] = Counter()
     for p in profiles:
+        # Gate EXPOSURE of vision-derived tags on the flag: if the feature is
+        # rolled back after profiles were learned via Qwen-VL, those persisted
+        # style_tags must stop influencing /today (clean rollback). User-set
+        # style_tags (source != "vision") are unaffected.
+        if (
+            not vision_on
+            and isinstance(p.learned_summary, dict)
+            and p.learned_summary.get("source") == "vision"
+        ):
+            continue
         # style_tags is persisted as {"tags": [...]} everywhere (style_repo and
         # the style-learn worker); tolerate a bare list too for safety. The dict
         # form was previously ignored, so learned/user tags never reached the

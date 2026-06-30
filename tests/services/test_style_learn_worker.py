@@ -185,16 +185,57 @@ async def test_learned_tags_drive_recommendation_template(
 ) -> None:
     """The payoff: learned style_tags actually select a template in the live
     recommendation style_context (previously the dict shape was ignored)."""
-    from app.application.recommendations.style_context import build_style_context
+    from app.application.recommendations import style_context
 
     _set_flag(monkeypatch, enabled=True)
+    # build_style_context reads get_settings on its OWN module (lru_cached).
+    monkeypatch.setattr(
+        style_context, "get_settings", lambda: Settings(APP_ENV="test", ENABLE_VISION_STYLE_LEARNING=True)
+    )
     user_id, profile_id = await _seed(factory, image_url="https://cdn.example.com/milan.jpg")
 
     await learn_style_source(None, str(profile_id))
 
     async with factory() as s:
-        ctx = await build_style_context(user_id, s)
+        ctx = await style_context.build_style_context(user_id, s)
     # minimal + clean + black + white overlap the minimal_commute rule set.
     assert ctx["template_id"] == "minimal_commute_v1"
     assert "minimal" in ctx["active_tags"]
     assert ctx["confidence"] > 0.0
+
+
+async def test_vision_tags_gated_off_on_rollback_but_user_tags_kept(
+    factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clean rollback: with the flag OFF, previously vision-learned style_tags
+    stop driving /today, but user-set style_tags (source != "vision") still do."""
+    from app.application.recommendations import style_context
+
+    # Learn one inspiration via vision (flag ON).
+    _set_flag(monkeypatch, enabled=True)
+    user_id, profile_id = await _seed(factory, image_url="https://cdn.example.com/milan.jpg")
+    await learn_style_source(None, str(profile_id))
+
+    # Add a user-set style_tag profile (NOT vision-derived).
+    async with factory() as s:
+        s.add(
+            UserStyleProfile(
+                user_id=user_id,
+                source_type="style_tag",
+                style_tags={"tags": ["floral", "pastel"]},
+                weight=1.0,
+                learn_status="learned",
+            )
+        )
+        await s.commit()
+
+    # Roll the feature back OFF.
+    monkeypatch.setattr(
+        style_context, "get_settings", lambda: Settings(APP_ENV="test", ENABLE_VISION_STYLE_LEARNING=False)
+    )
+    async with factory() as s:
+        ctx = await style_context.build_style_context(user_id, s)
+    # Vision tags (minimal/black/white) excluded → user floral/pastel win.
+    assert ctx["template_id"] == "soft_feminine_v1"
+    assert "minimal" not in ctx["active_tags"]
+    assert "floral" in ctx["active_tags"]
