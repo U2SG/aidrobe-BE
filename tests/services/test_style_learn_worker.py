@@ -157,6 +157,29 @@ async def test_flag_on_with_fake_provider_degrades_to_heuristic(
         assert profile.learned_summary["source"] == "heuristic"
 
 
+async def test_vision_rate_limit_degrades_to_heuristic(
+    factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Over the per-user vision budget → degrade to the heuristic, don't burn
+    Qwen calls (a /style/sources/batch can't bypass VISION_MAX_CALLS_PER_USER_HOUR)."""
+    from app.infrastructure.vision.rate_limit import InMemoryVisionRateLimiter
+
+    _set_flag(monkeypatch, enabled=True)
+    # max_calls=0 → check() always raises immediately.
+    monkeypatch.setattr("app.bootstrap.container.vision_rate_limiter", lambda: InMemoryVisionRateLimiter(0))
+    _user_id, profile_id = await _seed(factory, image_url="https://cdn.example.com/milan.jpg")
+
+    await learn_style_source(None, str(profile_id))
+
+    async with factory() as s:
+        profile = await s.get(UserStyleProfile, profile_id)
+        assert profile is not None
+        assert profile.learn_status == "learned"
+        assert profile.style_tags is None
+        assert profile.learned_summary is not None
+        assert profile.learned_summary["source"] == "heuristic"
+
+
 async def test_learned_tags_drive_recommendation_template(
     factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
 ) -> None:

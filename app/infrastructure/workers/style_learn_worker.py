@@ -35,7 +35,7 @@ def _infer_style_tags(source_url: str | None) -> list[str]:
 
 
 async def _learn_from_image(
-    image_url: str, profile_id: str, settings: Settings
+    image_url: str, user_id: uuid.UUID, profile_id: str, settings: Settings
 ) -> dict[str, Any] | None:
     """Run real visual style analysis (Qwen-VL) over an inspiration image.
 
@@ -52,9 +52,13 @@ async def _learn_from_image(
     # output as learned style; degrade to the URL heuristic instead.
     if settings.VISION_PROVIDER == "fake":
         return None
-    from app.bootstrap.container import vision_service
+    from app.bootstrap.container import vision_rate_limiter, vision_service
 
     try:
+        # Same per-user hourly budget the wardrobe vision path enforces, so a
+        # /style/sources/batch (up to 20 URLs) can't bypass it. Over budget →
+        # degrade to the heuristic rather than failing the inspiration.
+        vision_rate_limiter().check(user_id)
         analysis = await vision_service().analyze_style(image_url)
     except Exception as exc:
         logger.warning("style_learn_vision_failed", profile_id=profile_id, error=str(exc))
@@ -116,7 +120,9 @@ async def learn_style_source(ctx: object, profile_id: str) -> None:
             # legacy URL-domain heuristic. Only the vision path writes the
             # consumed style_tags (so it can drive the template matcher); the
             # heuristic path stays summary-only to keep flag-off a clean rollback.
-            learned = await _learn_from_image(profile.image_url or "", profile_id, settings)
+            learned = await _learn_from_image(
+                profile.image_url or "", profile.user_id, profile_id, settings
+            )
             if learned is not None:
                 style_tags = learned["tags"]
                 profile.style_tags = {"tags": style_tags}
