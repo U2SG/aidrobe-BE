@@ -50,8 +50,9 @@ class SqlAlchemyWardrobeRepository:
         if status is not None:
             filters.append(WardrobeItem.status == status)
         if season is not None:
-            # season_tags is a JSONB array; @> checks containment
-            filters.append(WardrobeItem.season_tags.contains([season]))
+            # season_tags JSONB shape: {"tags": ["spring", ...]} (V3 M14)
+            # Navigate to the tags key first, then use @> array containment.
+            filters.append(WardrobeItem.season_tags["tags"].contains([season]))
         if color is not None:
             filters.append(WardrobeItem.color_main == color)
         total = await self.session.scalar(

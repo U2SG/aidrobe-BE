@@ -11,6 +11,7 @@ from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.settings import (
+    CommuteExposure,
     UpdateUserSettingsRequest,
     UserSettingsResponse,
 )
@@ -19,7 +20,6 @@ router = APIRouter(prefix="/v1/user", tags=["settings"])
 
 
 def settings_response(settings: UserSettings) -> UserSettingsResponse:
-    from app.presentation.api.v1.schemas.settings import CommuteExposure
     return UserSettingsResponse(
         departure_time=settings.departure_time,
         push_enabled=settings.push_enabled,
