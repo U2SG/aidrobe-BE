@@ -21,6 +21,7 @@ class UserSettingsUseCase:
         push_enabled: bool | None = None,
         location: str | None = None,
         locale: str | None = None,
+        commute_exposure: str | None = None,
     ) -> UserSettings:
         settings = await self.user_repository.get_or_create_settings(user_id)
         if departure_time_set:
@@ -33,5 +34,7 @@ class UserSettingsUseCase:
             settings.location = location
         if locale is not None:
             settings.locale = locale
+        if commute_exposure is not None:
+            settings.commute_exposure = commute_exposure
         await self.user_repository.flush()
         return settings

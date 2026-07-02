@@ -19,12 +19,14 @@ router = APIRouter(prefix="/v1/user", tags=["settings"])
 
 
 def settings_response(settings: UserSettings) -> UserSettingsResponse:
+    from app.presentation.api.v1.schemas.settings import CommuteExposure
     return UserSettingsResponse(
         departure_time=settings.departure_time,
         push_enabled=settings.push_enabled,
         device_token=settings.device_token,
         location=settings.location,
         locale=cast(LocaleSetting, settings.locale),
+        commute_exposure=cast(CommuteExposure | None, settings.commute_exposure),
     )
 
 
@@ -61,5 +63,6 @@ async def update_user_settings(
         push_enabled=payload.push_enabled,
         location=payload.location,
         locale=payload.locale,
+        commute_exposure=payload.commute_exposure,
     )
     return ResponseModel(data=settings_response(settings))

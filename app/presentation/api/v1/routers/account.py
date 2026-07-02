@@ -14,12 +14,15 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+
 from app.application.cost_guard import cost_summary_today
 from app.application.users.deactivate_account import deactivate_account
-from app.application.users.export_data import request_data_export
+from app.application.users.export_data import EXPORT_JOB_TYPE, request_data_export
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
 from app.config.settings import Settings, get_settings
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
@@ -67,7 +70,8 @@ async def get_cost_summary(
 
 class DataExportResponse(BaseModel):
     job_id: uuid.UUID
-    status: str  # "pending" — caller can poll job status later
+    status: str
+    download_url: str | None = None
     message: str
 
 
@@ -87,6 +91,49 @@ async def request_my_data_export(
             job_id=job_id,
             status="pending",
             message="Data export started. You'll be notified when it's ready.",
+        )
+    )
+
+
+@router.get(
+    "/me/data-export/{job_id}",
+    response_model=ResponseModel[DataExportResponse],
+)
+async def get_data_export_status(
+    job_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[DataExportResponse]:
+    """Poll the status of a previously requested data export job.
+    Returns 404 when the job_id does not belong to this user."""
+    job = await session.scalar(
+        select(AsyncJob).where(
+            AsyncJob.id == job_id,
+            AsyncJob.user_id == current_user.id,
+            AsyncJob.job_type == EXPORT_JOB_TYPE,
+        )
+    )
+    if job is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Export job not found", status_code=404)
+
+    download_url: str | None = None
+    if job.status == "succeeded" and job.result:
+        download_url = job.result.get("download_url")
+
+    status_label = job.status  # queued | running | succeeded | failed | dead
+    if job.status in ("queued", "running"):
+        message = "Your export is being prepared."
+    elif job.status == "succeeded":
+        message = "Export ready. Download link expires in 24 hours."
+    else:
+        message = "Export failed. Please request a new export."
+
+    return ResponseModel(
+        data=DataExportResponse(
+            job_id=job.id,
+            status=status_label,
+            download_url=download_url,
+            message=message,
         )
     )
 

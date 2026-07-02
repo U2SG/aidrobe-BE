@@ -44,6 +44,9 @@ class UserSettings(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # product default (zh-CN) at resolution time; see app/common/locale.py.
     locale: Mapped[str] = mapped_column(String(16), default="system", server_default="system", nullable=False)
     preferences_json: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    # 'more_outdoor' | 'less_outdoor' — commute exposure for indoor-climate inference.
+    # Added via migration 0042; NULL means not yet answered.
+    commute_exposure: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="settings")
 

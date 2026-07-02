@@ -1,6 +1,6 @@
 import uuid
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, Query
@@ -19,7 +19,12 @@ from app.infrastructure.cache.client import (
     get_redis_client,
     invalidate_daily_recommendation_cache,
 )
-from app.infrastructure.persistence.models.recommendation import Outfit, OutfitItem, WearHistory
+from app.infrastructure.persistence.models.recommendation import (
+    Outfit,
+    OutfitItem,
+    RecommendationEvent,
+    WearHistory,
+)
 from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.operation_log_repo import (
@@ -92,12 +97,18 @@ async def list_wardrobe_items(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     category: str | None = None,
+    status: str | None = None,
+    season: str | None = None,
+    color: str | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
     locale: Annotated[str | None, Query(max_length=16)] = None,
 ) -> ResponseModel[WardrobeListResponse]:
     use_case = ListWardrobeItems(SqlAlchemyWardrobeRepository(session))
-    items, total = await use_case.execute(current_user.id, category, limit, offset)
+    items, total = await use_case.execute(
+        current_user.id, category, limit, offset,
+        status=status, season=season, color=color,
+    )
     effective_locale = await _effective_locale(session, current_user.id, locale)
     return ResponseModel(
         data=WardrobeListResponse(
@@ -217,3 +228,43 @@ async def get_item_wear_history(
             entries=entries,
         )
     )
+
+
+@router.post(
+    "/{item_id}/wears",
+    response_model=ResponseModel[WardrobeItemResponse],
+)
+async def mark_item_worn(
+    item_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[Redis, Depends(get_redis_client)],
+) -> ResponseModel[WardrobeItemResponse]:
+    """Record that the user wore this item today (no outfit context).
+
+    Updates last_worn_at and wear_count on the item so insights / detail
+    screens reflect the real-world wear immediately. Also emits a
+    RecommendationEvent for future preference learning.
+    """
+    item = await SqlAlchemyWardrobeRepository(session).get_for_user(item_id, current_user.id)
+    if item is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Wardrobe item not found", status_code=404)
+
+    today = date.today()
+    item.last_worn_at = today
+    item.wear_count = (item.wear_count or 0) + 1
+
+    now = datetime.now(UTC)
+    session.add(
+        RecommendationEvent(
+            user_id=current_user.id,
+            item_id=item_id,
+            event_type="worn",
+            source="manual",
+            created_at=now,
+        )
+    )
+    await session.flush()
+    await invalidate_daily_recommendation_cache(redis_client, current_user.id)
+    effective_locale = await _effective_locale(session, current_user.id)
+    return ResponseModel(data=item_response(item, effective_locale))
