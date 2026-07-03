@@ -97,10 +97,18 @@ class DeleteWardrobeItemResponse(BaseModel):
     deleted: bool
 
 
+class MarkItemWornRequest(BaseModel):
+    # Optional backfill date; server defaults to today (UTC) when omitted.
+    worn_date: date | None = None
+
+
 class WearHistoryEntry(BaseModel):
     worn_date: date
-    outfit_id: UUID
+    # None for standalone manual wears (no outfit context).
+    outfit_id: UUID | None = None
     outfit_type: str | None = None
+    # 'outfit' — wear recorded via an outfit; 'manual' — standalone item wear.
+    source: str = "outfit"
 
 
 class ItemWearHistoryResponse(BaseModel):

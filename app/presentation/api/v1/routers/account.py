@@ -12,13 +12,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.cost_guard import cost_summary_today
 from app.application.users.deactivate_account import deactivate_account
 from app.application.users.export_data import EXPORT_JOB_TYPE, request_data_export
+from app.bootstrap.container import object_storage
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
 from app.config.settings import Settings, get_settings
@@ -75,6 +75,12 @@ class DataExportResponse(BaseModel):
     message: str
 
 
+# Export bundles live on a private bucket; the polling endpoint signs a
+# short-lived URL at read time (the job result stores the stable object_key,
+# never a signed URL — those expire).
+_EXPORT_DOWNLOAD_TTL_SECONDS = 1800
+
+
 @router.post("/me/data-export", response_model=ResponseModel[DataExportResponse])
 async def request_my_data_export(
     current_user: Annotated[User, Depends(get_current_user)],
@@ -118,13 +124,20 @@ async def get_data_export_status(
 
     download_url: str | None = None
     if job.status == "succeeded" and job.result:
-        download_url = job.result.get("download_url")
+        object_key = job.result.get("object_key")
+        if object_key:
+            download_url = object_storage().sign_render_url(
+                object_key, ttl_seconds=_EXPORT_DOWNLOAD_TTL_SECONDS
+            )
 
     status_label = job.status  # queued | running | succeeded | failed | dead
     if job.status in ("queued", "running"):
         message = "Your export is being prepared."
+    elif job.status == "succeeded" and download_url:
+        minutes = _EXPORT_DOWNLOAD_TTL_SECONDS // 60
+        message = f"Export ready. Download link expires in {minutes} minutes."
     elif job.status == "succeeded":
-        message = "Export ready. Download link expires in 24 hours."
+        message = "Export completed."
     else:
         message = "Export failed. Please request a new export."
 

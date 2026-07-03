@@ -5,16 +5,18 @@ from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, Query
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.wardrobe.delete_item import DeleteWardrobeItem
 from app.application.wardrobe.list_items import ListWardrobeItems
 from app.application.wardrobe.update_item import UpdateWardrobeItem
 from app.common import error_codes
+from app.common.enums import RecommendationEventType, WardrobeItemStatus
 from app.common.exceptions import FriendlyException
 from app.common.item_labels import localized_item_name
 from app.common.locale import resolve_locale
+from app.common.season import SeasonName
 from app.infrastructure.cache.client import (
     get_redis_client,
     invalidate_daily_recommendation_cache,
@@ -41,6 +43,7 @@ from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.wardrobe import (
     DeleteWardrobeItemResponse,
     ItemWearHistoryResponse,
+    MarkItemWornRequest,
     UpdateWardrobeItemRequest,
     WardrobeItemResponse,
     WardrobeListResponse,
@@ -87,6 +90,7 @@ def item_response(item: WardrobeItem, locale: str) -> WardrobeItemResponse:
         fit_intent=item.fit_intent,
         fit_status=item.fit_status,
         comfort_score=item.comfort_score,
+        wear_count=item.wear_count,
         last_worn=item.last_worn_at,
         purchase_date=item.purchase_date,
     )
@@ -97,9 +101,11 @@ async def list_wardrobe_items(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     category: str | None = None,
-    status: str | None = None,
-    season: str | None = None,
-    color: str | None = None,
+    # Enum/Literal-typed so an invalid value 422s early instead of silently
+    # returning an empty list.
+    status: WardrobeItemStatus | None = None,
+    season: SeasonName | None = None,
+    color: Annotated[str | None, Query(max_length=32)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
     locale: Annotated[str | None, Query(max_length=16)] = None,
@@ -107,7 +113,7 @@ async def list_wardrobe_items(
     use_case = ListWardrobeItems(SqlAlchemyWardrobeRepository(session))
     items, total = await use_case.execute(
         current_user.id, category, limit, offset,
-        status=status, season=season, color=color,
+        status=status.value if status else None, season=season, color=color,
     )
     effective_locale = await _effective_locale(session, current_user.id, locale)
     return ResponseModel(
@@ -213,12 +219,32 @@ async def get_item_wear_history(
     )
     rows = (await session.execute(stmt)).all()
 
+    # Standalone manual wears (POST /{item_id}/wears) have no WearHistory
+    # row — they live as RecommendationEvents with worn_date in metadata.
+    # Include them so this surface stays consistent with wear_count.
+    manual_rows = (
+        await session.scalars(
+            select(RecommendationEvent.event_metadata["worn_date"].astext)
+            .where(
+                RecommendationEvent.user_id == current_user.id,
+                RecommendationEvent.item_id == item_id,
+                RecommendationEvent.event_type == RecommendationEventType.WORN.value,
+                RecommendationEvent.source == "manual",
+                RecommendationEvent.event_metadata["worn_date"].astext >= cutoff.isoformat(),
+            )
+        )
+    ).all()
+
     daily_counts: dict[str, int] = defaultdict(int)
     entries: list[WearHistoryEntry] = []
     for worn_date_val, outfit_id, outfit_type in rows:
         key = worn_date_val.isoformat()
         daily_counts[key] += 1
         entries.append(WearHistoryEntry(worn_date=worn_date_val, outfit_id=outfit_id, outfit_type=outfit_type))
+    for worn_date_str in manual_rows:
+        daily_counts[worn_date_str] += 1
+        entries.append(WearHistoryEntry(worn_date=date.fromisoformat(worn_date_str), source="manual"))
+    entries.sort(key=lambda e: e.worn_date, reverse=True)
 
     return ResponseModel(
         data=ItemWearHistoryResponse(
@@ -239,8 +265,11 @@ async def mark_item_worn(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     redis_client: Annotated[Redis, Depends(get_redis_client)],
+    payload: MarkItemWornRequest | None = None,
 ) -> ResponseModel[WardrobeItemResponse]:
-    """Record that the user wore this item today (no outfit context).
+    """Record that the user wore this item (no outfit context), for
+    `worn_date` (defaults to today, UTC — client sends its local date for
+    timezone correctness, same as the outfit wear path).
 
     Updates last_worn_at and wear_count on the item so insights / detail
     screens reflect the real-world wear immediately. Also emits a
@@ -250,21 +279,47 @@ async def mark_item_worn(
     if item is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Wardrobe item not found", status_code=404)
 
-    today = date.today()
-    item.last_worn_at = today
-    item.wear_count = (item.wear_count or 0) + 1
+    worn_date = (payload.worn_date if payload else None) or datetime.now(UTC).date()
+    effective_locale = await _effective_locale(session, current_user.id)
 
-    now = datetime.now(UTC)
+    # Idempotent per (item, worn_date), mirroring the outfit wear path — a
+    # double-tap must not double-count.
+    duplicate = await session.scalar(
+        select(RecommendationEvent.id).where(
+            RecommendationEvent.user_id == current_user.id,
+            RecommendationEvent.item_id == item_id,
+            RecommendationEvent.event_type == RecommendationEventType.WORN.value,
+            RecommendationEvent.source == "manual",
+            RecommendationEvent.event_metadata["worn_date"].astext == worn_date.isoformat(),
+        )
+    )
+    if duplicate is not None:
+        return ResponseModel(data=item_response(item, effective_locale))
+
     session.add(
         RecommendationEvent(
             user_id=current_user.id,
             item_id=item_id,
-            event_type="worn",
+            event_type=RecommendationEventType.WORN.value,
             source="manual",
-            created_at=now,
+            event_metadata={"worn_date": worn_date.isoformat()},
+            created_at=datetime.now(UTC),
+        )
+    )
+    # Atomic in SQL (same pattern as the outfit wear path): concurrent wears
+    # must not lose increments, and last_worn_at only moves forward.
+    await session.execute(
+        update(WardrobeItem)
+        .where(WardrobeItem.id == item.id)
+        .values(
+            wear_count=WardrobeItem.wear_count + 1,
+            last_worn_at=func.greatest(
+                func.coalesce(WardrobeItem.last_worn_at, worn_date),
+                worn_date,
+            ),
         )
     )
     await session.flush()
+    await session.refresh(item)
     await invalidate_daily_recommendation_cache(redis_client, current_user.id)
-    effective_locale = await _effective_locale(session, current_user.id)
     return ResponseModel(data=item_response(item, effective_locale))

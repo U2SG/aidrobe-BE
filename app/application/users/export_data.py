@@ -8,10 +8,11 @@ back.
 
 Flow:
 1. POST /v1/me/data-export → enqueue async-job(type=user_export)
-2. Worker (skeleton stub for now — full bundle path lands when buckets
-   are real) collects DB rows + object keys, packages a manifest, and
-   surfaces a download link via push/email
-3. Audit-log entry written so DSAR responses can show the request
+2. `user_export_worker` bundles DB rows + object keys into a JSON bundle
+   on object storage and stores its `object_key` in the job result
+3. GET /v1/me/data-export/{job_id} polls status and signs a short-lived
+   download URL at read time
+4. Audit-log entry written so DSAR responses can show the request
    lifecycle even if the user later purges
 """
 
@@ -39,8 +40,7 @@ async def request_data_export(
     user: User,
 ) -> uuid.UUID:
     """Enqueue an export job and audit the request. Caller owns commit.
-    Returns the job_id so the client can poll status if it wants
-    (V4 will surface a /v1/me/data-export/{job_id} status endpoint).
+    Returns the job_id for GET /v1/me/data-export/{job_id} polling.
 
     Concurrency: at most one in-flight export per user across days. A
     long-running export on day 1 still pending on day 2 must NOT spawn

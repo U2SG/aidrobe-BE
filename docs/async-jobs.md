@@ -37,6 +37,7 @@ the existing job rather than creating a second one.
 | `tryon`        | `tryon:{user_id}:{outfit_id}:{body_hash}` *(planned)* | Re-running with the same body image + outfit returns existing. |
 | `cutout`       | `cutout:{item_id}`                        | One product-shot cutout per item. Re-confirming the same item reuses the existing job (no double gpt-image-2 spend). |
 | `user_purge`   | `user_purge:{user_id}`                    | Account deletion runs once per user. |
+| `user_export`  | `user_export:{user_id}:{date}`            | PIPL DSAR bundle. Day-keyed + producer-side in-flight check → ≤1 concurrent export per user; a fresh request is possible the next day after terminal status. Result stores the bundle `object_key`; `GET /v1/me/data-export/{job_id}` signs the download URL at read time. |
 | `import_task`  | `import_task:{task_id}`                   | One processing run per import task (Vision/OCR/link-parse). Gated by `ENABLE_IMPORT_ASYNC_JOBS`; legacy path is FastAPI BackgroundTasks. Job status = execution only; `import_tasks.task_status` stays the business source of truth. Dead-letter → `reconcile_dead_import_tasks` flips the task to `failed`. |
 
 Keep keys ≤ 128 chars (the column limit). Use lowercase. Don't put PII into

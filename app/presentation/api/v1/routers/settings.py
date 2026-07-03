@@ -64,5 +64,6 @@ async def update_user_settings(
         location=payload.location,
         locale=payload.locale,
         commute_exposure=payload.commute_exposure,
+        commute_exposure_set=payload.is_set("commute_exposure"),
     )
     return ResponseModel(data=settings_response(settings))

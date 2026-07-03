@@ -15,6 +15,10 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 # A user with fewer total wears than this is considered data-sparse; the
 # frontend uses this gate to suppress "strong conclusion" copy and the
 # wardrobe-report entry.
+# NOTE: wear_history_count is SUM(wear_count) over *live* items — not a
+# WearHistory row count. Deleting an item lowers it (and can flip
+# has_sufficient_wear_history back to false); intentional, because
+# sufficiency should reflect the wardrobe the insights are computed over.
 _SUFFICIENT_WEAR_THRESHOLD = 10
 
 

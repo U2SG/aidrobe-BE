@@ -2,6 +2,11 @@
 with location-aware mapping (southern hemisphere, equatorial, etc.)."""
 
 from datetime import date
+from typing import Literal
+
+# Canonical season vocabulary — matches season_tags values persisted by
+# the V3 M14 import/update paths and the strings current_season returns.
+SeasonName = Literal["spring", "summer", "autumn", "winter"]
 
 
 def current_season(today: date) -> str:
