@@ -142,7 +142,9 @@ async def test_wear_history_respects_days_param(db_session: AsyncSession) -> Non
     )
     db_session.add(item)
     await db_session.flush()
-    old_date = date(2026, 1, 1)
+    # Relative: must stay OUTSIDE ?days=60 but INSIDE ?days=200 forever —
+    # a fixed date drifts out of the 200-day window on the calendar.
+    old_date = date.today() - timedelta(days=150)
     await _seed_outfit_with_item(db_session, user_id, item.id, old_date)
     app = build_wardrobe_app(db_session)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
@@ -158,7 +160,7 @@ async def test_wear_history_respects_days_param(db_session: AsyncSession) -> Non
     assert resp_60.json()["data"]["daily_counts"] == {}
     assert resp_60.json()["data"]["entries"] == []
     assert resp_200.status_code == 200
-    assert resp_200.json()["data"]["daily_counts"].get("2026-01-01") == 1
+    assert resp_200.json()["data"]["daily_counts"].get(old_date.isoformat()) == 1
     assert len(resp_200.json()["data"]["entries"]) == 1
 
 
