@@ -1,7 +1,7 @@
 """Tests for A-9: GET /v1/wardrobe-items/{item_id}/wear-history endpoint."""
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -111,7 +111,9 @@ async def test_wear_history_multi_wear_same_day(db_session: AsyncSession) -> Non
     )
     db_session.add(item)
     await db_session.flush()
-    worn_day = date(2026, 5, 1)
+    # Relative date: a fixed date silently ages out of the ?days=60 window and
+    # starts failing on the calendar (this happened with 2026-05-01).
+    worn_day = date.today() - timedelta(days=10)
     rec_id = await _seed_recommendation(db_session, user_id, worn_day)
     await _seed_outfit_with_item(db_session, user_id, item.id, worn_day, rec_id=rec_id)
     await _seed_outfit_with_item(db_session, user_id, item.id, worn_day, rec_id=rec_id)
@@ -123,7 +125,7 @@ async def test_wear_history_multi_wear_same_day(db_session: AsyncSession) -> Non
         )
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert data["daily_counts"]["2026-05-01"] == 2
+    assert data["daily_counts"][worn_day.isoformat()] == 2
     assert len(data["entries"]) == 2
 
 
