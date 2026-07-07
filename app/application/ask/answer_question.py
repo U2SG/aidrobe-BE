@@ -44,6 +44,7 @@ from app.application.preferences.memory import (
     read_preference_memory,
     record_preference,
 )
+from app.application.safety.copy_guard import find_forbidden_terms, sanitize_generated_copy
 from app.common import error_codes
 from app.common.enums import ItemStatus
 from app.common.exceptions import FriendlyException
@@ -117,6 +118,10 @@ _REFINEMENT_MARKERS = (
     "brighter",
     "darker",
 )
+# BE#87 — honest fallback when the LLM answer triggers the copy guard.
+# Not a redirect: it tells the user we can't give a more detailed answer
+# right now, without exposing what was filtered.
+_ASK_FALLBACK_COPY = "这身搭配上我给不出更细的说法，但可以从舒服和得体的角度先选。"
 
 
 def _project_tokens(item_count: int) -> int:
@@ -817,6 +822,10 @@ async def answer_question(
         logger.warning("ask.structured_output.disabled", item_refs_quality="limited")
         item_refs = [str(focused_item.id)] if focused_item is not None else []
         parsed_deltas = ConversationDeltas(reasoning=None, applied_constraints=[])
+    answer_text = sanitize_generated_copy(
+        answer_text,
+        fallback=_ASK_FALLBACK_COPY,
+    )
     tokens_used = answer.tokens_used
     heuristic_constraints = _heuristic_constraints(
         question=sanitized_question,
@@ -937,12 +946,22 @@ async def answer_question(
     if stated_preferences:
         pref_repo = SqlAlchemyPreferenceMemoryRepository(session)
         for pref in stated_preferences:
+            # BE#87 — drop any preference whose value contains forbidden copy
+            # (body-shaming / age-anxiety language). Dropping is honest;
+            # rewriting could reverse the user's stated meaning.
+            pref_value = pref.get("value", "")
+            if find_forbidden_terms(pref_value):
+                logger.warning(
+                    "copy_guard.preference_dropped",
+                    preference_type=pref.get("type"),
+                )
+                continue
             try:
                 await record_preference(
                     pref_repo,
                     user_id=user_id,
                     preference_type=pref["type"],
-                    preference_value=pref["value"],
+                    preference_value=pref_value,
                     polarity=pref["polarity"],
                     confidence=_EXPLICIT_PREFERENCE_CONFIDENCE,
                     source=SOURCE_EXPLICIT,
