@@ -2,6 +2,9 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+# torch/triton wheels are 100-500MB; the default 30s HTTP timeout aborts the
+# download on slower links (came in with open-clip-torch via #76).
+ENV UV_HTTP_TIMEOUT=600
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
