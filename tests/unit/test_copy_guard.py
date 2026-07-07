@@ -139,3 +139,33 @@ def test_find_forbidden_terms_no_duplicates_per_term() -> None:
     """Each matching term appears exactly once even if it occurs twice in text."""
     result = find_forbidden_terms("显瘦显瘦两次")
     assert result.count("显瘦") == 1
+
+
+# --- English coverage (review finding on #91) --------------------------------
+
+
+def test_find_forbidden_terms_english_case_insensitive() -> None:
+    assert find_forbidden_terms("This Slimming cut is Age-Defying") == [
+        "slimming",
+        "age-defying",
+    ]
+
+
+def test_find_forbidden_terms_english_clean_functional_words() -> None:
+    assert find_forbidden_terms("A comfortable, relaxed fit that suits today") == []
+
+
+def test_find_forbidden_terms_english_each_seed_term() -> None:
+    for term in (
+        "slimming",
+        "look slimmer",
+        "makes you look thin",
+        "hide your belly",
+        "figure flaws",
+        "age-defying",
+        "anti-aging",
+        "look younger",
+        "for your age",
+        "middle-aged",
+    ):
+        assert find_forbidden_terms(f"outfit advice: {term} guaranteed") == [term]

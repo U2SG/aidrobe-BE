@@ -485,9 +485,21 @@ def _extract_conversation_deltas(data: dict[str, Any]) -> ConversationDeltas:
         return ConversationDeltas(reasoning=None, applied_constraints=[])
     reasoning = raw.get("reasoning")
     constraints = raw.get("applied_constraints", [])
+    # Copy guard (BE#87): deltas are LLM-generated and surface to the user via
+    # AskResponse.deltas — reasoning with a forbidden term is dropped (None is
+    # honest), offending constraints are filtered out.
+    clean_reasoning = (
+        sanitize_llm_text(reasoning, max_len=240) if isinstance(reasoning, str) else None
+    )
+    if clean_reasoning is not None and find_forbidden_terms(clean_reasoning):
+        logger.warning("copy_guard.delta_reasoning_dropped")
+        clean_reasoning = None
+    clean_constraints = [
+        c for c in _sanitize_constraint_list(constraints) if not find_forbidden_terms(c)
+    ]
     return ConversationDeltas(
-        reasoning=sanitize_llm_text(reasoning, max_len=240) if isinstance(reasoning, str) else None,
-        applied_constraints=_sanitize_constraint_list(constraints),
+        reasoning=clean_reasoning,
+        applied_constraints=clean_constraints,
         rejected_focused_item=raw.get("rejected_focused_item") is True,
     )
 

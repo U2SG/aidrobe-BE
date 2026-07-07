@@ -39,6 +39,18 @@ FORBIDDEN_COPY_TERMS: tuple[str, ...] = (
     "显年轻",
     "大妈",
     "老气",
+    # English equivalents — Ask is locale-aware (en-US answers are English),
+    # so the guard must cover both languages. Matched case-insensitively.
+    "slimming",
+    "look slimmer",
+    "makes you look thin",
+    "hide your belly",
+    "figure flaws",
+    "age-defying",
+    "anti-aging",
+    "look younger",
+    "for your age",
+    "middle-aged",
 )
 
 
@@ -58,8 +70,11 @@ def find_forbidden_terms(text: str) -> list[str]:
     ['显瘦', '减龄']
     >>> find_forbidden_terms("舒适宽松的日常搭配")
     []
+    >>> find_forbidden_terms("This Slimming cut is age-defying")
+    ['slimming', 'age-defying']
     """
-    return [term for term in FORBIDDEN_COPY_TERMS if term in text]
+    lowered = text.lower()
+    return [term for term in FORBIDDEN_COPY_TERMS if term in lowered]
 
 
 def sanitize_generated_copy(text: str, *, fallback: str) -> str:
