@@ -9,6 +9,7 @@ from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.colors import color_score
 from app.application.recommendations.reasoning import build_reasoning
+from app.application.safety.copy_guard import sanitize_generated_copy
 from app.application.style.build_style_profile import aesthetic_score as compute_aesthetic_score
 from app.common.enums import Category, OutfitType
 from app.infrastructure.llm.sanitizer import sanitize_llm_text
@@ -391,7 +392,9 @@ class RecommendationEngine:
                 )
                 polished = await self.llm.polish_reason(prompt)
                 if polished.strip():
-                    reason = polished.strip()
+                    reason = sanitize_generated_copy(
+                        polished.strip(), fallback=reason
+                    )
             except Exception:
                 # Fall through to template reason
                 pass
