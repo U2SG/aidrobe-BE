@@ -435,13 +435,13 @@ def _seconds_until_utc_day_end(now: datetime) -> int:
 async def get_first_outfit_gate(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[Redis, Depends(get_redis_client)],
 ) -> ResponseModel[FirstOutfitGateResponse]:
     """Cold-start feasibility gate.
 
     Returns a structured verdict that tells the FE whether the user has enough
-    wardrobe to show an outfit. Does not require Redis — result is not cached
-    because it is called once on FE V2 activation and is cheap enough to hit
-    the DB directly.
+    wardrobe to show an outfit. The gate result itself is not cached (called
+    once on FE V2 activation, cheap DB hit).
     """
     from app.application.recommendations.first_outfit_gate import FirstOutfitGate
 
@@ -449,6 +449,29 @@ async def get_first_outfit_gate(
 
     repository = SqlAlchemyRecommendationRepository(session)
     result = await FirstOutfitGate(repository).execute(current_user.id, today)
+
+    if result.generated:
+        # The gate just wrote today's daily. Any /today payload cached earlier
+        # (e.g. insufficient_items) would contradict the gate until end of day —
+        # drop every scene variant of the key (mirrors refresh_today).
+        user_settings = await SqlAlchemyUserRepository(session).get_or_create_settings(
+            current_user.id
+        )
+        for scene_variant in (None, "commute", "formal", "casual"):
+            stale_key = build_daily_recommendation_cache_key(
+                current_user.id,
+                today,
+                user_settings.departure_time,
+                scene_variant,
+                reasoning=get_settings().ENABLE_TODAY_REASONING,
+                vision_style=get_settings().ENABLE_VISION_STYLE_LEARNING,
+            )
+            try:
+                await redis_client.delete(stale_key)
+            except RedisError:
+                logger.warning(
+                    "first_outfit_cache_invalidate_failed", user_id=str(current_user.id)
+                )
 
     first_outfit_response: OutfitResponse | None = None
     if result.first_outfit is not None:

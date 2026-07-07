@@ -92,6 +92,10 @@ class FirstOutfitGateResult:
     missing_slots: list[str]
     first_outfit: Outfit | None
     gate_failures: list[str]
+    # True when this call generated today's daily — the caller must then
+    # invalidate any cached /today payload (a stale insufficient_items entry
+    # would otherwise contradict the gate until end of day).
+    generated: bool = False
 
 
 class FirstOutfitGate:
@@ -117,6 +121,7 @@ class FirstOutfitGate:
             )
 
         # Step 2 — get-or-generate today's daily (mirror refresh_today's re-fetch pattern)
+        generated = False
         daily = await self.repository.get_daily(user_id, today)
         if daily is None:
             from app.application.recommendations.generator import RecommendationGenerator
@@ -127,6 +132,7 @@ class FirstOutfitGate:
             )
             # Re-fetch so outfits + items are eager-loaded (avoids MissingGreenlet)
             daily = await self.repository.get_daily(user_id, today)
+            generated = True
 
         # Step 3 — derive state from generation result
         if daily is None or daily.status != RecommendationStatus.READY.value:
@@ -136,6 +142,7 @@ class FirstOutfitGate:
                 missing_slots=[],
                 first_outfit=None,
                 gate_failures=["engine_insufficient"],
+                generated=generated,
             )
 
         outfits = list(daily.outfits)
@@ -148,6 +155,7 @@ class FirstOutfitGate:
                 missing_slots=[],
                 first_outfit=None,
                 gate_failures=["engine_insufficient"],
+                generated=generated,
             )
 
         state: GateState = "single_outfit" if n == 1 else "ready"
@@ -187,4 +195,5 @@ class FirstOutfitGate:
             missing_slots=[],
             first_outfit=first_outfit,
             gate_failures=gate_failures,
+            generated=generated,
         )
