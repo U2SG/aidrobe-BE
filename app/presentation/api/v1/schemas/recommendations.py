@@ -190,3 +190,11 @@ class FeedbackTagResponse(BaseModel):
 class FeedbackTagsResponse(BaseModel):
     scene: str | None = None
     tags: list[FeedbackTagResponse]
+
+
+class FirstOutfitGateResponse(BaseModel):
+    state: Literal["no_outfit", "single_outfit", "ready"]
+    feasible_outfit_count: int
+    missing_slots: list[str]
+    first_outfit: OutfitResponse | None
+    gate_failures: list[str]

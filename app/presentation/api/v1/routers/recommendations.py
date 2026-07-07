@@ -59,6 +59,7 @@ from app.presentation.api.v1.schemas.recommendations import (
     FeedbackResponse,
     FeedbackTagResponse,
     FeedbackTagsResponse,
+    FirstOutfitGateResponse,
     ObstacleResponse,
     OutfitHistoryItemResponse,
     OutfitHistoryResponse,
@@ -428,6 +429,63 @@ def _select_outfits_for_scene(outfits: list[Outfit], scene: str | None) -> list[
 def _seconds_until_utc_day_end(now: datetime) -> int:
     end_of_day = datetime.combine(now.date(), time(23, 59, 59), tzinfo=UTC)
     return max(1, int((end_of_day - now).total_seconds()))
+
+
+@router.get("/first-outfit", response_model=ResponseModel[FirstOutfitGateResponse])
+async def get_first_outfit_gate(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[Redis, Depends(get_redis_client)],
+) -> ResponseModel[FirstOutfitGateResponse]:
+    """Cold-start feasibility gate.
+
+    Returns a structured verdict that tells the FE whether the user has enough
+    wardrobe to show an outfit. The gate result itself is not cached (called
+    once on FE V2 activation, cheap DB hit).
+    """
+    from app.application.recommendations.first_outfit_gate import FirstOutfitGate
+
+    today = datetime.now(UTC).date()
+
+    repository = SqlAlchemyRecommendationRepository(session)
+    result = await FirstOutfitGate(repository).execute(current_user.id, today)
+
+    if result.generated:
+        # The gate just wrote today's daily. Any /today payload cached earlier
+        # (e.g. insufficient_items) would contradict the gate until end of day —
+        # drop every scene variant of the key (mirrors refresh_today).
+        user_settings = await SqlAlchemyUserRepository(session).get_or_create_settings(
+            current_user.id
+        )
+        for scene_variant in (None, "commute", "formal", "casual"):
+            stale_key = build_daily_recommendation_cache_key(
+                current_user.id,
+                today,
+                user_settings.departure_time,
+                scene_variant,
+                reasoning=get_settings().ENABLE_TODAY_REASONING,
+                vision_style=get_settings().ENABLE_VISION_STYLE_LEARNING,
+            )
+            try:
+                await redis_client.delete(stale_key)
+            except RedisError:
+                logger.warning(
+                    "first_outfit_cache_invalidate_failed", user_id=str(current_user.id)
+                )
+
+    first_outfit_response: OutfitResponse | None = None
+    if result.first_outfit is not None:
+        first_outfit_response = outfit_response(result.first_outfit)
+
+    return ResponseModel(
+        data=FirstOutfitGateResponse(
+            state=result.state,
+            feasible_outfit_count=result.feasible_outfit_count,
+            missing_slots=result.missing_slots,
+            first_outfit=first_outfit_response,
+            gate_failures=result.gate_failures,
+        )
+    )
 
 
 @router.get("/today", response_model=ResponseModel[TodayRecommendationResponse])
