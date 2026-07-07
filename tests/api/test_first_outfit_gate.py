@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.recommendations.first_outfit_gate import missing_core_slots
 from app.application.recommendations.generator import RecommendationGenerator
-from app.common.enums import Category, ItemStatus
+from app.common.enums import ItemStatus
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -24,7 +24,6 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import recommendations as recommendations_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
-
 
 # ---------------------------------------------------------------------------
 # App factory (mirrors test_recommendations_today.py)
@@ -269,14 +268,13 @@ async def test_state_derivation_n1_and_n2(n_outfits_hint: int, db_session: Async
     derivation function in isolation by patching the repository to return a
     synthetic DailyRecommendation with n Outfit rows.
     """
-    import dataclasses
     from datetime import UTC, datetime
     from decimal import Decimal
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import AsyncMock
 
-    from app.application.recommendations.first_outfit_gate import FirstOutfitGate, FirstOutfitGateResult
+    from app.application.recommendations.first_outfit_gate import FirstOutfitGate
     from app.common.enums import RecommendationStatus
-    from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit, OutfitItem
+    from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit
 
     user_id = uuid.uuid4()
     today = date.today()

@@ -15,12 +15,11 @@ from typing import Literal
 from sqlalchemy import select
 
 from app.common.enums import RecommendationStatus
-from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit
+from app.infrastructure.persistence.models.recommendation import Outfit
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
-
 
 GateState = Literal["no_outfit", "single_outfit", "ready"]
 
