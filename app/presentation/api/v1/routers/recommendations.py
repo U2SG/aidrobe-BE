@@ -59,6 +59,7 @@ from app.presentation.api.v1.schemas.recommendations import (
     FeedbackResponse,
     FeedbackTagResponse,
     FeedbackTagsResponse,
+    FirstOutfitGateResponse,
     ObstacleResponse,
     OutfitHistoryItemResponse,
     OutfitHistoryResponse,
@@ -428,6 +429,40 @@ def _select_outfits_for_scene(outfits: list[Outfit], scene: str | None) -> list[
 def _seconds_until_utc_day_end(now: datetime) -> int:
     end_of_day = datetime.combine(now.date(), time(23, 59, 59), tzinfo=UTC)
     return max(1, int((end_of_day - now).total_seconds()))
+
+
+@router.get("/first-outfit", response_model=ResponseModel[FirstOutfitGateResponse])
+async def get_first_outfit_gate(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[FirstOutfitGateResponse]:
+    """Cold-start feasibility gate.
+
+    Returns a structured verdict that tells the FE whether the user has enough
+    wardrobe to show an outfit. Does not require Redis — result is not cached
+    because it is called once on FE V2 activation and is cheap enough to hit
+    the DB directly.
+    """
+    from app.application.recommendations.first_outfit_gate import FirstOutfitGate
+
+    today = datetime.now(UTC).date()
+
+    repository = SqlAlchemyRecommendationRepository(session)
+    result = await FirstOutfitGate(repository).execute(current_user.id, today)
+
+    first_outfit_response: OutfitResponse | None = None
+    if result.first_outfit is not None:
+        first_outfit_response = outfit_response(result.first_outfit)
+
+    return ResponseModel(
+        data=FirstOutfitGateResponse(
+            state=result.state,
+            feasible_outfit_count=result.feasible_outfit_count,
+            missing_slots=result.missing_slots,
+            first_outfit=first_outfit_response,
+            gate_failures=result.gate_failures,
+        )
+    )
 
 
 @router.get("/today", response_model=ResponseModel[TodayRecommendationResponse])
