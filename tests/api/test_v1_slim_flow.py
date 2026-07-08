@@ -40,7 +40,9 @@ def build_flow_app(session: AsyncSession) -> FastAPI:
     return app
 
 
-async def add_item(client: AsyncClient, user_id: uuid.UUID, image_url: str) -> str:
+async def add_item(
+    client: AsyncClient, user_id: uuid.UUID, image_url: str, category: str = "top"
+) -> str:
     task_response = await client.post(
         "/v1/import-tasks",
         headers={"X-User-Id": str(user_id)},
@@ -62,7 +64,11 @@ async def add_item(client: AsyncClient, user_id: uuid.UUID, image_url: str) -> s
         headers={"X-User-Id": str(user_id)},
         json={
             "title": candidate.get("title", "Test Item"),
-            "category": candidate.get("category", "top"),
+            # Pin the category explicitly: recognizing a fake image URL is
+            # non-deterministic, and when all three items fell back to "top"
+            # the engine could not compose an outfit and outfits[0] threw
+            # IndexError. A first outfit needs top + bottom + shoes.
+            "category": category,
             "color_main": candidate.get("color_main", "black"),
         },
     )
@@ -87,9 +93,9 @@ async def test_v1_slim_full_flow(db_session: AsyncSession) -> None:
         )
         assert presign.status_code == 200
 
-        await add_item(client, user_id, "https://cdn/shirt.jpg")
-        await add_item(client, user_id, "https://cdn/blue-shirt.jpg")
-        await add_item(client, user_id, "https://cdn/pants.jpg")
+        await add_item(client, user_id, "https://cdn/shirt.jpg", "top")
+        await add_item(client, user_id, "https://cdn/pants.jpg", "bottom")
+        await add_item(client, user_id, "https://cdn/shoes.jpg", "shoes")
 
         today = await client.get("/v1/recommendations/today", headers={"X-User-Id": str(user_id)})
         outfit_id = today.json()["data"]["outfits"][0]["outfit_id"]
