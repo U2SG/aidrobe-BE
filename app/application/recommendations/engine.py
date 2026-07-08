@@ -97,8 +97,9 @@ class EngineOutfit:
     item_ids: list[str]
     score_total: float
     score_breakdown: dict[str, float]
-    # BE#38 — grounded {type, text} reasons; populated for the selected outfits.
-    reasoning: list[dict[str, str]] = field(default_factory=list)
+    # BE#38/#85 — grounded {type, text, source, referenced_item_ids, confidence}
+    # reasons; populated for the selected outfits.
+    reasoning: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -246,6 +247,11 @@ class RecommendationEngine:
                     not in recent_worn_main_item_ids,
                     weather=weather,
                     preferred_colors=preferred_colors,
+                    # BE#85 — pass item ids (parallel to categories/colors/fit_statuses)
+                    # and the freshness-relevant main item so provenance can attach
+                    # specific UUIDs to each reason entry.
+                    item_ids=[i for i in outfit.item_ids if i in item_by_id],
+                    main_item_id=self._main_item(outfit.item_ids, wearable),
                 ),
             )
             for outfit in selected
