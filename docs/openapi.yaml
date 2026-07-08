@@ -3088,6 +3088,65 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/ask/{ask_session_id}/feedback:
+    post:
+      tags:
+      - ask
+      summary: Ask Feedback
+      description: 'BE#86 — record a feedback signal against an Ask session.
+
+
+        Loads the AskSession and enforces ownership (404 on missing or foreign —
+
+        never reveals existence). Writes a RecommendationEvent with source
+
+        "ask_feedback" so the event stream accumulates per-session signals.
+
+        Idempotent: repeated calls append new events (same as Today feedback).'
+      operationId: ask_feedback_v1_ask__ask_session_id__feedback_post
+      parameters:
+      - name: ask_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Ask Session Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeedbackRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeedbackResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AddInspirationRequest:
@@ -3393,6 +3452,16 @@ components:
           anyOf:
           - $ref: '#/components/schemas/AskConversationDeltas'
           - type: 'null'
+        recommendation_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Recommendation Id
+        source_surface:
+          type: string
+          title: Source Surface
+          default: ask
       type: object
       required:
       - ask_session_id

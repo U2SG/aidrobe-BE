@@ -57,6 +57,12 @@ class AskResponse(BaseModel):
     locale: str = "zh-CN"  # effective resolved locale echoed back to the client
     tokens_used: int
     deltas: AskConversationDeltas | None = None
+    # BE#86 — stable identifiers so the client can anchor feedback.
+    # `recommendation_id` equals `ask_session_id` when the answer references
+    # wardrobe items (item_refs non-empty); None for pure-text answers.
+    # `source_surface` is a fixed literal so FE/analytics never guess the origin.
+    recommendation_id: uuid.UUID | None = None
+    source_surface: str = "ask"
 
 
 class AskHistoryItem(BaseModel):
