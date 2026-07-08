@@ -174,6 +174,13 @@ async def test_ask_feedback_happy_path_writes_event(
     assert event.event_metadata["reason_tags"] == ["comfy"]
     # focused_item_id must be carried into the event metadata.
     assert event.event_metadata["focused_item_id"] == str(focus_id)
+    # Cited items land under "item_ids" — the exact key feedback-learning's
+    # _signature() reads — so Ask feedback actually feeds suppression learning.
+    assert event.event_metadata["item_ids"] == [str(focus_id)]
+
+    from app.application.recommendations.feedback_learning import _signature
+
+    assert _signature(event.event_metadata) == frozenset({str(focus_id)})
 
 
 async def test_ask_feedback_on_another_users_session_returns_404(

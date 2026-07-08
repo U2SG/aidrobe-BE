@@ -229,7 +229,11 @@ async def ask_feedback(
             event_metadata={
                 "ask_session_id": str(ask_session_id),
                 "source_surface": "ask",
-                "item_refs": item_refs,
+                # `item_ids` is the key derive_learning_signals()/_signature()
+                # reads to build a suppression signature — Today feedback uses
+                # the same key. Use it (not a bespoke "item_refs") so Ask dislikes
+                # actually feed feedback-learning instead of being dead records.
+                "item_ids": item_refs,
                 "focused_item_id": focused_item_id,
                 "reason_tags": payload.reason_tags,
                 "conversation_id": conversation_id,
