@@ -9,6 +9,7 @@ regardless of the flag so flipping it back is a clean rollback.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -20,9 +21,15 @@ from app.application.ask.answer_question import ItemRefSnapshot, build_item_ref_
 from app.application.ports.llm import LlmPort
 from app.bootstrap.container import llm_service
 from app.common import error_codes
+from app.common.enums import FeedbackType, RecommendationEventType
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
+from app.infrastructure.persistence.models.ask_session import AskSession
+from app.infrastructure.persistence.models.recommendation import RecommendationEvent
 from app.infrastructure.persistence.models.user import User, UserSettings
+from app.infrastructure.persistence.repositories.recommendation_repo import (
+    SqlAlchemyRecommendationRepository,
+)
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url
@@ -33,6 +40,16 @@ from app.presentation.api.v1.schemas.ask import (
     AskRequest,
     AskResponse,
 )
+from app.presentation.api.v1.schemas.recommendations import FeedbackRequest, FeedbackResponse
+
+# BE#86 — mirrors FeedbackOutfit._FEEDBACK_EVENT_MAP; kept local so the ask
+# router has no import dependency on the outfit feedback use case.
+_ASK_FEEDBACK_EVENT_MAP = {
+    FeedbackType.LOVE.value: RecommendationEventType.LIKED.value,
+    FeedbackType.LIKE.value: RecommendationEventType.LIKED.value,
+    FeedbackType.NEUTRAL.value: RecommendationEventType.NEUTRAL.value,
+    FeedbackType.DISLIKE.value: RecommendationEventType.DISLIKED.value,
+}
 
 router = APIRouter(prefix="/v1/ask", tags=["ask"])
 
@@ -90,6 +107,10 @@ async def ask(
         locale=result.effective_locale,
     )
     expose_conversation = get_settings().ENABLE_ASK_CONVERSATIONS
+    # BE#86 — recommendation_id is set to ask_session_id when the answer
+    # references wardrobe items, giving the client a stable anchor for feedback.
+    # Pure-text answers (no cited items) leave it None.
+    recommendation_id = result.ask_session_id if result.item_refs else None
     return AskResponse(
         ask_session_id=result.ask_session_id,
         conversation_id=result.conversation_id if expose_conversation else None,
@@ -107,6 +128,7 @@ async def ask(
             if expose_conversation
             else None
         ),
+        recommendation_id=recommendation_id,
     )
 
 
@@ -161,3 +183,62 @@ async def ask_history(
             )
         )
     return out
+
+
+@router.post("/{ask_session_id}/feedback", response_model=FeedbackResponse)
+async def ask_feedback(
+    ask_session_id: uuid.UUID,
+    payload: FeedbackRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> FeedbackResponse:
+    """BE#86 — record a feedback signal against an Ask session.
+
+    Loads the AskSession and enforces ownership (404 on missing or foreign —
+    never reveals existence). Writes a RecommendationEvent with source
+    "ask_feedback" so the event stream accumulates per-session signals.
+    Idempotent: repeated calls append new events (same as Today feedback).
+    """
+    _gate()
+    ask_session = await session.get(AskSession, ask_session_id)
+    if ask_session is None or ask_session.user_id != current_user.id:
+        raise FriendlyException(error_codes.NOT_FOUND, "Ask session not found", status_code=404)
+
+    event_type = _ASK_FEEDBACK_EVENT_MAP.get(payload.feedback_type)
+    if event_type is None:
+        raise FriendlyException(
+            error_codes.VALIDATION_ERROR, "Invalid feedback type", status_code=422
+        )
+
+    # Extract focused_item_id and conversation_id from the JSONB context blob.
+    ctx = ask_session.context or {}
+    snapshot = ctx.get("snapshot") or {}
+    conversation = ctx.get("conversation") or {}
+    focused_item_id: str | None = snapshot.get("focused_item_id")
+    conversation_id: str | None = conversation.get("conversation_id")
+    item_refs: list[str] = [str(r) for r in (ask_session.item_refs or [])]
+
+    repo = SqlAlchemyRecommendationRepository(session)
+    await repo.add_recommendation_event(
+        RecommendationEvent(
+            user_id=current_user.id,
+            recommendation_id=None,  # ask_session is not a daily_recommendation row
+            outfit_id=None,
+            event_type=event_type,
+            source="ask_feedback",
+            event_metadata={
+                "ask_session_id": str(ask_session_id),
+                "source_surface": "ask",
+                # `item_ids` is the key derive_learning_signals()/_signature()
+                # reads to build a suppression signature — Today feedback uses
+                # the same key. Use it (not a bespoke "item_refs") so Ask dislikes
+                # actually feed feedback-learning instead of being dead records.
+                "item_ids": item_refs,
+                "focused_item_id": focused_item_id,
+                "reason_tags": payload.reason_tags,
+                "conversation_id": conversation_id,
+            },
+            created_at=datetime.now(UTC),
+        )
+    )
+    return FeedbackResponse(success=True)
