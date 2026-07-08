@@ -89,8 +89,10 @@ class Outfit(UUIDPrimaryKeyMixin, Base):
     score_rules_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
     obstacles_json: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
     prep_json: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
-    # BE#38 — grounded reasoning: a JSON array of {"type": ..., "text": ...}.
-    reasoning_json: Mapped[list[dict[str, str]] | None] = mapped_column(JSONB, nullable=True)
+    # BE#38/#85 — grounded reasoning: a JSON array of {type, text, source,
+    # referenced_item_ids, confidence}. Old rows only have type/text; new rows
+    # carry all five fields. JSONB stores both transparently.
+    reasoning_json: Mapped[list[JsonDict] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     daily_recommendation: Mapped[DailyRecommendation] = relationship(back_populates="outfits")

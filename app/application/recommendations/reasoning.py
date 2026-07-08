@@ -1,16 +1,44 @@
-"""BE#38 — grounded recommendation reasoning.
+"""BE#38/#85 — grounded recommendation reasoning.
 
-Builds the structured `reasoning: [{type, text}]` layer for a Today outfit from
-REAL signals the engine already computed (weather, freshness/recent-wear, color
-vs. learned style, category balance, fit). Deterministic on purpose: it can only
-state facts derived from the inputs, so it never invents "fake specificity"
-(BE#38's explicit warning) the way a free-form LLM might. The LLM continues to
-phrase the short `reason_text`; this layer is the trustworthy explanation.
+Builds the structured `reasoning: [{type, text, source, referenced_item_ids,
+confidence}]` layer for a Today outfit from REAL signals the engine already
+computed (weather, freshness/recent-wear, color vs. learned style, category
+balance, fit). Deterministic on purpose: it can only state facts derived from
+the inputs, so it never invents "fake specificity" (BE#38's explicit warning)
+the way a free-form LLM might. The LLM continues to phrase the short
+`reason_text`; this layer is the trustworthy explanation.
 
 Takes primitives (not EngineItem) to stay import-cycle-free with `engine`.
+
+---
+BE#85 — Source provenance + confidence rubric
+=============================================
+Internal type → FE source enum mapping:
+  weather (cold+outerwear, warm, rain+dark-shoes) → weather_rule, high
+  weather (neutral / temp-ok)                     → weather_rule, medium
+  wear_history (freshness)                         → wardrobe_history, high
+  style_match (learned palette overlap)            → preference_memory, medium
+  category (dress / top+bottom)                    → style_memory, high
+  fit                                              → wardrobe_history, high
+  floor fillers (no real signal)                   → closest source, medium
+
+Confidence rubric (applies here only — not the engine score):
+  high   = rule-derived, one-to-one provenance (fact is true or not)
+  medium = statistical / heuristic / secondary inference
+  low    = LLM-authored (not emitted by this deterministic layer)
+
+referenced_item_ids: list of item UUIDs that directly drove the entry.
+  Only attached when the reason is about specific item(s). Never padded.
+  Whole-look reasons (e.g., category balance) → [].
+
+Sources NOT emitted by this layer:
+  indoor_climate_inference — no inference path yet
+  llm                     — reason_text is LLM-authored; this layer is not
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from app.application.ports.weather import WeatherInfo
 from app.common.enums import Category
@@ -28,6 +56,23 @@ CATEGORY = "category"
 FIT = "fit"
 
 
+def _entry(
+    type_: str,
+    text: str,
+    source: str,
+    confidence: str,
+    referenced_item_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Construct a single reasoning entry with all BE#85 provenance fields."""
+    return {
+        "type": type_,
+        "text": text,
+        "source": source,
+        "confidence": confidence,
+        "referenced_item_ids": referenced_item_ids or [],
+    }
+
+
 def build_reasoning(
     *,
     categories: list[str],
@@ -36,22 +81,69 @@ def build_reasoning(
     is_fresh: bool,
     weather: WeatherInfo | None,
     preferred_colors: set[str] | None = None,
+    item_ids: list[str] | None = None,
+    main_item_id: str | None = None,
     max_items: int = 4,
-) -> list[dict[str, str]]:
-    """Return 2–4 grounded {type, text} reasons (Chinese). Order = priority;
-    weather first when present. Every item is backed by an input fact."""
+) -> list[dict[str, Any]]:
+    """Return 2–4 grounded reasons (Chinese) with source provenance (BE#85).
+
+    Each entry: {type, text, source, referenced_item_ids, confidence}.
+    Order = priority; weather first when present. Every item is backed by an
+    input fact — no fabrication.
+
+    item_ids and categories/colors/fit_statuses are parallel lists (same index
+    = same item). main_item_id is the freshness-relevant item (top or dress).
+    Both default to None for callers that pre-date BE#85.
+    """
     cats = set(categories)
-    reasons: list[dict[str, str]] = []
+    reasons: list[dict[str, Any]] = []
+    ids = item_ids or []
+
+    # Build per-category item-id index for targeted referenced_item_ids.
+    shoe_ids = [
+        ids[i]
+        for i, cat in enumerate(categories)
+        if cat == Category.SHOES.value and i < len(ids)
+    ]
+    outerwear_ids = [
+        ids[i]
+        for i, cat in enumerate(categories)
+        if cat == Category.OUTERWEAR.value and i < len(ids)
+    ]
+    fits_well_ids = [
+        ids[i]
+        for i, status in enumerate(fit_statuses)
+        if status == "fits_well" and i < len(ids)
+    ]
 
     # 1. Weather — only claims that match the actual outfit + forecast.
     if weather is not None:
         has_outer = Category.OUTERWEAR.value in cats
         if weather.temperature_c < _COLD_C and has_outer:
-            reasons.append({"type": WEATHER, "text": "今天气温偏低，这件外层能压住寒意"})
+            # Rule: cold + outerwear present → warmth claim, cite the outerwear.
+            reasons.append(_entry(
+                WEATHER,
+                "今天气温偏低，这件外层能压住寒意",
+                source="weather_rule",
+                confidence="high",
+                referenced_item_ids=outerwear_ids,
+            ))
         elif weather.temperature_c >= _WARM_C:
-            reasons.append({"type": WEATHER, "text": "今天偏暖，这身轻薄透气更舒服"})
+            # Rule: warm day, whole-look claim — no specific item.
+            reasons.append(_entry(
+                WEATHER,
+                "今天偏暖，这身轻薄透气更舒服",
+                source="weather_rule",
+                confidence="high",
+            ))
         elif weather.temperature_c >= _COLD_C:
-            reasons.append({"type": WEATHER, "text": "今天气温适中，整体好驾驭"})
+            # Heuristic: neutral temperature — moderate confidence.
+            reasons.append(_entry(
+                WEATHER,
+                "今天气温适中，整体好驾驭",
+                source="weather_rule",
+                confidence="medium",
+            ))
         shoe_colors = [
             col.lower()
             for cat, col in zip(categories, colors, strict=False)
@@ -63,42 +155,95 @@ def build_reasoning(
             and not any(c in _LIGHT_SHOE_COLORS for c in shoe_colors)
         ):
             # Only when the outfit actually has dark shoes — don't invent a shoe
-            # claim for a shoeless look.
-            reasons.append({"type": WEATHER, "text": "今天可能有雨，这双深色鞋面更耐脏好打理"})
+            # claim for a shoeless look. Cite the specific shoe item(s).
+            reasons.append(_entry(
+                WEATHER,
+                "今天可能有雨，这双深色鞋面更耐脏好打理",
+                source="weather_rule",
+                confidence="high",
+                referenced_item_ids=shoe_ids,
+            ))
 
     # 2. Freshness — the main piece hasn't been worn recently.
     if is_fresh:
-        reasons.append({"type": WEAR_HISTORY, "text": "这件你最近没怎么穿，换个新鲜感"})
+        reasons.append(_entry(
+            WEAR_HISTORY,
+            "这件你最近没怎么穿，换个新鲜感",
+            source="wardrobe_history",
+            confidence="high",
+            referenced_item_ids=[main_item_id] if main_item_id else [],
+        ))
 
     # 3. Style match — colors overlap the user's learned palette.
     if preferred_colors:
         overlap = [c for c in colors if c in preferred_colors]
         if overlap:
-            reasons.append({"type": STYLE_MATCH, "text": "配色贴合你平时常穿的风格"})
+            # Statistical: learned from wear history, not a hard rule.
+            reasons.append(_entry(
+                STYLE_MATCH,
+                "配色贴合你平时常穿的风格",
+                source="preference_memory",
+                confidence="medium",
+            ))
 
     # 4. Category balance — a complete, sensible silhouette.
     if Category.DRESS.value in cats:
-        reasons.append({"type": CATEGORY, "text": "一条连衣裙省心又利落"})
+        reasons.append(_entry(
+            CATEGORY,
+            "一条连衣裙省心又利落",
+            source="style_memory",
+            confidence="high",
+        ))
     elif Category.TOP.value in cats and Category.BOTTOM.value in cats:
-        reasons.append({"type": CATEGORY, "text": "上下身比例均衡，是稳妥的组合"})
+        reasons.append(_entry(
+            CATEGORY,
+            "上下身比例均衡，是稳妥的组合",
+            source="style_memory",
+            confidence="high",
+        ))
 
     # 5. Fit — phrased for the confirmed piece(s) only; never claim the whole
     # outfit fits when only some items are confirmed (the rest are unknown).
+    # Source: wardrobe_history (closest — based on wear + fit log, not a
+    # separate enum slot). Confidence high: per-item fit status is factual.
     if all(status == "fits_well" for status in fit_statuses) and fit_statuses:
-        reasons.append({"type": FIT, "text": "这些单品你穿着都合身"})
+        reasons.append(_entry(
+            FIT,
+            "这些单品你穿着都合身",
+            source="wardrobe_history",
+            confidence="high",
+            referenced_item_ids=fits_well_ids,
+        ))
     elif any(status == "fits_well" for status in fit_statuses):
-        reasons.append({"type": FIT, "text": "其中有确认合身的单品"})
+        reasons.append(_entry(
+            FIT,
+            "其中有确认合身的单品",
+            source="wardrobe_history",
+            confidence="high",
+            referenced_item_ids=fits_well_ids,
+        ))
 
     # Floor: always give at least two grounded reasons. The category/color facts
     # below are true of any non-empty combo, so they never fabricate.
+    # These are floor fillers — medium confidence (no strong signal, just facts).
     if len(reasons) < 2 and colors:
-        reasons.append({"type": STYLE_MATCH, "text": f"以 {colors[0]} 为主色，整体协调"})
+        reasons.append(_entry(
+            STYLE_MATCH,
+            f"以 {colors[0]} 为主色，整体协调",
+            source="preference_memory",
+            confidence="medium",
+        ))
     if len(reasons) < 2:
-        reasons.append({"type": CATEGORY, "text": "根据你的衣橱为今天挑选"})
+        reasons.append(_entry(
+            CATEGORY,
+            "根据你的衣橱为今天挑选",
+            source="style_memory",
+            confidence="medium",
+        ))
 
     # De-dup by text (weather can add two; keep order) and cap.
     seen: set[str] = set()
-    deduped: list[dict[str, str]] = []
+    deduped: list[dict[str, Any]] = []
     for reason in reasons:
         if reason["text"] not in seen:
             seen.add(reason["text"])

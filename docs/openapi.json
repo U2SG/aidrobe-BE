@@ -1300,6 +1300,72 @@
         }
       }
     },
+    "/v1/recommendations/first-outfit": {
+      "get": {
+        "tags": [
+          "recommendations"
+        ],
+        "summary": "Get First Outfit Gate",
+        "description": "Cold-start feasibility gate.\n\nReturns a structured verdict that tells the FE whether the user has enough\nwardrobe to show an outfit. The gate result itself is not cached (called\nonce on FE V2 activation, cheap DB hit).",
+        "operationId": "get_first_outfit_gate_v1_recommendations_first_outfit_get",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_FirstOutfitGateResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/recommendations/today": {
       "get": {
         "tags": [
@@ -6790,6 +6856,56 @@
         ],
         "title": "FeedbackTagsResponse"
       },
+      "FirstOutfitGateResponse": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "no_outfit",
+              "single_outfit",
+              "ready"
+            ],
+            "title": "State"
+          },
+          "feasible_outfit_count": {
+            "type": "integer",
+            "title": "Feasible Outfit Count"
+          },
+          "missing_slots": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Slots"
+          },
+          "first_outfit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutfitResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "gate_failures": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Gate Failures"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state",
+          "feasible_outfit_count",
+          "missing_slots",
+          "first_outfit",
+          "gate_failures"
+        ],
+        "title": "FirstOutfitGateResponse"
+      },
       "FitFeedbackBundleItem": {
         "properties": {
           "item_id": {
@@ -8324,6 +8440,35 @@
           "text": {
             "type": "string",
             "title": "Text"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "referenced_item_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Referenced Item Ids"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
           }
         },
         "type": "object",
@@ -8332,7 +8477,7 @@
           "text"
         ],
         "title": "ReasoningItem",
-        "description": "BE#38 — one grounded reason. `type` keys the FE rendering\n(weather / wear_history / style_match / category / fit)."
+        "description": "BE#38/#85 — one grounded reason with source provenance.\n\n`type` keys FE rendering (weather / wear_history / style_match / category / fit).\n`source` maps to the FE source enum:\n  weather_rule / wardrobe_history / preference_memory / style_memory /\n  indoor_climate_inference / llm.\n`referenced_item_ids` — item UUIDs that directly drove this entry (may be\n  empty for whole-look reasons).\n`confidence` — high (rule-derived) | medium (heuristic/statistical) |\n  low (llm-authored).\n\nOld persisted rows (pre-BE#85) lack source/referenced_item_ids/confidence;\nmissing keys default to None / [] so legacy dailies never 500."
       },
       "RecommendationItemResponse": {
         "properties": {
@@ -9021,6 +9166,32 @@
         },
         "type": "object",
         "title": "ResponseModel[FeedbackTagsResponse]"
+      },
+      "ResponseModel_FirstOutfitGateResponse_": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FirstOutfitGateResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ResponseModel[FirstOutfitGateResponse]"
       },
       "ResponseModel_FitFeedbackResponse_": {
         "properties": {

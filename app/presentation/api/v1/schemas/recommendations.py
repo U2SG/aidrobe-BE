@@ -41,11 +41,27 @@ class ObstacleResponse(BaseModel):
 
 
 class ReasoningItem(BaseModel):
-    """BE#38 — one grounded reason. `type` keys the FE rendering
-    (weather / wear_history / style_match / category / fit)."""
+    """BE#38/#85 — one grounded reason with source provenance.
+
+    `type` keys FE rendering (weather / wear_history / style_match / category / fit).
+    `source` maps to the FE source enum:
+      weather_rule / wardrobe_history / preference_memory / style_memory /
+      indoor_climate_inference / llm.
+    `referenced_item_ids` — item UUIDs that directly drove this entry (may be
+      empty for whole-look reasons).
+    `confidence` — high (rule-derived) | medium (heuristic/statistical) |
+      low (llm-authored).
+
+    Old persisted rows (pre-BE#85) lack source/referenced_item_ids/confidence;
+    missing keys default to None / [] so legacy dailies never 500.
+    """
 
     type: str
     text: str
+    # BE#85 provenance fields — all optional so old rows still parse.
+    source: str | None = None
+    referenced_item_ids: list[str] = Field(default_factory=list)
+    confidence: str | None = None
 
     model_config = {"extra": "ignore"}
 
