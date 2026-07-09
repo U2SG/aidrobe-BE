@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.session import get_db_session
+from app.infrastructure.workers.import_worker import process_import_task_with_session
 from app.presentation.api.v1.routers import (
     import_tasks,
     recommendations,
@@ -41,7 +42,11 @@ def build_flow_app(session: AsyncSession) -> FastAPI:
 
 
 async def add_item(
-    client: AsyncClient, user_id: uuid.UUID, image_url: str, category: str = "top"
+    client: AsyncClient,
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    image_url: str,
+    category: str = "top",
 ) -> str:
     task_response = await client.post(
         "/v1/import-tasks",
@@ -49,6 +54,13 @@ async def add_item(
         json={"input_type": "image", "source_type": "camera", "image_url": image_url},
     )
     task = task_response.json()["data"]
+    # Drive import processing synchronously on the injected session. In-request the
+    # queued -> waiting_confirm transition runs via a Starlette background task that
+    # only fires after the response is sent; the poll loop's asyncio.sleep(0) can't
+    # guarantee it finishes before confirm, so confirm would 409 and the item is
+    # never created (flaky empty /today -> outfits[0] IndexError). Awaiting the
+    # worker directly makes the flow deterministic without touching production code.
+    await process_import_task_with_session(session, uuid.UUID(task["task_id"]), user_id)
     for _ in range(20):
         poll = await client.get(
             f"/v1/import-tasks/{task['task_id']}",
@@ -93,9 +105,9 @@ async def test_v1_slim_full_flow(db_session: AsyncSession) -> None:
         )
         assert presign.status_code == 200
 
-        await add_item(client, user_id, "https://cdn/shirt.jpg", "top")
-        await add_item(client, user_id, "https://cdn/pants.jpg", "bottom")
-        await add_item(client, user_id, "https://cdn/shoes.jpg", "shoes")
+        await add_item(client, db_session, user_id, "https://cdn/shirt.jpg", "top")
+        await add_item(client, db_session, user_id, "https://cdn/pants.jpg", "bottom")
+        await add_item(client, db_session, user_id, "https://cdn/shoes.jpg", "shoes")
 
         today = await client.get("/v1/recommendations/today", headers={"X-User-Id": str(user_id)})
         outfit_id = today.json()["data"]["outfits"][0]["outfit_id"]
