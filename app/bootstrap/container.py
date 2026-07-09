@@ -30,6 +30,7 @@ from app.infrastructure.weather.openweather import OpenWeatherProvider
 from app.infrastructure.weather.qweather import QWeatherProvider
 
 _vision_rate_limiter: InMemoryVisionRateLimiter | None = None
+_object_storage_singleton: "LocalObjectStorage | S3ObjectStorage | None" = None
 
 
 def user_repository(session: AsyncSession) -> SqlAlchemyUserRepository:
@@ -37,6 +38,15 @@ def user_repository(session: AsyncSession) -> SqlAlchemyUserRepository:
 
 
 def object_storage() -> LocalObjectStorage | S3ObjectStorage:
+    # Cache the adapter: each build creates boto3 client(s) (+ botocore model
+    # load), which made every /presign rebuild the client and cost seconds.
+    global _object_storage_singleton
+    if _object_storage_singleton is None:
+        _object_storage_singleton = _build_object_storage()
+    return _object_storage_singleton
+
+
+def _build_object_storage() -> LocalObjectStorage | S3ObjectStorage:
     settings = get_settings()
     if settings.STORAGE_PROVIDER == "local":
         return LocalObjectStorage(

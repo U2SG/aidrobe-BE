@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     S3_ACCESS_KEY_ID: str | None = None
     S3_SECRET_ACCESS_KEY: str | None = None
     S3_PUBLIC_BASE_URL: str | None = None
+    # Endpoint the CLIENT reaches for direct upload. Presigned upload URLs are
+    # signed against THIS host, so it must be client-reachable (LAN / Tailscale
+    # address), not the in-cluster service name used for server-side put/get
+    # (S3_ENDPOINT_URL). Falls back to S3_ENDPOINT_URL when unset.
+    S3_UPLOAD_ENDPOINT_URL: str | None = None
     S3_PRESIGN_EXPIRES_SECONDS: int = 900
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: Literal["json", "console"] = "console"

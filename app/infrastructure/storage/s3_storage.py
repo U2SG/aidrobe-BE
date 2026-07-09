@@ -20,6 +20,23 @@ class S3ObjectStorage:
             aws_access_key_id=settings.S3_ACCESS_KEY_ID,
             aws_secret_access_key=settings.S3_SECRET_ACCESS_KEY,
         )
+        # Presigned UPLOAD urls must be signed against a client-reachable host.
+        # Server put/get uses the internal endpoint (e.g. minio:9000), but the
+        # client (device over Tailscale) can't resolve that — so sign uploads
+        # against S3_UPLOAD_ENDPOINT_URL when set. Signing is local (no network),
+        # so the extra client is cheap.
+        upload_endpoint = settings.S3_UPLOAD_ENDPOINT_URL or settings.S3_ENDPOINT_URL
+        self.upload_client = (
+            self.client
+            if upload_endpoint == settings.S3_ENDPOINT_URL
+            else boto3.client(
+                "s3",
+                endpoint_url=upload_endpoint,
+                region_name=settings.S3_REGION,
+                aws_access_key_id=settings.S3_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.S3_SECRET_ACCESS_KEY,
+            )
+        )
 
     async def create_presigned_upload(
         self,
@@ -29,7 +46,7 @@ class S3ObjectStorage:
     ) -> PresignResult:
         safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", file_name).strip("._") or "upload"
         object_key = f"wardrobe/{uuid.uuid4()}/{safe_name}"
-        presigned = self.client.generate_presigned_post(
+        presigned = self.upload_client.generate_presigned_post(
             self.bucket,
             object_key,
             Fields={"Content-Type": content_type},

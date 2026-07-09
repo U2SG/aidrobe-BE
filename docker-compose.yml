@@ -13,6 +13,10 @@ services:
       # S3_PUBLIC_BASE_URL in .env (e.g. a Tailscale IP) for device testing.
       # Was hardcoded to localhost, which broke on-device images on recreate.
       S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-http://localhost:9000/aidrobe}
+      # Endpoint presigned UPLOAD urls are signed against — must be client-
+      # reachable (device can't resolve the internal `minio` name). Set
+      # S3_UPLOAD_ENDPOINT_URL in .env to the same host as S3_PUBLIC_BASE_URL.
+      S3_UPLOAD_ENDPOINT_URL: ${S3_UPLOAD_ENDPOINT_URL:-http://localhost:9000}
     depends_on:
       postgres:
         condition: service_healthy
