@@ -523,6 +523,46 @@ async def get_today_recommendation(
     had_cache = await repository.get_daily(current_user.id, today) is not None
     use_case = GetTodayRecommendation(repository)
     daily = await use_case.execute(current_user.id, today)
+    # TEMP DIAG (#97) — remove after root-causing the CI empty-outfits read.
+    try:
+        from sqlalchemy import func as _f
+        from sqlalchemy import select as _s
+
+        from app.infrastructure.persistence.models.recommendation import (
+            DailyRecommendation as _D,
+        )
+        from app.infrastructure.persistence.models.recommendation import Outfit as _O
+
+        _total = await session.scalar(
+            _s(_f.count()).select_from(_D).where(
+                _D.user_id == current_user.id, _D.recommendation_date == today
+            )
+        )
+        _cur = await session.scalar(
+            _s(_f.count()).select_from(_D).where(
+                _D.user_id == current_user.id,
+                _D.recommendation_date == today,
+                _D.is_current.is_(True),
+            )
+        )
+        _db_outfits = (
+            await session.scalar(
+                _s(_f.count()).select_from(_O).where(_O.daily_recommendation_id == daily.id)
+            )
+            if daily.id is not None
+            else -1
+        )
+        logger.warning(
+            "DIAG_today_97",
+            daily_id=str(daily.id),
+            status=daily.status,
+            loaded_outfits=len(daily.outfits),
+            total_daily_rows=_total,
+            current_daily_rows=_cur,
+            db_outfit_count=_db_outfits,
+        )
+    except Exception as _e:  # pragma: no cover
+        logger.warning("DIAG_today_97_failed", error=str(_e))
     await SqlAlchemyOperationLogRepository(session).add(
         current_user.id,
         "app_open",
