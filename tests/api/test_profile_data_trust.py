@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.enums import Category, ItemStatus
 from app.config.settings import Settings, get_settings
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.audit_log import AuditLog
 from app.infrastructure.persistence.models.preference_memory import UserPreferenceMemory
 from app.infrastructure.persistence.models.user import User, UserSettings
@@ -172,13 +173,23 @@ async def test_clear_all_data_keeps_account_and_audit(
             status=ItemStatus.WEARABLE.value,
         )
     )
+    # async_jobs has user_id WITHOUT an FK — must still be wiped (a stale
+    # data-export job would presign the pre-clear bundle).
+    db_session.add(
+        AsyncJob(
+            job_type="user_export",
+            idempotency_key=f"user_export:{user_id}",
+            user_id=user_id,
+            result={"object_key": "exports/old-bundle.zip"},
+        )
+    )
     await db_session.flush()
     await _seed_pref(db_session, user_id, "不喜欢亮色")
 
     async with _client(db_session) as client:
         resp = await client.delete("/v1/profile/data", headers={"X-User-Id": str(user_id)})
     assert resp.status_code == 200
-    assert resp.json()["data"]["cleared_rows"] >= 3  # settings + item + preference
+    assert resp.json()["data"]["cleared_rows"] >= 4  # settings + item + preference + job
 
     async def _count(model, column) -> int:
         return await db_session.scalar(
@@ -188,6 +199,7 @@ async def test_clear_all_data_keeps_account_and_audit(
     assert await _count(WardrobeItem, WardrobeItem.user_id) == 0
     assert await _count(UserSettings, UserSettings.user_id) == 0
     assert await _count(UserPreferenceMemory, UserPreferenceMemory.user_id) == 0
+    assert await _count(AsyncJob, AsyncJob.user_id) == 0
     # Account survives; the audit trail records the action.
     assert await db_session.get(User, user_id) is not None
     actions = set(

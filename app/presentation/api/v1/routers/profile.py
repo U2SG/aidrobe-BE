@@ -17,6 +17,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application import audit
@@ -25,6 +26,10 @@ from app.application.users.clear_data import clear_user_data
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
+from app.infrastructure.cache.client import (
+    get_redis_client,
+    invalidate_daily_recommendation_cache,
+)
 from app.infrastructure.persistence.models.preference_memory import UserPreferenceMemory
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.repositories.preference_memory_repo import (
@@ -194,12 +199,17 @@ async def clear_learned_memory(
 async def clear_all_app_data(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[Redis, Depends(get_redis_client)],
 ) -> ResponseModel[ClearDataResponse]:
     """BE#83 — clear ALL app data (wardrobe, history, events, learned memory,
     style data, settings) while preserving the account. Real deletion, audited;
     the audit trail itself survives (audit_log has no users FK by design)."""
     _require_data_trust()
     cleared = await clear_user_data(session, current_user.id)
+    # The /today response is Redis-cached until UTC day end; without this the
+    # next GET would replay the PRE-clear outfits after we told the user their
+    # data was cleared.
+    await invalidate_daily_recommendation_cache(redis_client, current_user.id)
     await audit.record(
         session,
         actor="user",

@@ -25,6 +25,7 @@ from sqlalchemy import delete
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.base import Base
 
 logger = structlog.get_logger(__name__)
@@ -60,5 +61,23 @@ async def clear_user_data(session: AsyncSession, user_id: uuid.UUID) -> int:
                     rows=deleted,
                 )
             total += deleted
+    # async_jobs carries user_id WITHOUT an FK (job rows outlive normal FK
+    # semantics), so the FK scan above skips it — but a completed data-export
+    # job would still let /me/data-export/{job_id} presign the PRE-clear bundle.
+    # audit_log is the only other FK-less user_id table and is preserved by
+    # design (the trail must survive).
+    result = cast(
+        CursorResult[Any],
+        await session.execute(delete(AsyncJob).where(AsyncJob.user_id == user_id)),
+    )
+    jobs_deleted = int(result.rowcount or 0)
+    if jobs_deleted:
+        logger.info(
+            "user_data_cleared.table",
+            user_id=str(user_id),
+            table="async_jobs",
+            rows=jobs_deleted,
+        )
+    total += jobs_deleted
     await session.flush()
     return total
