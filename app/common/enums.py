@@ -82,6 +82,15 @@ class RecommendationEventType(StrEnum):
     SHARED = "shared"
     DELETED = "deleted"
     IMPRESSION = "impression"
+    # BE#81 — passive-learning signals emitted by V2 (no daily "穿了" button).
+    OUTFIT_IMPRESSION = "outfit_impression"
+    OUTFIT_SWAPPED = "outfit_swapped"
+    OUTFIT_DISLIKED = "outfit_disliked"
+    CONTEXT_OVERRIDE_SUBMITTED = "context_override_submitted"
+    PASSIVE_WEAR_PROMPT_ANSWERED = "passive_wear_prompt_answered"
+    RESURFACE_INSIGHT_VIEWED = "resurface_insight_viewed"
+    RESURFACE_ITEM_OPENED = "resurface_item_opened"
+    TEMPERATURE_MISMATCH_REPORTED = "temperature_mismatch_reported"
 
 
 class FitStatus(StrEnum):

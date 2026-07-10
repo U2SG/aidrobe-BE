@@ -222,8 +222,13 @@ class RecommendationEvent(UUIDPrimaryKeyMixin, Base):
     # No FK on purpose — the event outlives the outfit/item it references.
     outfit_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     item_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
-    event_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
     source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # BE#81 — passive-learning ingestion: signal intensity (weak/medium/strong)
+    # and the UI surface it came from (today/ask/wardrobe/profile), for analytics
+    # and confidence-gated inference. Distinct from `source` (e.g. "manual" wear).
+    signal_strength: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    source_surface: Mapped[str | None] = mapped_column(String(16), nullable=True)
     event_metadata: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
