@@ -2,11 +2,11 @@ import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import cast
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.common.enums import ItemStatus
+from app.common.enums import ItemStatus, RecommendationEventType
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
@@ -35,6 +35,44 @@ class SqlAlchemyRecommendationRepository:
             )
         )
         return list(result)
+
+    async def list_forgotten_wearable_items(
+        self, user_id: uuid.UUID, cutoff: date, limit: int = 20
+    ) -> list[WardrobeItem]:
+        """BE#80 — wearable items never worn or not worn since `cutoff`, most
+        forgotten first (nulls = never worn, surfaced first)."""
+        result = await self.session.scalars(
+            select(WardrobeItem)
+            .where(
+                WardrobeItem.user_id == user_id,
+                WardrobeItem.status == ItemStatus.WEARABLE.value,
+                WardrobeItem.fit_status != "no_longer_fits",
+                WardrobeItem.deleted_at.is_(None),
+                or_(
+                    WardrobeItem.last_worn_at.is_(None),
+                    WardrobeItem.last_worn_at < cutoff,
+                ),
+            )
+            .order_by(WardrobeItem.last_worn_at.asc().nulls_first())
+            .limit(limit)
+        )
+        return list(result)
+
+    async def recently_resurfaced_item_ids(
+        self, user_id: uuid.UUID, since: datetime
+    ) -> set[uuid.UUID]:
+        """BE#80 — item ids already surfaced as a resurface insight since `since`
+        (FE emits resurface_insight_viewed), so BE doesn't re-spam the same item."""
+        result = await self.session.scalars(
+            select(RecommendationEvent.item_id).where(
+                RecommendationEvent.user_id == user_id,
+                RecommendationEvent.event_type
+                == RecommendationEventType.RESURFACE_INSIGHT_VIEWED.value,
+                RecommendationEvent.created_at >= since,
+                RecommendationEvent.item_id.is_not(None),
+            )
+        )
+        return {item_id for item_id in result if item_id is not None}
 
     async def recent_worn_main_item_ids(self, user_id: uuid.UUID, target_date: date) -> set[str]:
         since = target_date - timedelta(days=3)

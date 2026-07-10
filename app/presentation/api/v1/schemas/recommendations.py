@@ -131,6 +131,17 @@ class AppliedContextResponse(BaseModel):
     constraints: list[str] = []
 
 
+class ResurfaceInsightResponse(BaseModel):
+    """BE#80 — one lightweight "you haven't worn this in a while, and it fits
+    today" nudge. Absent when there's no genuine candidate (never fabricated)."""
+
+    id: str
+    text: str
+    item_id: UUID
+    reason: str
+    cooldown_key: str
+
+
 class TodayRecommendationResponse(BaseModel):
     recommendation_date: date
     status: str
@@ -139,6 +150,7 @@ class TodayRecommendationResponse(BaseModel):
     style_context: StyleContextResponse | None = None  # V3 M13
     context: TodayContextResponse | None = None  # Phase D — gated by ENABLE_TODAY_CONTEXT
     applied_context: AppliedContextResponse | None = None  # BE#78 — refresh override echo
+    resurface_insight: ResurfaceInsightResponse | None = None  # BE#80 — forgotten-item nudge
 
 
 class WearOutfitRequest(BaseModel):

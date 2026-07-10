@@ -25,6 +25,7 @@ from app.application.recommendations.context_override import resolve_constraints
 from app.application.recommendations.feedback_tags import get_tags_for_scene
 from app.application.recommendations.get_today import GetTodayRecommendation
 from app.application.recommendations.ingest_event import IngestRecommendationEvent
+from app.application.recommendations.resurface_insight import build_resurface_insight
 from app.application.recommendations.style_context import build_style_context
 from app.application.wardrobe.submit_fit_feedback import SubmitFitFeedback
 from app.bootstrap.container import llm_service, weather_service
@@ -81,6 +82,7 @@ from app.presentation.api.v1.schemas.recommendations import (
     RefreshTodayRequest,
     ReplacementCandidateResponse,
     ReplacementCandidatesResponse,
+    ResurfaceInsightResponse,
     StyleContextResponse,
     TodayContextResponse,
     TodayRecommendationResponse,
@@ -545,6 +547,25 @@ async def get_today_recommendation(
     today_data = await today_response(daily, session, today, settings.departure_time, scene)
     today_data.style_context = style_ctx
     await _backfill_weather_if_missing(today_data, settings.location)
+    # BE#80 — at most one resurface insight (forgotten + season-suitable item).
+    # Flag-gated; absent when there's no genuine candidate. Attached before the
+    # cache write so the cached Today payload carries it for the rest of the day.
+    if get_settings().ENABLE_RESURFACE_INSIGHT:
+        insight = await build_resurface_insight(
+            repository,
+            current_user.id,
+            current_season(today),
+            now=now,
+            min_unworn_days=get_settings().RESURFACE_MIN_UNWORN_DAYS,
+        )
+        if insight is not None:
+            today_data.resurface_insight = ResurfaceInsightResponse(
+                id=f"resurface:{insight.item_id}",
+                text=insight.text,
+                item_id=insight.item_id,
+                reason=insight.reason,
+                cooldown_key=str(insight.item_id),
+            )
     response = ResponseModel(data=today_data)
     try:
         await redis_client.set(

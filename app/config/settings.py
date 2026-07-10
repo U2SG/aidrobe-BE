@@ -154,6 +154,12 @@ class Settings(BaseSettings):
     # removable layer, low-key, reduce-weather), apply them to filtering/ranking,
     # and echo applied_context. Off → override is ignored (legacy refresh).
     ENABLE_CONTEXT_OVERRIDES: bool = False
+    # BE#80 — surface at most one "you haven't worn this in a while, and it fits
+    # today" resurface insight on the Today response, from forgotten + season-
+    # suitable wardrobe items. Off → resurface_insight is always absent.
+    ENABLE_RESURFACE_INSIGHT: bool = False
+    # Days an item must go unworn before it's a resurface candidate.
+    RESURFACE_MIN_UNWORN_DAYS: int = 30
     # Look-back window (days) for the diversity checks above. Applied ONLY when
     # ENABLE_RECOMMENDATION_DIVERSITY is on; with the flag off the worn-similarity
     # penalty keeps its legacy fixed 7-day window regardless of this value.
