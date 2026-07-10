@@ -57,10 +57,7 @@ def downgrade() -> None:
     )
     op.drop_column("recommendation_events", "source_surface")
     op.drop_column("recommendation_events", "signal_strength")
-    op.alter_column(
-        "recommendation_events",
-        "event_type",
-        type_=sa.String(16),
-        existing_type=sa.String(48),
-        existing_nullable=False,
-    )
+    # event_type is intentionally NOT narrowed back to String(16): once this
+    # endpoint has been used, rows can hold longer passive-learning values (e.g.
+    # "temperature_mismatch_reported" = 29 chars), and narrowing would fail with
+    # a value-too-long error. String(48) is backward compatible, so leave it.

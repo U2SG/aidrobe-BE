@@ -150,3 +150,29 @@ async def test_invalid_source_surface_rejected(db_session: AsyncSession) -> None
             },
         )
     assert resp.status_code == 422
+
+
+async def test_foreign_recommendation_id_attribution_dropped(db_session: AsyncSession) -> None:
+    # A stale/foreign recommendation_id must not FK-error (500) or cross-user
+    # attribute — attribution is dropped but the signal is still recorded.
+    user_id = await _seed_user(db_session)
+    app = build_recommendations_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post(
+            "/v1/recommendations/events",
+            headers={"X-User-Id": str(user_id)},
+            json={
+                "event_type": "outfit_impression",
+                "signal_strength": "weak",
+                "source_surface": "today",
+                "recommendation_id": str(uuid.uuid4()),
+            },
+        )
+    assert resp.status_code == 200
+    row = await db_session.scalar(
+        select(RecommendationEvent).where(
+            RecommendationEvent.id == uuid.UUID(resp.json()["data"]["event_id"])
+        )
+    )
+    assert row is not None
+    assert row.recommendation_id is None

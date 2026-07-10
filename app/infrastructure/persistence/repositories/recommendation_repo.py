@@ -63,6 +63,21 @@ class SqlAlchemyRecommendationRepository:
             ),
         )
 
+    async def daily_recommendation_exists_for_user(
+        self, daily_recommendation_id: uuid.UUID, user_id: uuid.UUID
+    ) -> bool:
+        """BE#81 — ownership guard for event attribution: a client-supplied
+        recommendation_id must belong to this user before we store it (else an FK
+        IntegrityError on a stale id, or cross-user attribution on a foreign one)."""
+        return (
+            await self.session.scalar(
+                select(DailyRecommendation.id).where(
+                    DailyRecommendation.id == daily_recommendation_id,
+                    DailyRecommendation.user_id == user_id,
+                )
+            )
+        ) is not None
+
     async def count_revisions_for_date(self, user_id: uuid.UUID, recommendation_date: date) -> int:
         """How many daily rows exist for this (user, date) regardless of
         is_current. Used by the refresh rate limit so 3 refreshes ⇒ 4 rows

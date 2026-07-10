@@ -37,6 +37,18 @@ class IngestRecommendationEvent:
         item_id: uuid.UUID | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> RecommendationEvent:
+        # Ownership guard: only attribute to a recommendation the user actually
+        # owns. A stale id would FK-error (500) and a foreign id would cross-user
+        # attribute; drop the attribution but still record the signal.
+        if recommendation_id is not None and not await self.repository.daily_recommendation_exists_for_user(
+            recommendation_id, user_id
+        ):
+            logger.warning(
+                "passive_event_recommendation_attribution_dropped",
+                user_id=str(user_id),
+                recommendation_id=str(recommendation_id),
+            )
+            recommendation_id = None
         event = RecommendationEvent(
             user_id=user_id,
             recommendation_id=recommendation_id,
