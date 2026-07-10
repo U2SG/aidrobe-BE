@@ -144,6 +144,11 @@ class Settings(BaseSettings):
     # and recently-recommended hero items are de-prioritized. Off = legacy
     # worn-only diversity.
     ENABLE_RECOMMENDATION_DIVERSITY: bool = False
+    # BE#82 — infer an indoor-main climate tendency from repeated temperature
+    # mismatches + commute exposure, and let it nudge outfit ranking (prefer a
+    # removable outer layer) + surface an indoor_climate_inference reason. Off →
+    # generation is byte-identical to legacy (no inference, no score, no reason).
+    ENABLE_INDOOR_CLIMATE_INFERENCE: bool = False
     # Look-back window (days) for the diversity checks above. Applied ONLY when
     # ENABLE_RECOMMENDATION_DIVERSITY is on; with the flag off the worn-similarity
     # penalty keeps its legacy fixed 7-day window regardless of this value.

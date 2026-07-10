@@ -32,8 +32,11 @@ referenced_item_ids: list of item UUIDs that directly drove the entry.
   Whole-look reasons (e.g., category balance) → [].
 
 Sources NOT emitted by this layer:
-  indoor_climate_inference — no inference path yet
   llm                     — reason_text is LLM-authored; this layer is not
+
+Sources emitted here:
+  indoor_climate_inference — BE#82, medium confidence, only when a tendency was
+    inferred AND the look carries a removable outer layer (never labels the user)
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.application.ports.weather import WeatherInfo
+from app.application.recommendations.indoor_climate import INDOOR_COLD
 from app.common.enums import Category
 
 _COLD_C = 10.0
@@ -54,6 +58,7 @@ WEAR_HISTORY = "wear_history"
 STYLE_MATCH = "style_match"
 CATEGORY = "category"
 FIT = "fit"
+INDOOR_CLIMATE = "indoor_climate"
 
 
 def _entry(
@@ -83,6 +88,7 @@ def build_reasoning(
     preferred_colors: set[str] | None = None,
     item_ids: list[str] | None = None,
     main_item_id: str | None = None,
+    indoor_climate: str | None = None,
     max_items: int = 4,
 ) -> list[dict[str, Any]]:
     """Return 2–4 grounded reasons (Chinese) with source provenance (BE#85).
@@ -163,6 +169,23 @@ def build_reasoning(
                 confidence="high",
                 referenced_item_ids=shoe_ids,
             ))
+
+    # 1b. Indoor climate (BE#82) — only when a tendency was inferred AND the look
+    # carries a removable outer layer to act on. Copy never labels the user by
+    # commute type (privacy requirement); it speaks to the removable layer.
+    if indoor_climate is not None and Category.OUTERWEAR.value in cats:
+        text = (
+            "室内外温差大，带上这件可脱的外层，室内偏凉时正好加一件"
+            if indoor_climate == INDOOR_COLD
+            else "室内容易偏热，这件外层能随手脱掉，方便调节"
+        )
+        reasons.append(_entry(
+            INDOOR_CLIMATE,
+            text,
+            source="indoor_climate_inference",
+            confidence="medium",
+            referenced_item_ids=outerwear_ids,
+        ))
 
     # 2. Freshness — the main piece hasn't been worn recently.
     if is_fresh:

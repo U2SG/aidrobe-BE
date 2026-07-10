@@ -8,6 +8,7 @@ from app.application.llm_prompts.persona import stylist_persona
 from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.colors import color_score
+from app.application.recommendations.indoor_climate import IndoorClimateSignal
 from app.application.recommendations.reasoning import build_reasoning
 from app.application.safety.copy_guard import sanitize_generated_copy
 from app.application.style.build_style_profile import aesthetic_score as compute_aesthetic_score
@@ -126,6 +127,7 @@ class RecommendationEngine:
         disliked_colors: set[str] | None = None,
         relationship_edges: list[RelationshipEdge] | None = None,
         suppressed_outfit_item_ids: list[set[str]] | None = None,
+        indoor_climate: IndoorClimateSignal | None = None,
     ) -> EngineResult:
         recent_worn_main_item_ids = recent_worn_main_item_ids or set()
         recent_worn_outfit_item_ids = recent_worn_outfit_item_ids or []
@@ -146,6 +148,7 @@ class RecommendationEngine:
             recent_worn_outfit_item_ids,
             fit_profile or {},
             disliked_colors,
+            indoor_climate,
         )
         if not candidates:
             return EngineResult(
@@ -252,6 +255,7 @@ class RecommendationEngine:
                     # specific UUIDs to each reason entry.
                     item_ids=[i for i in outfit.item_ids if i in item_by_id],
                     main_item_id=self._main_item(outfit.item_ids, wearable),
+                    indoor_climate=indoor_climate.tendency if indoor_climate else None,
                 ),
             )
             for outfit in selected
@@ -268,6 +272,7 @@ class RecommendationEngine:
         recent_worn_outfit_item_ids: list[set[str]],
         fit_profile: dict[str, Any],
         disliked_colors: set[str],
+        indoor_climate: IndoorClimateSignal | None = None,
     ) -> list[EngineOutfit]:
         tops = [item for item in items if item.category == Category.TOP.value]
         bottoms = [item for item in items if item.category == Category.BOTTOM.value]
@@ -316,6 +321,7 @@ class RecommendationEngine:
                         recent_worn_outfit_item_ids,
                         fit_profile,
                         disliked_colors,
+                        indoor_climate,
                     )
                 )
         return candidates
@@ -330,6 +336,7 @@ class RecommendationEngine:
         recent_worn_outfit_item_ids: list[set[str]],
         fit_profile: dict[str, Any],
         disliked_colors: set[str],
+        indoor_climate: IndoorClimateSignal | None = None,
     ) -> EngineOutfit:
         colors = [item.color_main for item in combo]
         categories = [item.category for item in combo]
@@ -344,6 +351,9 @@ class RecommendationEngine:
         # BE#46 — explicit negative color preference: one penalty unit per item
         # whose color the user dislikes. Empty set (flag off) → 0.0, legacy.
         disliked_penalty = self._disliked_color_penalty(combo, disliked_colors)
+        # BE#82 — indoor-climate nudge: prefer a removable outer layer when a
+        # tendency was inferred. None (flag off) → 0.0, byte-identical to legacy.
+        indoor_climate_bonus = self._indoor_climate_score(combo, indoor_climate)
         type_boost = {
             OutfitType.SAFE.value: 0.05,
             OutfitType.FAST.value: 0.03,
@@ -362,6 +372,7 @@ class RecommendationEngine:
                 + fit_score * 0.10
                 - repetition_penalty
                 - disliked_penalty
+                + indoor_climate_bonus
             )
         elif has_fit_signal:
             total = (
@@ -371,6 +382,7 @@ class RecommendationEngine:
                 + type_boost
                 - repetition_penalty
                 - disliked_penalty
+                + indoor_climate_bonus
             )
         else:
             total = (
@@ -379,6 +391,7 @@ class RecommendationEngine:
                 + type_boost
                 - repetition_penalty
                 - disliked_penalty
+                + indoor_climate_bonus
             )
 
         title = _TITLE_TEMPLATES[outfit_type]
@@ -421,6 +434,7 @@ class RecommendationEngine:
                 "fit_score": fit_score,
                 "repetition_penalty": repetition_penalty,
                 "disliked_color_penalty": disliked_penalty,
+                "indoor_climate_bonus": indoor_climate_bonus,
             },
         )
 
@@ -494,6 +508,18 @@ class RecommendationEngine:
         ):
             score -= 0.25
         return _clamp_score(score)
+
+    def _indoor_climate_score(
+        self, combo: list[EngineItem], indoor_climate: IndoorClimateSignal | None
+    ) -> float:
+        """BE#82 — small additive nudge toward a removable outer layer when an
+        indoor-climate tendency was inferred: an outer layer can be added when the
+        office AC runs cold, or shed when it runs warm, closing the indoor/outdoor
+        gap. None (flag off / no inference) → 0.0, so ranking stays legacy."""
+        if indoor_climate is None:
+            return 0.0
+        has_outerwear = any(item.category == Category.OUTERWEAR.value for item in combo)
+        return 0.08 if has_outerwear else 0.0
 
     def _fit_score(self, combo: list[EngineItem], fit_profile: dict[str, Any]) -> float:
         """Score fit quality per item, adjusted by learned user preferences.

@@ -17,8 +17,17 @@ from app.application.recommendations.feedback_learning import (
     derive_learning_signals,
 )
 from app.application.recommendations.fit_profile import build_fit_profile
+from app.application.recommendations.indoor_climate import (
+    IndoorClimateSignal,
+    infer_indoor_climate,
+)
 from app.application.style.build_style_profile import build_style_profile
-from app.common.enums import OutfitType, RecommendationStatus, TimeSensitivity
+from app.common.enums import (
+    OutfitType,
+    RecommendationEventType,
+    RecommendationStatus,
+    TimeSensitivity,
+)
 from app.common.season import current_season
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.recommendation import (
@@ -117,6 +126,12 @@ class RecommendationGenerator:
         style_profile = await self._load_style_profile(user_id)
         weather = await self._load_weather(user_id)
         fit_profile = await self._load_fit_profile(user_id)
+        # BE#82 — infer indoor-climate tendency (flag-gated; None → legacy ranking).
+        indoor_climate = (
+            await self._load_indoor_climate(user_id)
+            if settings.ENABLE_INDOOR_CLIMATE_INFERENCE
+            else None
+        )
         # BE#46 — let explicit NEGATIVE color preferences down-rank matching
         # outfits. Read only when the flag is on (rows persist regardless), so a
         # flag-off generation is byte-identical to the legacy one.
@@ -149,6 +164,7 @@ class RecommendationGenerator:
             disliked_colors=disliked_colors,
             relationship_edges=relationship_edges,
             suppressed_outfit_item_ids=suppressed_outfit_item_ids,
+            indoor_climate=indoor_climate,
         )
 
         daily = DailyRecommendation(
@@ -387,6 +403,22 @@ class RecommendationGenerator:
         except Exception as exc:
             logger.warning("fit_profile_load_failed", user_id=str(user_id), error=str(exc))
             return {}
+
+    async def _load_indoor_climate(self, user_id: uuid.UUID) -> IndoorClimateSignal | None:
+        """BE#82 — infer indoor-climate tendency from recent temperature-mismatch
+        events + commute exposure. Uses the injected session (not AsyncSessionLocal)
+        so it works in-transaction and under tests."""
+        session = self.repository.session
+        events = await self.repository.list_recommendation_events(
+            user_id,
+            event_type=RecommendationEventType.TEMPERATURE_MISMATCH_REPORTED.value,
+            limit=100,
+        )
+        settings_row = await session.scalar(
+            select(UserSettings).where(UserSettings.user_id == user_id)
+        )
+        commute = settings_row.commute_exposure if settings_row else None
+        return infer_indoor_climate(events, commute, now=datetime.now(UTC))
 
     async def _load_weather(self, user_id: uuid.UUID) -> WeatherInfo | None:
         if self.weather_service is None:
