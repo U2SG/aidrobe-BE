@@ -1,4 +1,5 @@
 import json
+from datetime import date
 
 import httpx
 import structlog
@@ -21,6 +22,11 @@ class OpenWeatherProvider:
 
     async def get_today(self, location: str) -> WeatherInfo:
         return await self.get_weather(location)
+
+    async def get_forecast(self, location: str, target_date: date) -> WeatherInfo | None:
+        # BE#77 — no forecast path wired for OpenWeather yet; honest degrade
+        # (None) rather than current conditions dressed up as a forecast.
+        return None
 
     async def get_weather(self, city: str) -> WeatherInfo:
         cache_key = f"weather:{city}"

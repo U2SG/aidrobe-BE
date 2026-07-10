@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import date
 from typing import Protocol
 
 
@@ -29,3 +30,9 @@ class WeatherPort(Protocol):
     async def get_weather(self, city: str) -> WeatherInfo: ...
 
     async def get_today(self, location: str) -> WeatherInfo: ...
+
+    async def get_forecast(self, location: str, target_date: date) -> WeatherInfo | None:
+        """BE#77 — daily forecast for a future date (tomorrow mode). Returns None
+        when the provider has no forecast for that date — callers must treat that
+        as an honest "no weather" degrade, never substitute today's conditions."""
+        ...

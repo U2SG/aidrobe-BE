@@ -158,6 +158,11 @@ class Settings(BaseSettings):
     # today" resurface insight on the Today response, from forgotten + season-
     # suitable wardrobe items. Off → resurface_insight is always absent.
     ENABLE_RESURFACE_INSIGHT: bool = False
+    # BE#77 — date-aware Today: GET /today may request tomorrow (evening mode),
+    # generating against tomorrow's context (forecast weather when available;
+    # honest no-weather degrade otherwise) instead of reusing today's stale
+    # recommendation. Off → target_date is ignored (legacy today behavior).
+    ENABLE_DATE_AWARE_TODAY: bool = False
     # Days an item must go unworn before it's a resurface candidate.
     RESURFACE_MIN_UNWORN_DAYS: int = 30
     # Look-back window (days) for the diversity checks above. Applied ONLY when

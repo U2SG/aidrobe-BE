@@ -1,6 +1,6 @@
 import dataclasses
 import uuid
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated, Any
 
 import structlog
@@ -23,6 +23,7 @@ from app.application.outfits.scoring.dynamic import compute_dynamic_scores
 from app.application.outfits.wear import WearOutfit
 from app.application.recommendations.context_override import resolve_constraints
 from app.application.recommendations.feedback_tags import get_tags_for_scene
+from app.application.recommendations.generator import RecommendationGenerator
 from app.application.recommendations.get_today import GetTodayRecommendation
 from app.application.recommendations.ingest_event import IngestRecommendationEvent
 from app.application.recommendations.resurface_insight import build_resurface_insight
@@ -508,13 +509,28 @@ async def get_today_recommendation(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     redis_client: Annotated[Redis, Depends(get_redis_client)],
     scene: str | None = Query(default=None, pattern="^(commute|formal|casual)$"),
+    target_date: Annotated[date | None, Query()] = None,
 ) -> ResponseModel[TodayRecommendationResponse]:
     now = datetime.now(UTC)
     today = now.date()
+    # BE#77 — date-aware Today: evening mode may request tomorrow. Bounded to
+    # [today, tomorrow] so this can't be abused to generate arbitrary future
+    # dates. Flag off → target_date is ignored (legacy behavior).
+    target = today
+    mode: str | None = None
+    if target_date is not None and get_settings().ENABLE_DATE_AWARE_TODAY:
+        if target_date < today or target_date > today + timedelta(days=1):
+            raise FriendlyException(
+                error_codes.VALIDATION_ERROR,
+                "target_date must be today or tomorrow",
+                status_code=400,
+            )
+        target = target_date
+        mode = "tomorrow" if target > today else "today"
     settings = await SqlAlchemyUserRepository(session).get_or_create_settings(current_user.id)
     cache_key = build_daily_recommendation_cache_key(
         current_user.id,
-        today,
+        target,
         settings.departure_time,
         scene,
         reasoning=get_settings().ENABLE_TODAY_REASONING,
@@ -534,9 +550,31 @@ async def get_today_recommendation(
         return response
 
     repository = SqlAlchemyRecommendationRepository(session)
-    had_cache = await repository.get_daily(current_user.id, today) is not None
-    use_case = GetTodayRecommendation(repository)
-    daily = await use_case.execute(current_user.id, today)
+    had_cache = await repository.get_daily(current_user.id, target) is not None
+    if mode == "tomorrow":
+        # BE#77 — tomorrow must NOT fall back to today's recommendation (that's
+        # exactly the stale copy the contract forbids). Read tomorrow's row;
+        # when absent, generate on demand against tomorrow's context (forecast
+        # weather when available, honest no-weather degrade otherwise).
+        daily = await repository.get_daily(current_user.id, target)
+        if daily is None:
+            await RecommendationGenerator(
+                repository,
+                SqlAlchemyStyleRepository(session),
+                llm=llm_service(),
+                weather_service=weather_service(),
+            ).generate_for_user(current_user.id, target, "tomorrow_preview")
+            # Re-fetch eager-loaded (outfits + items) so today_response doesn't
+            # trigger lazy loads — same reason as the refresh endpoint.
+            daily = await repository.get_daily(current_user.id, target)
+        if daily is None:  # pragma: no cover — generate_for_user persists a row
+            raise FriendlyException(
+                error_codes.INTERNAL_ERROR,
+                "tomorrow generation succeeded but row vanished",
+                status_code=500,
+            )
+    else:
+        daily = await GetTodayRecommendation(repository).execute(current_user.id, target)
     await SqlAlchemyOperationLogRepository(session).add(
         current_user.id,
         "app_open",
@@ -544,8 +582,9 @@ async def get_today_recommendation(
     )
     style_ctx_data = await build_style_context(current_user.id, session)
     style_ctx = StyleContextResponse(**style_ctx_data)
-    today_data = await today_response(daily, session, today, settings.departure_time, scene)
+    today_data = await today_response(daily, session, target, settings.departure_time, scene)
     today_data.style_context = style_ctx
+    today_data.mode = mode
     await _backfill_weather_if_missing(today_data, settings.location)
     # BE#80 — at most one resurface insight (forgotten + season-suitable item).
     # Flag-gated; absent when there's no genuine candidate. Attached before the

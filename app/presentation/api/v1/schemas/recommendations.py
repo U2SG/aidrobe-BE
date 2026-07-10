@@ -151,6 +151,9 @@ class TodayRecommendationResponse(BaseModel):
     context: TodayContextResponse | None = None  # Phase D — gated by ENABLE_TODAY_CONTEXT
     applied_context: AppliedContextResponse | None = None  # BE#78 — refresh override echo
     resurface_insight: ResurfaceInsightResponse | None = None  # BE#80 — forgotten-item nudge
+    # BE#77 — "today" | "tomorrow"; None for legacy consumers (flag off). Lets FE
+    # render honest copy for evening-mode tomorrow previews.
+    mode: str | None = None
 
 
 class WearOutfitRequest(BaseModel):

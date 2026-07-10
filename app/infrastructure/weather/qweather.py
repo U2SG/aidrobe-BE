@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 from dataclasses import asdict
+from datetime import date
 from typing import Any
 
 import httpx
@@ -108,6 +109,64 @@ class QWeatherProvider:
         result = (str(matches[0]["id"]), _opt_str(matches[0].get("name")))
         await self._safe_redis_set(cache_key, json.dumps({"id": result[0], "name": result[1]}), _GEO_CACHE_TTL_SECONDS)
         return result
+
+    async def get_forecast(self, location: str, target_date: date) -> WeatherInfo | None:
+        """BE#77 — daily forecast (tomorrow mode) via /v7/weather/3d. Returns None
+        when the date isn't in the window or the fetch fails — honest degrade,
+        never today's conditions dressed up as a forecast."""
+        cache_key = f"weather:qweather:forecast:{location}:{target_date.isoformat()}"
+        cached = await self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            location_id, location_name = await self._resolve_location_id(location)
+            async with httpx.AsyncClient(timeout=self.settings.WEATHER_TIMEOUT_SECONDS) as client:
+                response = await client.get(
+                    f"{self.settings.QWEATHER_BASE_URL.rstrip('/')}/v7/weather/3d",
+                    params={"location": location_id, "key": self.settings.QWEATHER_API_KEY},
+                )
+                response.raise_for_status()
+            daily = response.json().get("daily") or []
+            day = next((d for d in daily if d.get("fxDate") == target_date.isoformat()), None)
+            if day is None:
+                return None
+            if location_name is None:
+                location_name = await self._lookup_name(location_id)
+            temp_max = float(day["tempMax"])
+            # Daily forecast has no pop field (only hourly does); when absent,
+            # derive a coarse probability from the forecast text — 雨/雪 in the
+            # day text is the forecast itself saying precipitation, not us
+            # inventing precision.
+            pop = _opt_float(day.get("pop"))
+            if pop is not None:
+                rain_probability = _clamp_probability(pop / 100.0)
+            else:
+                text_day = str(day.get("textDay") or "")
+                rain_probability = 0.8 if ("雨" in text_day or "雪" in text_day) else 0.0
+            weather = WeatherInfo(
+                # Daytime max is what outfit choice cares about; the daily API has
+                # no feels-like, so mirror the temperature rather than invent one.
+                temperature_c=temp_max,
+                feels_like_c=temp_max,
+                rain_probability=rain_probability,
+                condition=str(day.get("textDay") or ""),
+                humidity=_opt_int(day.get("humidity")),
+                wind_dir=_opt_str(day.get("windDirDay")),
+                wind_scale=_opt_str(day.get("windScaleDay")),
+                wind_speed=_opt_float(day.get("windSpeedDay")),
+                icon=_opt_str(day.get("iconDay")),
+                location_name=location_name,
+            )
+            await self._set_cached(cache_key, weather)
+            return weather
+        except Exception as exc:
+            logger.warning(
+                "qweather_forecast_fetch_failed",
+                location=location,
+                target_date=str(target_date),
+                error=str(exc),
+            )
+            return None
 
     async def _fetch_now(self, location_id: str) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=self.settings.WEATHER_TIMEOUT_SECONDS) as client:
