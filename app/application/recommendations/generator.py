@@ -125,7 +125,7 @@ class RecommendationGenerator:
                 user_id, target_date, days=window
             )
         style_profile = await self._load_style_profile(user_id)
-        weather = await self._load_weather(user_id)
+        weather = await self._load_weather(user_id, target_date)
         fit_profile = await self._load_fit_profile(user_id)
         # BE#82 — infer indoor-climate tendency (flag-gated; None → legacy ranking).
         indoor_climate = (
@@ -423,13 +423,20 @@ class RecommendationGenerator:
         commute = settings_row.commute_exposure if settings_row else None
         return infer_indoor_climate(events, commute, now=datetime.now(UTC))
 
-    async def _load_weather(self, user_id: uuid.UUID) -> WeatherInfo | None:
+    async def _load_weather(
+        self, user_id: uuid.UUID, target_date: date | None = None
+    ) -> WeatherInfo | None:
         if self.weather_service is None:
             return None
         location = await self.repository.get_user_location(user_id)
         if not location:
             return None
         try:
+            # BE#77 — a future target date (tomorrow mode) must use the forecast
+            # for THAT date; None (no forecast) is an honest degrade — never
+            # substitute today's conditions for tomorrow.
+            if target_date is not None and target_date > datetime.now(UTC).date():
+                return await self.weather_service.get_forecast(location, target_date)
             return await self.weather_service.get_weather(location)
         except Exception as exc:
             logger.warning("weather_load_failed", user_id=str(user_id), error=str(exc))
