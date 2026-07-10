@@ -418,24 +418,28 @@ class RecommendationEngine:
                 # Fall through to template reason
                 pass
 
+        score_breakdown = {
+            "utility_score": utility_score,
+            "color_score": utility_score,
+            "freshness_score": freshness_score,
+            "aesthetic_score": aesthetic_score,
+            "time_cost_score": time_cost_score,
+            "weather_score": weather_score,
+            "fit_score": fit_score,
+            "repetition_penalty": repetition_penalty,
+            "disliked_color_penalty": disliked_penalty,
+        }
+        # BE#82 — only surface the key when the feature is actually applied, so a
+        # flag-off breakdown keeps its exact legacy shape.
+        if indoor_climate is not None:
+            score_breakdown["indoor_climate_bonus"] = indoor_climate_bonus
         return EngineOutfit(
             outfit_type=outfit_type,
             title=title,
             reason_text=reason,
             item_ids=[item.item_id for item in combo],
             score_total=round(max(0.0, total), 4),
-            score_breakdown={
-                "utility_score": utility_score,
-                "color_score": utility_score,
-                "freshness_score": freshness_score,
-                "aesthetic_score": aesthetic_score,
-                "time_cost_score": time_cost_score,
-                "weather_score": weather_score,
-                "fit_score": fit_score,
-                "repetition_penalty": repetition_penalty,
-                "disliked_color_penalty": disliked_penalty,
-                "indoor_climate_bonus": indoor_climate_bonus,
-            },
+            score_breakdown=score_breakdown,
         )
 
     def _build_reason_prompt(

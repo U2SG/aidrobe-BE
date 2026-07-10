@@ -46,6 +46,7 @@ class IndoorClimateSignal:
 class _EventLike(Protocol):
     event_type: str
     event_metadata: dict[str, Any] | None
+    signal_strength: str | None
     created_at: datetime
 
 
@@ -67,6 +68,10 @@ def infer_indoor_climate(
     warm = 0
     for event in events:
         if event.event_type != RecommendationEventType.TEMPERATURE_MISMATCH_REPORTED.value:
+            continue
+        # Confidence-gating: weak signals are implicit/inferred and must not drive
+        # a tendency on their own — only medium/strong reports are counted.
+        if getattr(event, "signal_strength", None) == "weak":
             continue
         created = event.created_at
         if created.tzinfo is None:

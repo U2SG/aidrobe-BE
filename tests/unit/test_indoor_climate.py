@@ -16,10 +16,13 @@ from app.common.enums import Category, RecommendationEventType
 _NOW = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
 
 
-def _mismatch(reason: str, *, days_ago: int = 0) -> SimpleNamespace:
+def _mismatch(
+    reason: str, *, days_ago: int = 0, signal_strength: str = "medium"
+) -> SimpleNamespace:
     return SimpleNamespace(
         event_type=RecommendationEventType.TEMPERATURE_MISMATCH_REPORTED.value,
         event_metadata={"reason": reason},
+        signal_strength=signal_strength,
         created_at=_NOW - timedelta(days=days_ago),
     )
 
@@ -48,6 +51,13 @@ def test_less_outdoor_lowers_the_bar_to_two() -> None:
     signal = infer_indoor_climate(events, "less_outdoor", now=_NOW)
     assert signal is not None
     assert signal.tendency == INDOOR_WARM
+
+
+def test_weak_signals_ignored() -> None:
+    # Confidence-gating: weak (implicit) mismatches must not drive inference,
+    # even enough of them under the less_outdoor bar.
+    events = [_mismatch("too_cold", signal_strength="weak") for _ in range(5)]
+    assert infer_indoor_climate(events, "less_outdoor", now=_NOW) is None
 
 
 def test_mixed_noise_does_not_infer() -> None:
