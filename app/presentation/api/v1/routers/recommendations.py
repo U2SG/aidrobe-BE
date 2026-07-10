@@ -23,6 +23,7 @@ from app.application.outfits.scoring.dynamic import compute_dynamic_scores
 from app.application.outfits.wear import WearOutfit
 from app.application.recommendations.feedback_tags import get_tags_for_scene
 from app.application.recommendations.get_today import GetTodayRecommendation
+from app.application.recommendations.ingest_event import IngestRecommendationEvent
 from app.application.recommendations.style_context import build_style_context
 from app.application.wardrobe.submit_fit_feedback import SubmitFitFeedback
 from app.bootstrap.container import weather_service
@@ -66,6 +67,8 @@ from app.presentation.api.v1.schemas.recommendations import (
     OutfitResponse,
     OutfitScoresResponse,
     ReasoningItem,
+    RecommendationEventRequest,
+    RecommendationEventResponse,
     RecommendationItemResponse,
     ReplacementCandidateResponse,
     ReplacementCandidatesResponse,
@@ -784,6 +787,28 @@ async def feedback_outfit(
         },
     )
     return ResponseModel(data=FeedbackResponse(success=True))
+
+
+@router.post("/events", response_model=ResponseModel[RecommendationEventResponse])
+async def ingest_recommendation_event(
+    payload: RecommendationEventRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[RecommendationEventResponse]:
+    """BE#81 — general passive-learning event ingestion. Append-only; distinct
+    from the explicit feedback endpoints above (which stay backward compatible)."""
+    use_case = IngestRecommendationEvent(SqlAlchemyRecommendationRepository(session))
+    event = await use_case.execute(
+        current_user.id,
+        event_type=payload.event_type,
+        signal_strength=payload.signal_strength,
+        source_surface=payload.source_surface,
+        outfit_id=payload.outfit_id,
+        recommendation_id=payload.recommendation_id,
+        item_id=payload.item_id,
+        metadata=payload.metadata,
+    )
+    return ResponseModel(data=RecommendationEventResponse(event_id=event.id))
 
 
 @router.get("/feedback-tags", response_model=ResponseModel[FeedbackTagsResponse])

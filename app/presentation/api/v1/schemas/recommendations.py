@@ -166,6 +166,31 @@ class FeedbackResponse(BaseModel):
     success: bool
 
 
+class RecommendationEventRequest(BaseModel):
+    """BE#81 — general passive-learning event ingestion. Append-only capture;
+    it never mutates explicit preferences (OutfitFeedback / FitFeedback)."""
+
+    model_config = {"extra": "ignore"}
+
+    event_type: str = Field(
+        pattern=(
+            "^(outfit_impression|outfit_swapped|outfit_disliked|context_override_submitted"
+            "|passive_wear_prompt_answered|resurface_insight_viewed|resurface_item_opened"
+            "|temperature_mismatch_reported)$"
+        )
+    )
+    signal_strength: str = Field(pattern="^(weak|medium|strong)$")
+    source_surface: str = Field(pattern="^(today|ask|wardrobe|profile)$")
+    outfit_id: UUID | None = None
+    recommendation_id: UUID | None = None
+    item_id: UUID | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class RecommendationEventResponse(BaseModel):
+    event_id: UUID
+
+
 class OutfitHistoryItemResponse(BaseModel):
     outfit_id: UUID
     worn_date: date
