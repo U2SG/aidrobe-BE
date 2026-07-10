@@ -163,6 +163,10 @@ class Settings(BaseSettings):
     # honest no-weather degrade otherwise) instead of reusing today's stale
     # recommendation. Off → target_date is ignored (legacy today behavior).
     ENABLE_DATE_AWARE_TODAY: bool = False
+    # BE#83 — profile data-trust surface: review / correct / clear learned
+    # preference memory, and clear all app data while keeping the account.
+    # Destructive endpoints fail closed (403) when off.
+    ENABLE_DATA_TRUST: bool = False
     # Days an item must go unworn before it's a resurface candidate.
     RESURFACE_MIN_UNWORN_DAYS: int = 30
     # Look-back window (days) for the diversity checks above. Applied ONLY when

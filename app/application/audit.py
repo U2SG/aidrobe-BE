@@ -62,3 +62,8 @@ ACTION_USER_DEACTIVATE = "user.deactivate"
 ACTION_USER_PURGE = "user.purge"
 ACTION_USER_PURGE_FAILED = "user.purge_failed"
 ACTION_ADMIN_VIEW_DEAD_JOBS = "admin.view_dead_jobs"
+# BE#83 — data-trust surface.
+ACTION_MEMORY_DELETED = "memory.deleted"
+ACTION_MEMORY_MARKED_WRONG = "memory.marked_wrong"
+ACTION_MEMORY_CLEARED = "memory.cleared"
+ACTION_DATA_CLEARED = "user.data_cleared"

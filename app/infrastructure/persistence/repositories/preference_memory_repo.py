@@ -109,6 +109,29 @@ class SqlAlchemyPreferenceMemoryRepository:
         )
         return list(result)
 
+    async def soft_delete_all_live(self, user_id: uuid.UUID) -> int:
+        """BE#83 — user clears ALL learned memory (keeps the account). Soft
+        delete so the rows stay auditable; returns how many were cleared."""
+        from datetime import UTC, datetime
+        from typing import Any, cast
+
+        from sqlalchemy import update
+        from sqlalchemy.engine import CursorResult
+
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(UserPreferenceMemory)
+                .where(
+                    UserPreferenceMemory.user_id == user_id,
+                    UserPreferenceMemory.deleted_at.is_(None),
+                )
+                .values(deleted_at=datetime.now(UTC))
+            ),
+        )
+        await self.session.flush()
+        return int(result.rowcount or 0)
+
     async def soft_delete(
         self, user_id: uuid.UUID, preference_id: uuid.UUID
     ) -> bool:
