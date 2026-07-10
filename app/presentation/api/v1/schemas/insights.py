@@ -14,6 +14,9 @@ class InsightsSummaryResponse(BaseModel):
     idle_threshold_days: int
     most_worn_category: str | None = None
     favorite_color: str | None = None
+    wear_history_count: int = 0
+    has_sufficient_wear_history: bool = False
+    report_available: bool = False
 
 
 class TopItemResponse(BaseModel):

@@ -32,6 +32,7 @@ from app.infrastructure.workers.outfit_board_worker import (
 )
 from app.infrastructure.workers.pdf_worker import drain_pdf_ingest_jobs
 from app.infrastructure.workers.style_learn_worker import learn_style_source
+from app.infrastructure.workers.user_export_worker import drain_user_export_jobs
 from app.infrastructure.workers.user_purge_worker import drain_user_purge_jobs
 
 
@@ -80,6 +81,7 @@ class WorkerSettings:
         drain_ootd_poster_jobs,
         drain_cutout_jobs,
         drain_pdf_ingest_jobs,
+        drain_user_export_jobs,
         drain_user_purge_jobs,
         drain_import_jobs,
         recover_async_job_leases,
@@ -140,6 +142,13 @@ class WorkerSettings:
                 drain_user_purge_jobs,
                 minute={10},
                 name="user_purge_drain",
+            ),
+            # Export is a user-visible "being prepared" polling state — drain
+            # every 30s (offset from the other :0/:30 drains).
+            cron(
+                drain_user_export_jobs,
+                second={10, 40},
+                name="user_export_drain",
             ),
         ]
         if cron is not None

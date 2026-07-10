@@ -9,6 +9,16 @@ class ListWardrobeItems:
         self.repository = repository
 
     async def execute(
-        self, user_id: uuid.UUID, category: str | None, limit: int, offset: int
+        self,
+        user_id: uuid.UUID,
+        category: str | None,
+        limit: int,
+        offset: int,
+        status: str | None = None,
+        season: str | None = None,
+        color: str | None = None,
     ) -> tuple[list[WardrobeItem], int]:
-        return await self.repository.list_for_user(user_id, category, limit, offset)
+        return await self.repository.list_for_user(
+            user_id, category, status=status, season=season, color=color,
+            limit=limit, offset=offset,
+        )

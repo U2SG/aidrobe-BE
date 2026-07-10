@@ -11,6 +11,7 @@ from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.settings import (
+    CommuteExposure,
     UpdateUserSettingsRequest,
     UserSettingsResponse,
 )
@@ -25,6 +26,7 @@ def settings_response(settings: UserSettings) -> UserSettingsResponse:
         device_token=settings.device_token,
         location=settings.location,
         locale=cast(LocaleSetting, settings.locale),
+        commute_exposure=cast(CommuteExposure | None, settings.commute_exposure),
     )
 
 
@@ -61,5 +63,7 @@ async def update_user_settings(
         push_enabled=payload.push_enabled,
         location=payload.location,
         locale=payload.locale,
+        commute_exposure=payload.commute_exposure,
+        commute_exposure_set=payload.is_set("commute_exposure"),
     )
     return ResponseModel(data=settings_response(settings))

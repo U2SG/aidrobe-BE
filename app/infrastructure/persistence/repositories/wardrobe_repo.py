@@ -38,12 +38,23 @@ class SqlAlchemyWardrobeRepository:
         self,
         user_id: uuid.UUID,
         category: str | None = None,
+        status: str | None = None,
+        season: str | None = None,
+        color: str | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> tuple[list[WardrobeItem], int]:
         filters = [WardrobeItem.user_id == user_id, WardrobeItem.deleted_at.is_(None)]
         if category is not None:
             filters.append(WardrobeItem.category == category)
+        if status is not None:
+            filters.append(WardrobeItem.status == status)
+        if season is not None:
+            # season_tags JSONB shape: {"tags": ["spring", ...]} (V3 M14)
+            # Navigate to the tags key first, then use @> array containment.
+            filters.append(WardrobeItem.season_tags["tags"].contains([season]))
+        if color is not None:
+            filters.append(WardrobeItem.color_main == color)
         total = await self.session.scalar(
             select(func.count()).select_from(WardrobeItem).where(*filters)
         )

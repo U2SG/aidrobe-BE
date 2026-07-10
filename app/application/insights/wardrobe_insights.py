@@ -8,8 +8,18 @@ from typing import Any
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config.settings import get_settings
 from app.infrastructure.persistence.models.recommendation import WearHistory
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+
+# A user with fewer total wears than this is considered data-sparse; the
+# frontend uses this gate to suppress "strong conclusion" copy and the
+# wardrobe-report entry.
+# NOTE: wear_history_count is SUM(wear_count) over *live* items — not a
+# WearHistory row count. Deleting an item lowers it (and can flip
+# has_sufficient_wear_history back to false); intentional, because
+# sufficiency should reflect the wardrobe the insights are computed over.
+_SUFFICIENT_WEAR_THRESHOLD = 10
 
 
 async def get_summary(user_id: uuid.UUID, session: AsyncSession) -> dict[str, Any]:
@@ -28,6 +38,7 @@ async def get_summary(user_id: uuid.UUID, session: AsyncSession) -> dict[str, An
                     else_=0,
                 )
             ).label("idle_count"),
+            func.coalesce(func.sum(WardrobeItem.wear_count), 0).label("wear_history_count"),
         ).where(
             WardrobeItem.user_id == user_id,
             WardrobeItem.deleted_at.is_(None),
@@ -37,6 +48,9 @@ async def get_summary(user_id: uuid.UUID, session: AsyncSession) -> dict[str, An
     total = r.total or 0
     active_count = r.active_count or 0
     idle_count = r.idle_count or 0
+    wear_history_count = int(r.wear_history_count or 0)
+    has_sufficient = wear_history_count >= _SUFFICIENT_WEAR_THRESHOLD
+    report_available = has_sufficient and get_settings().ENABLE_WARDROBE_REPORT
 
     if total == 0:
         return {
@@ -46,6 +60,9 @@ async def get_summary(user_id: uuid.UUID, session: AsyncSession) -> dict[str, An
             "idle_threshold_days": 60,
             "most_worn_category": None,
             "favorite_color": None,
+            "wear_history_count": 0,
+            "has_sufficient_wear_history": False,
+            "report_available": False,
         }
 
     cat_row = await session.execute(
@@ -81,6 +98,9 @@ async def get_summary(user_id: uuid.UUID, session: AsyncSession) -> dict[str, An
         "idle_threshold_days": 60,
         "most_worn_category": most_worn_category,
         "favorite_color": favorite_color,
+        "wear_history_count": wear_history_count,
+        "has_sufficient_wear_history": has_sufficient,
+        "report_available": report_available,
     }
 
 
