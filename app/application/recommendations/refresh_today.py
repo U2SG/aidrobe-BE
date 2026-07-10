@@ -33,6 +33,7 @@ async def refresh_today_recommendation(
     style_repository: SqlAlchemyStyleRepository | None = None,
     *,
     scene: str | None = None,
+    context_constraints: list[str] | None = None,
 ) -> DailyRecommendation:
     """Generate a new revision for today.
 
@@ -91,4 +92,5 @@ async def refresh_today_recommendation(
         generation_source="refresh",
         scene=scene,
         refresh=True,
+        context_constraints=context_constraints,
     )

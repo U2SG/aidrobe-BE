@@ -71,6 +71,7 @@ class RecommendationGenerator:
         scene: str | None = None,
         *,
         refresh: bool = False,
+        context_constraints: list[str] | None = None,
     ) -> DailyRecommendation:
         """`refresh=True` archives the current daily as `is_current=False`
         and writes a new revision. Engagement on the old revision (wear /
@@ -165,6 +166,7 @@ class RecommendationGenerator:
             relationship_edges=relationship_edges,
             suppressed_outfit_item_ids=suppressed_outfit_item_ids,
             indoor_climate=indoor_climate,
+            context_constraints=context_constraints or [],
         )
 
         daily = DailyRecommendation(

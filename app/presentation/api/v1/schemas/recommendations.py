@@ -123,6 +123,14 @@ class TodayContextResponse(BaseModel):
     fetched_at: str | None = None
 
 
+class AppliedContextResponse(BaseModel):
+    """BE#78 — echoes the context override that shaped this refresh, so FE can
+    explain why the outfit changed."""
+
+    override_text: str | None = None
+    constraints: list[str] = []
+
+
 class TodayRecommendationResponse(BaseModel):
     recommendation_date: date
     status: str
@@ -130,6 +138,7 @@ class TodayRecommendationResponse(BaseModel):
     outfits: list[OutfitResponse] = []
     style_context: StyleContextResponse | None = None  # V3 M13
     context: TodayContextResponse | None = None  # Phase D — gated by ENABLE_TODAY_CONTEXT
+    applied_context: AppliedContextResponse | None = None  # BE#78 — refresh override echo
 
 
 class WearOutfitRequest(BaseModel):
@@ -189,6 +198,22 @@ class RecommendationEventRequest(BaseModel):
 
 class RecommendationEventResponse(BaseModel):
     event_id: UUID
+
+
+class ContextOverrideRequest(BaseModel):
+    """BE#78 — a chip or free-text Today context override for one refresh."""
+
+    model_config = {"extra": "ignore"}
+
+    text: str | None = Field(default=None, max_length=200)
+    source: str | None = Field(default=None, pattern="^(chip|free_text)$")
+    chip_id: str | None = Field(default=None, max_length=32)
+
+
+class RefreshTodayRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    context_override: ContextOverrideRequest | None = None
 
 
 class OutfitHistoryItemResponse(BaseModel):
