@@ -8,6 +8,14 @@ from app.application.llm_prompts.persona import stylist_persona
 from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.colors import color_score
+from app.application.recommendations.context_override import (
+    COMFORT,
+    EXCLUDE_DRESS,
+    FORMAL,
+    LOW_KEY,
+    REDUCE_WEATHER,
+    REMOVABLE_LAYER,
+)
 from app.application.recommendations.indoor_climate import IndoorClimateSignal
 from app.application.recommendations.reasoning import build_reasoning
 from app.application.safety.copy_guard import sanitize_generated_copy
@@ -38,6 +46,11 @@ LIGHT_SHOE_COLORS = {
     "silver",
     "pink",
     "yellow",
+}
+# BE#78 — non-neutral colors down-weighted under a "low key" (低调) override.
+_BRIGHT_COLORS = {
+    "red", "orange", "yellow", "pink", "hot pink", "fuchsia", "magenta",
+    "purple", "green", "lime", "cyan", "gold",
 }
 FIT_DOWNGRADE_STATUSES = {"tight", "needs_alteration"}
 NO_LONGER_FITS = "no_longer_fits"
@@ -79,6 +92,9 @@ class EngineItem:
     location: str | None = None
     fit_status: str = "unknown"
     fit_intent: str | None = None
+    # BE#78 — needed so an "exclude dresses/skirts" override can also drop skirts,
+    # which are stored as bottom items with sub_category == "skirt".
+    sub_category: str | None = None
 
 
 @dataclass(frozen=True)
@@ -128,8 +144,10 @@ class RecommendationEngine:
         relationship_edges: list[RelationshipEdge] | None = None,
         suppressed_outfit_item_ids: list[set[str]] | None = None,
         indoor_climate: IndoorClimateSignal | None = None,
+        context_constraints: list[str] | None = None,
     ) -> EngineResult:
         recent_worn_main_item_ids = recent_worn_main_item_ids or set()
+        context_constraints = context_constraints or []
         recent_worn_outfit_item_ids = recent_worn_outfit_item_ids or []
         disliked_colors = disliked_colors or set()
         wearable = [item for item in items if item.fit_status != NO_LONGER_FITS]
@@ -149,6 +167,7 @@ class RecommendationEngine:
             fit_profile or {},
             disliked_colors,
             indoor_climate,
+            context_constraints,
         )
         if not candidates:
             return EngineResult(
@@ -273,12 +292,25 @@ class RecommendationEngine:
         fit_profile: dict[str, Any],
         disliked_colors: set[str],
         indoor_climate: IndoorClimateSignal | None = None,
+        context_constraints: list[str] | None = None,
     ) -> list[EngineOutfit]:
-        tops = [item for item in items if item.category == Category.TOP.value]
-        bottoms = [item for item in items if item.category == Category.BOTTOM.value]
-        dresses = [item for item in items if item.category == Category.DRESS.value]
-        outerwears = [item for item in items if item.category == Category.OUTERWEAR.value]
-        shoes = [item for item in items if item.category == Category.SHOES.value]
+        context_constraints = context_constraints or []
+        # BE#78 — "不想穿裙子" excludes dresses AND skirts (stored as bottom items
+        # with sub_category == "skirt") for this request. Filter once, up front,
+        # so every combo path — including the no-combo fallback — honors it.
+        if EXCLUDE_DRESS in context_constraints:
+            usable = [
+                item
+                for item in items
+                if item.category != Category.DRESS.value and item.sub_category != "skirt"
+            ]
+        else:
+            usable = items
+        tops = [item for item in usable if item.category == Category.TOP.value]
+        bottoms = [item for item in usable if item.category == Category.BOTTOM.value]
+        dresses = [item for item in usable if item.category == Category.DRESS.value]
+        outerwears = [item for item in usable if item.category == Category.OUTERWEAR.value]
+        shoes = [item for item in usable if item.category == Category.SHOES.value]
         candidates: list[EngineOutfit] = []
 
         combos: list[list[EngineItem]] = []
@@ -287,8 +319,8 @@ class RecommendationEngine:
                 combos.append([top, bottom])
         for dress in dresses:
             combos.append([dress])
-        if not combos and items:
-            combos.append(items[: min(len(items), 3)])
+        if not combos and usable:
+            combos.append(usable[: min(len(usable), 3)])
 
         if outerwears:
             combos = combos + [
@@ -322,6 +354,7 @@ class RecommendationEngine:
                         fit_profile,
                         disliked_colors,
                         indoor_climate,
+                        context_constraints,
                     )
                 )
         return candidates
@@ -337,7 +370,9 @@ class RecommendationEngine:
         fit_profile: dict[str, Any],
         disliked_colors: set[str],
         indoor_climate: IndoorClimateSignal | None = None,
+        context_constraints: list[str] | None = None,
     ) -> EngineOutfit:
+        context_constraints = context_constraints or []
         colors = [item.color_main for item in combo]
         categories = [item.category for item in combo]
         utility_score = color_score(colors)
@@ -354,6 +389,11 @@ class RecommendationEngine:
         # BE#82 — indoor-climate nudge: prefer a removable outer layer when a
         # tendency was inferred. None (flag off) → 0.0, byte-identical to legacy.
         indoor_climate_bonus = self._indoor_climate_score(combo, indoor_climate)
+        # BE#78 — session-scoped context-override nudges. Empty (flag off / no
+        # override) → 0.0, byte-identical to legacy.
+        context_bonus = self._context_constraint_score(
+            combo, context_constraints, weather_score, time_cost_score
+        )
         type_boost = {
             OutfitType.SAFE.value: 0.05,
             OutfitType.FAST.value: 0.03,
@@ -373,6 +413,7 @@ class RecommendationEngine:
                 - repetition_penalty
                 - disliked_penalty
                 + indoor_climate_bonus
+                + context_bonus
             )
         elif has_fit_signal:
             total = (
@@ -383,6 +424,7 @@ class RecommendationEngine:
                 - repetition_penalty
                 - disliked_penalty
                 + indoor_climate_bonus
+                + context_bonus
             )
         else:
             total = (
@@ -392,6 +434,7 @@ class RecommendationEngine:
                 - repetition_penalty
                 - disliked_penalty
                 + indoor_climate_bonus
+                + context_bonus
             )
 
         title = _TITLE_TEMPLATES[outfit_type]
@@ -433,6 +476,9 @@ class RecommendationEngine:
         # flag-off breakdown keeps its exact legacy shape.
         if indoor_climate is not None:
             score_breakdown["indoor_climate_bonus"] = indoor_climate_bonus
+        # BE#78 — same rule: only surface when an override is actually applied.
+        if context_constraints:
+            score_breakdown["context_bonus"] = context_bonus
         return EngineOutfit(
             outfit_type=outfit_type,
             title=title,
@@ -524,6 +570,39 @@ class RecommendationEngine:
             return 0.0
         has_outerwear = any(item.category == Category.OUTERWEAR.value for item in combo)
         return 0.08 if has_outerwear else 0.0
+
+    def _context_constraint_score(
+        self,
+        combo: list[EngineItem],
+        constraints: list[str],
+        weather_score: float,
+        time_cost_score: float,
+    ) -> float:
+        """BE#78 — session-scoped context-override nudges (exclude_dress is a
+        filter handled in _build_candidates; the rest are scoring). Empty → 0.0,
+        byte-identical to legacy."""
+        if not constraints:
+            return 0.0
+        bonus = 0.0
+        categories = {item.category for item in combo}
+        has_outer = Category.OUTERWEAR.value in categories
+        if REMOVABLE_LAYER in constraints and has_outer:
+            bonus += 0.10
+        if FORMAL in constraints and has_outer:
+            # No item formality metadata; a layer reads more polished — a mild,
+            # honest nudge. applied_context tells FE what was requested regardless.
+            bonus += 0.06
+        if COMFORT in constraints:
+            # Reward low-effort, easy-to-wear looks (time_cost already captures this).
+            bonus += 0.10 * time_cost_score
+        if LOW_KEY in constraints:
+            bright = sum(1 for item in combo if item.color_main.lower() in _BRIGHT_COLORS)
+            bonus -= 0.08 * bright
+        if REDUCE_WEATHER in constraints:
+            # Neutralize the weather term (weighted 0.15 in the profile branch) so
+            # weather stops driving the pick when the user is mostly indoors.
+            bonus += (0.8 - weather_score) * 0.15
+        return bonus
 
     def _fit_score(self, combo: list[EngineItem], fit_profile: dict[str, Any]) -> float:
         """Score fit quality per item, adjusted by learned user preferences.

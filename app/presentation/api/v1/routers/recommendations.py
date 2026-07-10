@@ -21,15 +21,22 @@ from app.application.outfits.prep import compute_prep
 from app.application.outfits.replacements import find_replacement_candidates
 from app.application.outfits.scoring.dynamic import compute_dynamic_scores
 from app.application.outfits.wear import WearOutfit
+from app.application.recommendations.context_override import resolve_constraints
 from app.application.recommendations.feedback_tags import get_tags_for_scene
 from app.application.recommendations.get_today import GetTodayRecommendation
 from app.application.recommendations.ingest_event import IngestRecommendationEvent
 from app.application.recommendations.style_context import build_style_context
 from app.application.wardrobe.submit_fit_feedback import SubmitFitFeedback
-from app.bootstrap.container import weather_service
+from app.bootstrap.container import llm_service, weather_service
 from app.common import error_codes
 from app.common.category_to_role import map_category_to_role
-from app.common.enums import ImageType, ItemStatus, RecommendationStatus, TimeSensitivity
+from app.common.enums import (
+    ImageType,
+    ItemStatus,
+    RecommendationEventType,
+    RecommendationStatus,
+    TimeSensitivity,
+)
 from app.common.exceptions import FriendlyException
 from app.common.i18n import I18nMessage
 from app.common.season import current_season
@@ -53,6 +60,7 @@ from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url
 from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.recommendations import (
+    AppliedContextResponse,
     FavoriteOutfitResponse,
     FeedbackBundleRequest,
     FeedbackBundleResponse,
@@ -70,6 +78,7 @@ from app.presentation.api.v1.schemas.recommendations import (
     RecommendationEventRequest,
     RecommendationEventResponse,
     RecommendationItemResponse,
+    RefreshTodayRequest,
     ReplacementCandidateResponse,
     ReplacementCandidatesResponse,
     StyleContextResponse,
@@ -553,17 +562,52 @@ async def refresh_today(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     redis_client: Annotated[Redis, Depends(get_redis_client)],
+    payload: RefreshTodayRequest | None = None,
     scene: str | None = Query(default=None, pattern="^(commute|formal|casual)$"),
 ) -> ResponseModel[TodayRecommendationResponse]:
     """Phase D3 — user-initiated refresh. Writes a new revision; old revision
     rows + their wear/feedback references are preserved. Rate-limited per
     `TODAY_REFRESH_DAILY_LIMIT` (default 3/d incl. background rev-1)."""
-    from app.application.recommendations.refresh_today import refresh_today_recommendation
+    from app.application.recommendations.refresh_today import (
+        assert_refresh_allowed,
+        refresh_today_recommendation,
+    )
 
     repository = SqlAlchemyRecommendationRepository(session)
     style_repo = SqlAlchemyStyleRepository(session)
+
+    # Gate on refresh eligibility BEFORE any LLM override parse, so an over-quota
+    # client can't burn LLM spend just to get a 429. refresh_today_recommendation
+    # re-checks — the gate is a cheap, idempotent read.
+    await assert_refresh_allowed(repository, current_user.id)
+
+    # BE#78 — resolve a context override (chip / free text) into session-scoped
+    # constraints; emit the signal and echo applied_context. Flag-gated and only
+    # when an override is present, so legacy refresh stays unchanged.
+    override = payload.context_override if payload else None
+    context_constraints: list[str] = []
+    applied_context: AppliedContextResponse | None = None
+    if override is not None and get_settings().ENABLE_CONTEXT_OVERRIDES:
+        context_constraints = await resolve_constraints(
+            override.chip_id, override.text, override.source, llm_service()
+        )
+        applied_context = AppliedContextResponse(
+            override_text=override.text, constraints=context_constraints
+        )
+        await IngestRecommendationEvent(repository).execute(
+            current_user.id,
+            event_type=RecommendationEventType.CONTEXT_OVERRIDE_SUBMITTED.value,
+            signal_strength="medium",
+            source_surface="today",
+            metadata={"chip_id": override.chip_id, "constraints": context_constraints},
+        )
+
     daily = await refresh_today_recommendation(
-        current_user.id, repository, style_repo, scene=scene
+        current_user.id,
+        repository,
+        style_repo,
+        scene=scene,
+        context_constraints=context_constraints,
     )
     # Re-fetch with eager-loaded outfits + items so today_response can
     # build the response without triggering lazy loads when Pydantic
@@ -599,6 +643,7 @@ async def refresh_today(
     today_data = await today_response(
         daily, session, daily.recommendation_date, user_settings.departure_time, scene
     )
+    today_data.applied_context = applied_context
     return ResponseModel(data=today_data)
 
 

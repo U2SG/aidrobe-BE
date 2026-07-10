@@ -149,6 +149,11 @@ class Settings(BaseSettings):
     # removable outer layer) + surface an indoor_climate_inference reason. Off →
     # generation is byte-identical to legacy (no inference, no score, no reason).
     ENABLE_INDOOR_CLIMATE_INFERENCE: bool = False
+    # BE#78 — accept a Today refresh context override (chip / free text), map it
+    # to session-scoped generation constraints (exclude dress, formal, comfort,
+    # removable layer, low-key, reduce-weather), apply them to filtering/ranking,
+    # and echo applied_context. Off → override is ignored (legacy refresh).
+    ENABLE_CONTEXT_OVERRIDES: bool = False
     # Look-back window (days) for the diversity checks above. Applied ONLY when
     # ENABLE_RECOMMENDATION_DIVERSITY is on; with the flag off the worn-similarity
     # penalty keeps its legacy fixed 7-day window regardless of this value.
