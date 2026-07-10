@@ -568,10 +568,18 @@ async def refresh_today(
     """Phase D3 — user-initiated refresh. Writes a new revision; old revision
     rows + their wear/feedback references are preserved. Rate-limited per
     `TODAY_REFRESH_DAILY_LIMIT` (default 3/d incl. background rev-1)."""
-    from app.application.recommendations.refresh_today import refresh_today_recommendation
+    from app.application.recommendations.refresh_today import (
+        assert_refresh_allowed,
+        refresh_today_recommendation,
+    )
 
     repository = SqlAlchemyRecommendationRepository(session)
     style_repo = SqlAlchemyStyleRepository(session)
+
+    # Gate on refresh eligibility BEFORE any LLM override parse, so an over-quota
+    # client can't burn LLM spend just to get a 429. refresh_today_recommendation
+    # re-checks — the gate is a cheap, idempotent read.
+    await assert_refresh_allowed(repository, current_user.id)
 
     # BE#78 — resolve a context override (chip / free text) into session-scoped
     # constraints; emit the signal and echo applied_context. Flag-gated and only

@@ -92,6 +92,9 @@ class EngineItem:
     location: str | None = None
     fit_status: str = "unknown"
     fit_intent: str | None = None
+    # BE#78 — needed so an "exclude dresses/skirts" override can also drop skirts,
+    # which are stored as bottom items with sub_category == "skirt".
+    sub_category: str | None = None
 
 
 @dataclass(frozen=True)
@@ -292,16 +295,22 @@ class RecommendationEngine:
         context_constraints: list[str] | None = None,
     ) -> list[EngineOutfit]:
         context_constraints = context_constraints or []
-        tops = [item for item in items if item.category == Category.TOP.value]
-        bottoms = [item for item in items if item.category == Category.BOTTOM.value]
-        # BE#78 — "不想穿裙子" excludes dresses for this request (filter, not penalty).
-        dresses = (
-            []
-            if EXCLUDE_DRESS in context_constraints
-            else [item for item in items if item.category == Category.DRESS.value]
-        )
-        outerwears = [item for item in items if item.category == Category.OUTERWEAR.value]
-        shoes = [item for item in items if item.category == Category.SHOES.value]
+        # BE#78 — "不想穿裙子" excludes dresses AND skirts (stored as bottom items
+        # with sub_category == "skirt") for this request. Filter once, up front,
+        # so every combo path — including the no-combo fallback — honors it.
+        if EXCLUDE_DRESS in context_constraints:
+            usable = [
+                item
+                for item in items
+                if item.category != Category.DRESS.value and item.sub_category != "skirt"
+            ]
+        else:
+            usable = items
+        tops = [item for item in usable if item.category == Category.TOP.value]
+        bottoms = [item for item in usable if item.category == Category.BOTTOM.value]
+        dresses = [item for item in usable if item.category == Category.DRESS.value]
+        outerwears = [item for item in usable if item.category == Category.OUTERWEAR.value]
+        shoes = [item for item in usable if item.category == Category.SHOES.value]
         candidates: list[EngineOutfit] = []
 
         combos: list[list[EngineItem]] = []
@@ -310,8 +319,8 @@ class RecommendationEngine:
                 combos.append([top, bottom])
         for dress in dresses:
             combos.append([dress])
-        if not combos and items:
-            combos.append(items[: min(len(items), 3)])
+        if not combos and usable:
+            combos.append(usable[: min(len(usable), 3)])
 
         if outerwears:
             combos = combos + [

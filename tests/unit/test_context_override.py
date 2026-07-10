@@ -110,3 +110,24 @@ async def test_exclude_dress_removes_dresses_from_generation() -> None:
     assert result.status == "ready"
     for outfit in result.outfits:
         assert "dress1" not in outfit.item_ids
+
+
+async def test_exclude_dress_also_drops_skirt_bottoms() -> None:
+    # Skirts are bottom items with sub_category == "skirt"; no-skirt must drop them.
+    engine = RecommendationEngine()
+    items = [
+        _item(Category.TOP.value, item_id="top1"),
+        EngineItem(
+            item_id="skirt1",
+            title="skirt",
+            category=Category.BOTTOM.value,
+            color_main="black",
+            sub_category="skirt",
+        ),
+        _item(Category.BOTTOM.value, item_id="pants1"),
+        _item(Category.SHOES.value, item_id="shoes1"),
+    ]
+    result = await engine.generate(items, context_constraints=[EXCLUDE_DRESS])
+    assert result.status == "ready"
+    for outfit in result.outfits:
+        assert "skirt1" not in outfit.item_ids

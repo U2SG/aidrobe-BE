@@ -152,6 +152,7 @@ class RecommendationGenerator:
                     location=item.location,
                     fit_status=item.fit_status,
                     fit_intent=item.fit_intent,
+                    sub_category=item.sub_category,
                 )
                 for item in items
             ],
