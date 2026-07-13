@@ -116,7 +116,7 @@ class AliyunOssStorage:
         deletion path that reaches them."""
         if not prefix.strip("/"):
             raise ValueError("delete_prefix requires a non-root prefix")
-        import oss2  # type: ignore[import-not-found]
+        import oss2
 
         auth = oss2.Auth(
             self.settings.ALIYUN_OSS_ACCESS_KEY_ID,
