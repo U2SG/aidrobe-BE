@@ -99,6 +99,7 @@ async def test_v1_slim_full_flow(db_session: AsyncSession) -> None:
         )
         presign = await client.post(
             "/v1/uploads/presign",
+            headers={"X-User-Id": str(user_id)},
             json={"file_name": "shirt.jpg", "content_type": "image/jpeg"},
         )
         assert presign.status_code == 200

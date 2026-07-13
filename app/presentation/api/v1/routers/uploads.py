@@ -31,6 +31,7 @@ _BUCKET_ALIAS = {
 @router.post("/presign", response_model=ResponseModel[PresignUploadResponse])
 async def create_presigned_upload(
     payload: PresignUploadRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
 ) -> ResponseModel[PresignUploadResponse]:
     if payload.content_type not in ALLOWED_IMAGE_CONTENT_TYPES:
         raise FriendlyException(
@@ -43,6 +44,7 @@ async def create_presigned_upload(
         file_name=payload.file_name,
         content_type=payload.content_type,
         max_bytes=payload.max_content_length,
+        key_prefix=f"users/{current_user.id}",
     )
     return ResponseModel(data=PresignUploadResponse(**result.__dict__))
 

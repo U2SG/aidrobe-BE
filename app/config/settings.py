@@ -19,7 +19,9 @@ class Settings(BaseSettings):
     LOCAL_STORAGE_ROOT: str = "/tmp/aidrobe_local_storage"
     LOCAL_STORAGE_BASE_URL: str = "http://localhost:9000/local"
     API_RATE_LIMIT_PER_USER_MINUTE: int = 100
+    API_RATE_LIMIT_PER_IP_MINUTE: int = 30
     AUTH_RATE_LIMIT_PER_IP_MINUTE: int = 10
+    INVITE_LOGIN_CODES: str = ""
     # Browser clients (web build) need CORS; native apps don't. In dev/test any
     # localhost origin is allowed automatically; in prod, set explicit origins
     # here (comma-separated) to enable CORS for a hosted web client.

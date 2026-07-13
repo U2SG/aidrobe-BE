@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application import audit
 from app.application.safety.copy_guard import find_forbidden_terms
 from app.application.users.clear_data import clear_user_data
+from app.application.users.storage_purge import collect_user_object_keys, enqueue_storage_purge
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
@@ -205,6 +206,11 @@ async def clear_all_app_data(
     style data, settings) while preserving the account. Real deletion, audited;
     the audit trail itself survives (audit_log has no users FK by design)."""
     _require_data_trust()
+    settings = get_settings()
+    # Collect storage keys BEFORE clearing rows — clear_user_data wipes the DB rows
+    # that carry the object keys/URLs, and also deletes async_jobs, so the purge job
+    # must be enqueued AFTER.
+    object_keys = await collect_user_object_keys(session, current_user.id, settings)
     cleared = await clear_user_data(session, current_user.id)
     # The /today response is Redis-cached until UTC day end; without this the
     # next GET would replay the PRE-clear outfits after we told the user their
@@ -217,4 +223,7 @@ async def clear_all_app_data(
         user_id=current_user.id,
         payload={"cleared_rows": cleared},
     )
+    # Enqueue AFTER clear_user_data so the async_jobs row lands in the same
+    # transaction (clear_user_data deletes existing async_jobs rows first).
+    await enqueue_storage_purge(session, current_user.id, object_keys)
     return ResponseModel(data=ClearDataResponse(cleared_rows=cleared))

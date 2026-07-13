@@ -31,6 +31,7 @@ import structlog
 from sqlalchemy import delete
 
 from app.application.audit import ACTION_USER_PURGE, ACTION_USER_PURGE_FAILED, record
+from app.application.users.storage_purge import collect_user_object_keys, enqueue_storage_purge
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.user import User
@@ -103,6 +104,8 @@ async def _process_one(job: AsyncJob) -> None:
                         payload={"reason": "user_reactivated_within_grace"},
                     )
                 else:
+                    # Collect storage keys BEFORE the cascade delete wipes the rows.
+                    object_keys = await collect_user_object_keys(session, user_id, settings)
                     # Cascade-delete. FKs on user_settings / user_sessions /
                     # wardrobe_items / daily_recommendations are ON DELETE
                     # CASCADE so the children go too.
@@ -114,6 +117,17 @@ async def _process_one(job: AsyncJob) -> None:
                         user_id=user_id,
                         target_type="user",
                         target_id=user_id,
+                    )
+                    # Enqueue storage deletion in the same transaction so keys are
+                    # durably scheduled even if the commit is the last thing that
+                    # runs. sweep_prefix is safe here (and only here): the account
+                    # is hard-deleted, nothing new can land under its prefix.
+                    await enqueue_storage_purge(
+                        session,
+                        user_id=user_id,
+                        keys=object_keys,
+                        correlation_id=job.correlation_id,
+                        sweep_prefix=True,
                     )
                 ok = await mark_succeeded(
                     session, job.id, claimed_attempt=job.attempts
