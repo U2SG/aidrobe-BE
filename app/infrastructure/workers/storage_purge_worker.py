@@ -56,12 +56,16 @@ async def _process_one(job: AsyncJob) -> None:
         try:
             storage = object_storage()
             await storage.delete_objects(keys)
-            # Catch-all sweep: exports, STS uploads into per-purpose buckets,
-            # and anything whose DB row disappeared before key collection all
-            # live under the user's prefix. UUID-parse guards against ever
-            # issuing a root/short prefix delete from a malformed payload.
-            prefix = f"users/{uuid.UUID(user_id_str)}/"
-            swept = await storage.delete_prefix(prefix)
+            # Catch-all sweep — hard purge only (payload flag). Deletes STS
+            # uploads in per-purpose buckets and anything whose DB row was
+            # already gone. Clear-data jobs skip it: the account is still
+            # active and a sweep would eat uploads made after the request.
+            # UUID-parse guards against ever issuing a root/short prefix
+            # delete from a malformed payload.
+            swept = 0
+            if payload.get("sweep_prefix"):
+                prefix = f"users/{uuid.UUID(user_id_str)}/"
+                swept = await storage.delete_prefix(prefix)
             logger.info(
                 "storage_purge.deleted",
                 user_id=user_id_str,

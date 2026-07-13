@@ -125,6 +125,14 @@ async def _seed_user_with_images(
                 weight=1.0,
             )
         )
+        s.add(
+            AsyncJob(
+                job_type="user_export",
+                idempotency_key=f"user_export:{user_id}",
+                user_id=user_id,
+                result={"object_key": f"users/{user_id}/export/e1.json"},
+            )
+        )
         await s.commit()
     return user_id, item_id
 
@@ -139,6 +147,9 @@ async def test_collect_keys_resolves_internal_and_skips_external(
     assert f"users/{user_id}/wardrobe/o1/orig.jpg" in keys
     # source_url files (learned PDFs etc.) are collected too.
     assert f"users/{user_id}/style/p1/mag.pdf" in keys
+    # Export bundle keys come from the job result — clear-data has no prefix
+    # sweep, so this is its only path to deleting the pre-clear bundle.
+    assert f"users/{user_id}/export/e1.json" in keys
     # External CDN URL yields no key — we must never delete third-party objects.
     assert not any("example-cdn" in k or "logo.png" in k for k in keys)
     assert len(keys) == len(set(keys))
@@ -176,6 +187,28 @@ async def test_user_purge_enqueues_storage_purge_with_keys(
         keys = purge_jobs[0].payload["keys"]
         assert f"users/{user_id}/wardrobe/o1/orig.jpg" in keys
         assert f"users/{user_id}/wardrobe/c1/cover.jpg" in keys
+        # Hard purge (account gone) is the ONLY path allowed to prefix-sweep.
+        assert purge_jobs[0].payload["sweep_prefix"] is True
+
+
+async def _make_purge_job_due_now(
+    factory: async_sessionmaker[AsyncSession], user_id: uuid.UUID
+) -> None:
+    """Pull the enqueued job's next_run_at into the past. The column default
+    is the DB server's now(); claim_one compares against the Python clock —
+    a testcontainer clock slightly ahead of the host makes the fresh job
+    unclaimable and the drain flaky."""
+    async with factory() as s:
+        job = (
+            await s.execute(
+                select(AsyncJob).where(
+                    AsyncJob.job_type == storage_purge_worker.JOB_TYPE,
+                    AsyncJob.user_id == user_id,
+                )
+            )
+        ).scalar_one()
+        job.next_run_at = datetime.now(UTC) - timedelta(seconds=1)
+        await s.commit()
 
 
 async def test_storage_purge_worker_deletes_and_succeeds(
@@ -188,13 +221,36 @@ async def test_storage_purge_worker_deletes_and_succeeds(
     user_id = uuid.uuid4()
     keys = [f"users/{user_id}/wardrobe/a/x.jpg", f"users/{user_id}/wardrobe/b/y.jpg"]
     async with patched_session_factory() as s:
-        await enqueue_storage_purge(s, user_id, keys)
+        await enqueue_storage_purge(s, user_id, keys, sweep_prefix=True)
         await s.commit()
+    await _make_purge_job_due_now(patched_session_factory, user_id)
 
     assert await drain_storage_purge_jobs(ctx=None) == 1
     assert fake.deleted == keys
     # Prefix sweep runs after key deletion — catches exports/STS uploads.
     assert fake.swept_prefixes == [f"users/{user_id}/"]
+
+
+async def test_storage_purge_worker_clear_data_job_does_not_sweep(
+    patched_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Clear-data jobs (account still active) must be bounded to the keys
+    collected at enqueue time — sweeping the live prefix would delete
+    uploads made after the clear request."""
+    fake = _FakeStorage()
+    monkeypatch.setattr(storage_purge_worker, "object_storage", lambda: fake)
+
+    user_id = uuid.uuid4()
+    keys = [f"users/{user_id}/wardrobe/a/x.jpg"]
+    async with patched_session_factory() as s:
+        await enqueue_storage_purge(s, user_id, keys)  # sweep_prefix defaults False
+        await s.commit()
+    await _make_purge_job_due_now(patched_session_factory, user_id)
+
+    assert await drain_storage_purge_jobs(ctx=None) == 1
+    assert fake.deleted == keys
+    assert fake.swept_prefixes == []
 
     async with patched_session_factory() as s:
         job = (
@@ -222,6 +278,7 @@ async def test_storage_purge_worker_requeues_on_delete_failure(
     async with patched_session_factory() as s:
         await enqueue_storage_purge(s, user_id, [f"users/{user_id}/wardrobe/a/x.jpg"])
         await s.commit()
+    await _make_purge_job_due_now(patched_session_factory, user_id)
 
     await drain_storage_purge_jobs(ctx=None)
 

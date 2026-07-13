@@ -119,12 +119,15 @@ async def _process_one(job: AsyncJob) -> None:
                         target_id=user_id,
                     )
                     # Enqueue storage deletion in the same transaction so keys are
-                    # durably scheduled even if the commit is the last thing that runs.
+                    # durably scheduled even if the commit is the last thing that
+                    # runs. sweep_prefix is safe here (and only here): the account
+                    # is hard-deleted, nothing new can land under its prefix.
                     await enqueue_storage_purge(
                         session,
                         user_id=user_id,
                         keys=object_keys,
                         correlation_id=job.correlation_id,
+                        sweep_prefix=True,
                     )
                 ok = await mark_succeeded(
                     session, job.id, claimed_attempt=job.attempts

@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import Settings
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.image_job import ImageProcessingJob
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
 from app.infrastructure.persistence.models.recommendation import WearHistory
@@ -144,6 +145,21 @@ async def collect_user_object_keys(
             if k:
                 keys.append(k)
 
+    # Data-export bundles — the worker records the bundle's object key in the
+    # job result. Collected here so clear-data (which does NOT prefix-sweep,
+    # the account stays active) still deletes the pre-clear export bundle.
+    export_rows = (
+        await session.execute(
+            select(AsyncJob.result).where(
+                AsyncJob.user_id == user_id, AsyncJob.job_type == "user_export"
+            )
+        )
+    ).all()
+    for (result,) in export_rows:
+        key = (result or {}).get("object_key")
+        if key:
+            keys.append(key)
+
     # Deduplicate while preserving order.
     seen: set[str] = set()
     unique: list[str] = []
@@ -165,13 +181,21 @@ async def enqueue_storage_purge(
     user_id: uuid.UUID,
     keys: Sequence[str],
     correlation_id: str | None = None,
+    *,
+    sweep_prefix: bool = False,
 ) -> None:
     """Enqueue a storage_purge job. Uses a unique idempotency key so multiple
     enqueues (e.g. clear-data → purge) each produce their own job.
 
-    Enqueued even when `keys` is empty — the worker also sweeps the user's
-    `users/<id>/` prefix, which can hold objects (exports, STS uploads) that
-    no surviving DB row points at."""
+    `sweep_prefix=True` additionally deletes EVERYTHING under `users/<id>/` —
+    only safe for hard account purge, where the account is gone and nothing
+    new can be uploaded. Clear-data must keep it False: the account stays
+    active and the worker may run up to an hour later, so a sweep would eat
+    uploads made after the clear request. When False, deletion is bounded to
+    the keys collected at enqueue time."""
+    if not keys and not sweep_prefix:
+        logger.info("storage_purge.skipped_no_keys", user_id=str(user_id))
+        return
     # Unique key per invocation — storage purge can fire more than once per
     # user (clear-data is repeatable), so we must NOT reuse a per-user key.
     idempotency_key = f"storage_purge:{user_id}:{uuid.uuid4()}"
@@ -179,7 +203,11 @@ async def enqueue_storage_purge(
         session,
         job_type=JOB_TYPE,
         idempotency_key=idempotency_key,
-        payload={"user_id": str(user_id), "keys": list(keys)},
+        payload={
+            "user_id": str(user_id),
+            "keys": list(keys),
+            "sweep_prefix": sweep_prefix,
+        },
         user_id=user_id,
         target_id=user_id,
         correlation_id=correlation_id,
