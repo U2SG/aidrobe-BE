@@ -1,10 +1,14 @@
 import re
 import uuid
+from collections.abc import Sequence
 
 import boto3
+import structlog
 
 from app.application.ports.storage import PresignResult
 from app.config.settings import Settings
+
+logger = structlog.get_logger(__name__)
 
 
 class S3ObjectStorage:
@@ -26,9 +30,12 @@ class S3ObjectStorage:
         file_name: str,
         content_type: str,
         max_bytes: int,
+        *,
+        key_prefix: str = "",
     ) -> PresignResult:
         safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", file_name).strip("._") or "upload"
-        object_key = f"wardrobe/{uuid.uuid4()}/{safe_name}"
+        prefix = key_prefix.strip("/") + "/" if key_prefix else ""
+        object_key = f"{prefix}wardrobe/{uuid.uuid4()}/{safe_name}"
         presigned = self.client.generate_presigned_post(
             self.bucket,
             object_key,
@@ -46,6 +53,39 @@ class S3ObjectStorage:
             object_key=object_key,
             fields=presigned["fields"],
         )
+
+    async def delete_objects(self, keys: Sequence[str]) -> None:
+        if not keys:
+            return
+        for i in range(0, len(keys), 1000):
+            batch = list(keys[i : i + 1000])
+            resp = self.client.delete_objects(
+                Bucket=self.bucket,
+                Delete={"Objects": [{"Key": k} for k in batch], "Quiet": False},
+            )
+            errors = resp.get("Errors", [])
+            if errors:
+                logger.error(
+                    "s3.delete_objects.errors",
+                    errors=errors,
+                    bucket=self.bucket,
+                )
+                raise RuntimeError(
+                    f"S3 delete_objects returned {len(errors)} error(s): "
+                    f"{errors[0].get('Code')}: {errors[0].get('Message')}"
+                )
+
+    async def delete_prefix(self, prefix: str) -> int:
+        if not prefix.strip("/"):
+            raise ValueError("delete_prefix requires a non-root prefix")
+        deleted = 0
+        paginator = self.client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+            keys = [obj["Key"] for obj in page.get("Contents", [])]
+            if keys:
+                await self.delete_objects(keys)
+                deleted += len(keys)
+        return deleted
 
     async def put_object(self, key: str, data: bytes, content_type: str) -> str:
         self.client.put_object(

@@ -9,6 +9,8 @@ from starlette.types import ASGIApp
 from app.common import error_codes
 from app.config.settings import Settings
 
+_AUTH_PATHS = {"/v1/auth/login/apple", "/v1/auth/login/invite"}
+
 
 class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp, settings: Settings) -> None:
@@ -17,24 +19,36 @@ class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
         self.window = timedelta(minutes=1)
         self.global_calls: dict[str, deque[datetime]] = defaultdict(deque)
         self.auth_calls: dict[str, deque[datetime]] = defaultdict(deque)
+        self.anon_calls: dict[str, deque[datetime]] = defaultdict(deque)
 
     async def dispatch(
         self,
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        if request.url.path == "/v1/auth/login/apple":
+        if request.url.path in _AUTH_PATHS:
             key = request.client.host if request.client else "unknown"
             if not self._allow(key, self.auth_calls, self.settings.AUTH_RATE_LIMIT_PER_IP_MINUTE):
                 return self._limited()
         else:
             rate_key = request.headers.get("Authorization") or request.headers.get("X-User-Id")
-            if rate_key and not self._allow(
-                rate_key,
-                self.global_calls,
-                self.settings.API_RATE_LIMIT_PER_USER_MINUTE,
-            ):
-                return self._limited()
+            if rate_key:
+                if not self._allow(
+                    rate_key,
+                    self.global_calls,
+                    self.settings.API_RATE_LIMIT_PER_USER_MINUTE,
+                ):
+                    return self._limited()
+            else:
+                # Anonymous request — rate-limit by IP to prevent unauthenticated
+                # flood (e.g. scanning /healthz or probing presign before auth).
+                ip_key = request.client.host if request.client else "unknown"
+                if not self._allow(
+                    ip_key,
+                    self.anon_calls,
+                    self.settings.API_RATE_LIMIT_PER_IP_MINUTE,
+                ):
+                    return self._limited()
         return await call_next(request)
 
     def _allow(self, key: str, store: dict[str, deque[datetime]], limit: int) -> bool:

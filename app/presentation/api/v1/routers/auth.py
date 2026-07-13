@@ -15,6 +15,7 @@ from app.infrastructure.security.jwt.tokens import JwtTokenService
 from app.presentation.api.v1.schemas.auth import (
     AppleLoginRequest,
     AuthTokenResponse,
+    InviteLoginRequest,
     RefreshTokenRequest,
 )
 from app.presentation.api.v1.schemas.common import ResponseModel
@@ -39,6 +40,18 @@ async def login_with_apple(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ResponseModel[AuthTokenResponse]:
     tokens = await build_auth_service(session, settings).login_with_apple(payload.id_token)
+    return ResponseModel(data=AuthTokenResponse(**tokens.__dict__))
+
+
+@router.post("/login/invite", response_model=ResponseModel[AuthTokenResponse])
+async def login_with_invite(
+    payload: InviteLoginRequest,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ResponseModel[AuthTokenResponse]:
+    tokens = await build_auth_service(session, settings).login_with_invite(
+        payload.invite_code, payload.device_id
+    )
     return ResponseModel(data=AuthTokenResponse(**tokens.__dict__))
 
 

@@ -18,10 +18,15 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Sequence
 from typing import cast
+
+import structlog
 
 from app.application.ports.storage import PresignResult
 from app.config.settings import Settings
+
+logger = structlog.get_logger(__name__)
 
 
 class AliyunOssStorage:
@@ -57,6 +62,8 @@ class AliyunOssStorage:
         file_name: str,
         content_type: str,
         max_bytes: int,
+        *,
+        key_prefix: str = "",
     ) -> PresignResult:
         """Server-signed PUT URL fallback when the client cannot hold STS.
 
@@ -64,7 +71,8 @@ class AliyunOssStorage:
         flows (e.g. import worker writing into the user's bucket prefix on
         behalf of the user)."""
         safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", file_name).strip("._") or "upload"
-        object_key = f"wardrobe/{uuid.uuid4()}/{safe_name}"
+        prefix = key_prefix.strip("/") + "/" if key_prefix else ""
+        object_key = f"{prefix}wardrobe/{uuid.uuid4()}/{safe_name}"
         # `sign_url` returns a string URL; OSS signs the verb + headers in
         # the URL itself, so the client just PUTs the bytes to it.
         ttl = self.settings.S3_PRESIGN_EXPIRES_SECONDS  # reuse the existing knob
@@ -81,6 +89,69 @@ class AliyunOssStorage:
             object_key=object_key,
             fields={},
         )
+
+    async def delete_objects(self, keys: Sequence[str]) -> None:
+        if not keys:
+            return
+        for i in range(0, len(keys), 1000):
+            batch = list(keys[i : i + 1000])
+            result = self._bucket.batch_delete_objects(batch)  # type: ignore[attr-defined]
+            # Missing keys are success (OSS batch delete is idempotent); a
+            # non-200 means the request itself failed and must retry.
+            if result.status != 200:
+                logger.error(
+                    "oss.delete_objects.error",
+                    status=result.status,
+                    keys_count=len(batch),
+                )
+                raise RuntimeError(
+                    f"OSS batch_delete_objects returned status {result.status}"
+                )
+
+    async def delete_prefix(self, prefix: str) -> int:
+        """Sweep `prefix` across the default bucket AND every configured
+        per-purpose bucket (items/ootd/private/derived). STS-uploaded objects
+        land in per-purpose buckets whose URLs `extract_internal_object_key`
+        deliberately refuses to resolve — the prefix sweep is the only
+        deletion path that reaches them."""
+        if not prefix.strip("/"):
+            raise ValueError("delete_prefix requires a non-root prefix")
+        import oss2  # type: ignore[import-not-found]
+
+        auth = oss2.Auth(
+            self.settings.ALIYUN_OSS_ACCESS_KEY_ID,
+            self.settings.ALIYUN_OSS_ACCESS_KEY_SECRET,
+        )
+        bucket_names = {self.settings.ALIYUN_OSS_BUCKET}
+        for field in (
+            "ALIYUN_OSS_BUCKET_ITEMS",
+            "ALIYUN_OSS_BUCKET_OOTD",
+            "ALIYUN_OSS_BUCKET_PRIVATE",
+            "ALIYUN_OSS_BUCKET_DERIVED",
+        ):
+            name = getattr(self.settings, field, "")
+            if name:
+                bucket_names.add(name)
+
+        deleted = 0
+        for name in sorted(bucket_names):
+            bucket = oss2.Bucket(auth, self.settings.ALIYUN_OSS_ENDPOINT, name)
+            keys = [obj.key for obj in oss2.ObjectIterator(bucket, prefix=prefix)]
+            for i in range(0, len(keys), 1000):
+                batch = keys[i : i + 1000]
+                result = bucket.batch_delete_objects(batch)
+                if result.status != 200:
+                    logger.error(
+                        "oss.delete_prefix.error",
+                        status=result.status,
+                        bucket=name,
+                        keys_count=len(batch),
+                    )
+                    raise RuntimeError(
+                        f"OSS batch_delete_objects returned status {result.status}"
+                    )
+                deleted += len(batch)
+        return deleted
 
     async def put_object(self, key: str, data: bytes, content_type: str) -> str:
         # `bucket.put_object` is sync; this method is async for port-parity

@@ -46,6 +46,47 @@
         }
       }
     },
+    "/v1/auth/login/invite": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Login With Invite",
+        "operationId": "login_with_invite_v1_auth_login_invite_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InviteLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_AuthTokenResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/auth/refresh": {
       "post": {
         "tags": [
@@ -103,6 +144,23 @@
                   "type": "object",
                   "title": "Response Health Healthz Get"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "summary": "Readiness",
+        "description": "Deep health check: returns 200 when the DB is reachable, 503 otherwise.\nUsed by the docker-compose healthcheck and load-balancer probes.",
+        "operationId": "readiness_readyz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           }
@@ -254,15 +312,49 @@
         ],
         "summary": "Create Presigned Upload",
         "operationId": "create_presigned_upload_v1_uploads_presign_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/PresignUploadRequest"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -1540,6 +1632,23 @@
             }
           },
           {
+            "name": "target_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Target Date"
+            }
+          },
+          {
             "name": "Authorization",
             "in": "header",
             "required": false,
@@ -1655,6 +1764,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RefreshTodayRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2225,6 +2351,82 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResponseModel_FeedbackResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/recommendations/events": {
+      "post": {
+        "tags": [
+          "recommendations"
+        ],
+        "summary": "Ingest Recommendation Event",
+        "description": "BE#81 — general passive-learning event ingestion. Append-only; distinct\nfrom the explicit feedback endpoints above (which stay backward compatible).",
+        "operationId": "ingest_recommendation_event_v1_recommendations_events_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecommendationEventRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_RecommendationEventResponse_"
                 }
               }
             }
@@ -5279,6 +5481,351 @@
         }
       }
     },
+    "/v1/profile/memory": {
+      "get": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "List Learned Memory",
+        "operationId": "list_learned_memory_v1_profile_memory_get",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_MemoryListResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Clear Learned Memory",
+        "operationId": "clear_learned_memory_v1_profile_memory_delete",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_MemoryMutationResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/profile/memory/{preference_id}": {
+      "delete": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Delete Memory Item",
+        "operationId": "delete_memory_item_v1_profile_memory__preference_id__delete",
+        "parameters": [
+          {
+            "name": "preference_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Preference Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_MemoryMutationResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/profile/memory/{preference_id}/mark-wrong": {
+      "post": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Mark Memory Item Wrong",
+        "description": "Same removal as DELETE, but audited distinctly — \"this is wrong\" is a\ncorrection signal future learning can weigh, not just a removal.",
+        "operationId": "mark_memory_item_wrong_v1_profile_memory__preference_id__mark_wrong_post",
+        "parameters": [
+          {
+            "name": "preference_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Preference Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_MemoryMutationResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/profile/data": {
+      "delete": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Clear All App Data",
+        "description": "BE#83 — clear ALL app data (wardrobe, history, events, learned memory,\nstyle data, settings) while preserving the account. Real deletion, audited;\nthe audit trail itself survives (audit_log has no users FK by design).",
+        "operationId": "clear_all_app_data_v1_profile_data_delete",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_ClearDataResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/ask": {
       "post": {
         "tags": [
@@ -5782,6 +6329,32 @@
           "id_token"
         ],
         "title": "AppleLoginRequest"
+      },
+      "AppliedContextResponse": {
+        "properties": {
+          "override_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Text"
+          },
+          "constraints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Constraints",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "AppliedContextResponse",
+        "description": "BE#78 — echoes the context override that shaped this refresh, so FE can\nexplain why the outfit changed."
       },
       "AskContext": {
         "properties": {
@@ -6429,6 +7002,19 @@
         ],
         "title": "CandidateItem"
       },
+      "ClearDataResponse": {
+        "properties": {
+          "cleared_rows": {
+            "type": "integer",
+            "title": "Cleared Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cleared_rows"
+        ],
+        "title": "ClearDataResponse"
+      },
       "ColorPaletteResponse": {
         "properties": {
           "palette": {
@@ -6673,6 +7259,49 @@
           "item_id"
         ],
         "title": "ConfirmedItem"
+      },
+      "ContextOverrideRequest": {
+        "properties": {
+          "text": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(chip|free_text)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "chip_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chip Id"
+          }
+        },
+        "type": "object",
+        "title": "ContextOverrideRequest",
+        "description": "BE#78 — a chip or free-text Today context override for one refresh."
       },
       "CostPerWearItem": {
         "properties": {
@@ -7710,6 +8339,27 @@
         ],
         "title": "InspirationResponse"
       },
+      "InviteLoginRequest": {
+        "properties": {
+          "invite_code": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Invite Code"
+          },
+          "device_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Device Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "invite_code",
+          "device_id"
+        ],
+        "title": "InviteLoginRequest"
+      },
       "ItemWearHistoryResponse": {
         "properties": {
           "item_id": {
@@ -7762,6 +8412,79 @@
         },
         "type": "object",
         "title": "MarkItemWornRequest"
+      },
+      "MemoryItemResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "polarity": {
+            "type": "string",
+            "title": "Polarity"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "confidence": {
+            "type": "string",
+            "title": "Confidence"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "label",
+          "polarity",
+          "source",
+          "confidence",
+          "created_at"
+        ],
+        "title": "MemoryItemResponse"
+      },
+      "MemoryListResponse": {
+        "properties": {
+          "preferences": {
+            "items": {
+              "$ref": "#/components/schemas/MemoryItemResponse"
+            },
+            "type": "array",
+            "title": "Preferences"
+          }
+        },
+        "type": "object",
+        "required": [
+          "preferences"
+        ],
+        "title": "MemoryListResponse"
+      },
+      "MemoryMutationResponse": {
+        "properties": {
+          "deleted": {
+            "type": "integer",
+            "title": "Deleted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deleted"
+        ],
+        "title": "MemoryMutationResponse"
       },
       "ObstacleResponse": {
         "properties": {
@@ -8850,6 +9573,95 @@
         "title": "ReasoningItem",
         "description": "BE#38/#85 — one grounded reason with source provenance.\n\n`type` keys FE rendering (weather / wear_history / style_match / category / fit).\n`source` maps to the FE source enum:\n  weather_rule / wardrobe_history / preference_memory / style_memory /\n  indoor_climate_inference / llm.\n`referenced_item_ids` — item UUIDs that directly drove this entry (may be\n  empty for whole-look reasons).\n`confidence` — high (rule-derived) | medium (heuristic/statistical) |\n  low (llm-authored).\n\nOld persisted rows (pre-BE#85) lack source/referenced_item_ids/confidence;\nmissing keys default to None / [] so legacy dailies never 500."
       },
+      "RecommendationEventRequest": {
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "pattern": "^(outfit_impression|outfit_swapped|outfit_disliked|context_override_submitted|passive_wear_prompt_answered|resurface_insight_viewed|resurface_item_opened|temperature_mismatch_reported)$",
+            "title": "Event Type"
+          },
+          "signal_strength": {
+            "type": "string",
+            "pattern": "^(weak|medium|strong)$",
+            "title": "Signal Strength"
+          },
+          "source_surface": {
+            "type": "string",
+            "pattern": "^(today|ask|wardrobe|profile)$",
+            "title": "Source Surface"
+          },
+          "outfit_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outfit Id"
+          },
+          "recommendation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommendation Id"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event_type",
+          "signal_strength",
+          "source_surface"
+        ],
+        "title": "RecommendationEventRequest",
+        "description": "BE#81 — general passive-learning event ingestion. Append-only capture;\nit never mutates explicit preferences (OutfitFeedback / FitFeedback)."
+      },
+      "RecommendationEventResponse": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event_id"
+        ],
+        "title": "RecommendationEventResponse"
+      },
       "RecommendationItemResponse": {
         "properties": {
           "item_id": {
@@ -8942,6 +9754,22 @@
           "reason"
         ],
         "title": "RedundancySimilarItem"
+      },
+      "RefreshTodayRequest": {
+        "properties": {
+          "context_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContextOverrideRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "RefreshTodayRequest"
       },
       "RefreshTokenRequest": {
         "properties": {
@@ -9277,6 +10105,32 @@
         },
         "type": "object",
         "title": "ResponseModel[BatchInspirationResponse]"
+      },
+      "ResponseModel_ClearDataResponse_": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClearDataResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ResponseModel[ClearDataResponse]"
       },
       "ResponseModel_ConfirmImportResponse_": {
         "properties": {
@@ -9694,6 +10548,58 @@
         "type": "object",
         "title": "ResponseModel[ItemWearHistoryResponse]"
       },
+      "ResponseModel_MemoryListResponse_": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MemoryListResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ResponseModel[MemoryListResponse]"
+      },
+      "ResponseModel_MemoryMutationResponse_": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MemoryMutationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ResponseModel[MemoryMutationResponse]"
+      },
       "ResponseModel_NoneType_": {
         "properties": {
           "code": {
@@ -9817,6 +10723,32 @@
         },
         "type": "object",
         "title": "ResponseModel[PresignUploadResponse]"
+      },
+      "ResponseModel_RecommendationEventResponse_": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RecommendationEventResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ResponseModel[RecommendationEventResponse]"
       },
       "ResponseModel_ReplacementCandidatesResponse_": {
         "properties": {
@@ -10025,6 +10957,41 @@
         },
         "type": "object",
         "title": "ResponseModel[WearOutfitResponse]"
+      },
+      "ResurfaceInsightResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "cooldown_key": {
+            "type": "string",
+            "title": "Cooldown Key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "text",
+          "item_id",
+          "reason",
+          "cooldown_key"
+        ],
+        "title": "ResurfaceInsightResponse",
+        "description": "BE#80 — one lightweight \"you haven't worn this in a while, and it fits\ntoday\" nudge. Absent when there's no genuine candidate (never fabricated)."
       },
       "SenseCheckHistoryItem": {
         "properties": {
@@ -10562,6 +11529,37 @@
                 "type": "null"
               }
             ]
+          },
+          "applied_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AppliedContextResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resurface_insight": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResurfaceInsightResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
           }
         },
         "type": "object",

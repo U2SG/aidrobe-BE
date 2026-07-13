@@ -1,14 +1,23 @@
+import types
+import uuid
+
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.routers import uploads as uploads_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
 
+_STUB_USER_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
+_STUB_USER = types.SimpleNamespace(id=_STUB_USER_ID)
 
-def build_uploads_app() -> FastAPI:
+
+def build_uploads_app(*, authenticated: bool = True) -> FastAPI:
     app = FastAPI()
     setup_exception_handlers(app)
     app.include_router(uploads_router.router)
+    if authenticated:
+        app.dependency_overrides[get_current_user] = lambda: _STUB_USER
     return app
 
 
@@ -30,6 +39,7 @@ async def test_presign_accepts_image_content_type() -> None:
     body = response.json()
     assert body["code"] == 0
     assert set(body["data"]) == {"upload_url", "file_url", "object_key", "fields"}
+    assert body["data"]["object_key"].startswith(f"users/{_STUB_USER_ID}/")
     assert body["data"]["object_key"].endswith("/shirt.jpg")
 
 
@@ -63,3 +73,20 @@ async def test_presign_enforces_max_content_length() -> None:
 
     assert response.status_code == 422
     assert response.json()["code"] == 4001
+
+
+async def test_presign_requires_auth() -> None:
+    """Without a get_current_user override the dependency raises 401."""
+    app = build_uploads_app(authenticated=False)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.post(
+            "/v1/uploads/presign",
+            json={
+                "file_name": "shirt.jpg",
+                "content_type": "image/jpeg",
+            },
+        )
+
+    assert response.status_code == 401

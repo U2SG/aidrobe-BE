@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -18,7 +19,23 @@ class ObjectStoragePort(Protocol):
         file_name: str,
         content_type: str,
         max_bytes: int,
+        *,
+        key_prefix: str = "",
     ) -> PresignResult: ...
+
+    async def delete_objects(self, keys: Sequence[str]) -> None:
+        """Delete one or more objects by key. Idempotent — already-deleted or
+        missing keys are treated as success. Raises on unexpected errors."""
+        ...
+
+    async def delete_prefix(self, prefix: str) -> int:
+        """Delete every object under `prefix`; return the number deleted.
+
+        Catch-all for user purge: DB-collected keys miss objects whose rows
+        are already gone or whose URLs point at per-purpose buckets, but
+        everything user-scoped lives under `users/<user-id>/`. Idempotent —
+        an empty listing is success."""
+        ...
 
     async def put_object(
         self,

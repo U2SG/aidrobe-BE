@@ -199,7 +199,15 @@ async def test_clear_all_data_keeps_account_and_audit(
     assert await _count(WardrobeItem, WardrobeItem.user_id) == 0
     assert await _count(UserSettings, UserSettings.user_id) == 0
     assert await _count(UserPreferenceMemory, UserPreferenceMemory.user_id) == 0
-    assert await _count(AsyncJob, AsyncJob.user_id) == 0
+    # Pre-existing jobs (the stale export above) are wiped; the ONLY survivor
+    # is the storage_purge job clear-data itself enqueues to delete the
+    # user's objects from storage.
+    remaining_jobs = list(
+        await db_session.scalars(
+            select(AsyncJob.job_type).where(AsyncJob.user_id == user_id)
+        )
+    )
+    assert remaining_jobs == ["storage_purge"]
     # Account survives; the audit trail records the action.
     assert await db_session.get(User, user_id) is not None
     actions = set(

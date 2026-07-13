@@ -31,6 +31,7 @@ from app.infrastructure.workers.outfit_board_worker import (
     reconcile_dead_outfit_board_assets,
 )
 from app.infrastructure.workers.pdf_worker import drain_pdf_ingest_jobs
+from app.infrastructure.workers.storage_purge_worker import drain_storage_purge_jobs
 from app.infrastructure.workers.style_learn_worker import learn_style_source
 from app.infrastructure.workers.user_export_worker import drain_user_export_jobs
 from app.infrastructure.workers.user_purge_worker import drain_user_purge_jobs
@@ -83,6 +84,7 @@ class WorkerSettings:
         drain_pdf_ingest_jobs,
         drain_user_export_jobs,
         drain_user_purge_jobs,
+        drain_storage_purge_jobs,
         drain_import_jobs,
         recover_async_job_leases,
         reconcile_dead_outfit_board_assets,
@@ -142,6 +144,13 @@ class WorkerSettings:
                 drain_user_purge_jobs,
                 minute={10},
                 name="user_purge_drain",
+            ),
+            # Storage purge: same hourly cadence as user_purge; offset by 1 min
+            # to avoid competing on claim_one at the same second.
+            cron(
+                drain_storage_purge_jobs,
+                minute={11},
+                name="storage_purge_drain",
             ),
             # Export is a user-visible "being prepared" polling state — drain
             # every 30s (offset from the other :0/:30 drains).
