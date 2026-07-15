@@ -3,7 +3,7 @@ insights sufficiency fields, commute_exposure round-trip, data-export
 polling."""
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi import FastAPI
@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.local_time import local_datetime, utc_now
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.user import User
@@ -40,6 +41,10 @@ def build_app(session: AsyncSession) -> FastAPI:
     app.include_router(settings_router.router)
     app.include_router(account_router.router)
     return app
+
+
+def _local_today() -> date:
+    return local_datetime(utc_now(), None, Settings().DEFAULT_TIMEZONE).date()
 
 
 async def _seed_user(session: AsyncSession, user_id: uuid.UUID) -> None:
@@ -139,7 +144,7 @@ async def test_mark_item_worn_increments_and_is_idempotent_per_day(
     item = await _seed_item(db_session, user_id, title="Shirt")
     app = build_app(db_session)
     headers = {"X-User-Id": str(user_id)}
-    today = datetime.now(UTC).date()
+    today = _local_today()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         first = await client.post(f"/v1/wardrobe-items/{item.id}/wears", headers=headers)
@@ -166,7 +171,7 @@ async def test_mark_item_worn_backfill_keeps_last_worn_forward_only(
     item = await _seed_item(db_session, user_id, title="Shirt")
     app = build_app(db_session)
     headers = {"X-User-Id": str(user_id)}
-    today = datetime.now(UTC).date()
+    today = _local_today()
     yesterday = today - timedelta(days=1)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:

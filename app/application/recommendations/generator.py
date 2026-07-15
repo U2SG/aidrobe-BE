@@ -28,6 +28,7 @@ from app.common.enums import (
     RecommendationStatus,
     TimeSensitivity,
 )
+from app.common.local_time import local_datetime, utc_now
 from app.common.season import current_season
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.recommendation import (
@@ -72,6 +73,7 @@ class RecommendationGenerator:
         *,
         refresh: bool = False,
         context_constraints: list[str] | None = None,
+        preserve_refresh_after: datetime | None = None,
     ) -> DailyRecommendation:
         """`refresh=True` archives the current daily as `is_current=False`
         and writes a new revision. Engagement on the old revision (wear /
@@ -180,12 +182,21 @@ class RecommendationGenerator:
             }
             if result.outfits
             else None,
-            context_json=_build_context_snapshot(weather, scene),
+            context_json=_build_context_snapshot(
+                weather, scene, context_constraints or []
+            ),
         )
+        should_write_outfits = True
         if refresh:
             daily = await self.repository.archive_current_and_revise(daily)
         else:
-            daily = await self.repository.replace_daily(daily)
+            daily, should_write_outfits = await self.repository.replace_daily(
+                daily,
+                preserve_refresh_after=preserve_refresh_after,
+            )
+
+        if not should_write_outfits:
+            return daily
 
         if result.status == RecommendationStatus.READY.value:
             now = datetime.now(UTC)
@@ -377,7 +388,11 @@ class RecommendationGenerator:
             return {}
         try:
             profiles = await self.style_repository.list_by_user(user_id)
-            wear_history = await self.repository.get_recent_wear_history(user_id, days=30)
+            wear_history = await self.repository.get_recent_wear_history(
+                user_id,
+                target_date,
+                days=30,
+            )
             feedback = await self.repository.get_recent_feedback(user_id, days=30)
             wardrobe_items = await self.repository.get_wearable_items(user_id)
             outfit_main_item_ids = await self.repository.get_outfit_main_item_ids(
@@ -432,10 +447,14 @@ class RecommendationGenerator:
         if not location:
             return None
         try:
+            timezone = await self.repository.get_user_timezone(user_id)
+            local_today = local_datetime(
+                utc_now(), timezone, get_settings().DEFAULT_TIMEZONE
+            ).date()
             # BE#77 — a future target date (tomorrow mode) must use the forecast
             # for THAT date; None (no forecast) is an honest degrade — never
             # substitute today's conditions for tomorrow.
-            if target_date is not None and target_date > datetime.now(UTC).date():
+            if target_date is not None and target_date > local_today:
                 return await self.weather_service.get_forecast(location, target_date)
             return await self.weather_service.get_weather(location)
         except Exception as exc:
@@ -444,19 +463,24 @@ class RecommendationGenerator:
 
 
 def _build_context_snapshot(
-    weather: WeatherInfo | None, scene: str | None
+    weather: WeatherInfo | None,
+    scene: str | None,
+    constraints: list[str],
 ) -> dict[str, Any] | None:
     """Snapshot the inputs that drove this generation. Stored on the daily
     row so future explainability ("why did we suggest this?") can ground in
     the same weather/scene the engine actually saw, not whatever the user
     sees right now."""
-    if weather is None and scene is None:
+    normalized_constraints = sorted(set(constraints))
+    if weather is None and scene is None and not normalized_constraints:
         return None
     snapshot: dict[str, Any] = {"fetched_at": datetime.now(UTC).isoformat()}
     if weather is not None:
         snapshot["weather"] = dataclasses.asdict(weather)
     if scene is not None:
         snapshot["scene"] = scene
+    if normalized_constraints:
+        snapshot["constraints"] = normalized_constraints
     return snapshot
 
 

@@ -9,7 +9,7 @@ burn LLM/embedding cost.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import date
 
 import structlog
 
@@ -28,7 +28,9 @@ logger = structlog.get_logger(__name__)
 
 
 async def assert_refresh_allowed(
-    repository: SqlAlchemyRecommendationRepository, user_id: uuid.UUID
+    repository: SqlAlchemyRecommendationRepository,
+    user_id: uuid.UUID,
+    target_date: date,
 ) -> None:
     """Cheap eligibility gate: feature flag + per-day refresh limit. Call this
     BEFORE any expensive work (e.g. an LLM context-override parse) so an
@@ -40,8 +42,7 @@ async def assert_refresh_allowed(
             "today refresh is not enabled",
             status_code=403,
         )
-    today = datetime.now(UTC).date()
-    used = await repository.count_revisions_for_date(user_id, today)
+    used = await repository.count_revisions_for_date(user_id, target_date)
     # <= 0 means "no daily limit" (testing-phase escape hatch); any positive
     # value caps total daily revisions.
     limit = settings.TODAY_REFRESH_DAILY_LIMIT
@@ -49,7 +50,7 @@ async def assert_refresh_allowed(
         logger.warning(
             "today_refresh_rate_limited",
             user_id=str(user_id),
-            target_date=str(today),
+            target_date=str(target_date),
             used=used,
             limit=limit,
         )
@@ -58,7 +59,13 @@ async def assert_refresh_allowed(
             "daily refresh limit reached",
             status_code=429,
         )
-    logger.info("today_refresh_started", user_id=str(user_id), target_date=str(today), used=used, limit=limit)
+    logger.info(
+        "today_refresh_started",
+        user_id=str(user_id),
+        target_date=str(target_date),
+        used=used,
+        limit=limit,
+    )
 
 
 async def refresh_today_recommendation(
@@ -66,6 +73,7 @@ async def refresh_today_recommendation(
     repository: SqlAlchemyRecommendationRepository,
     style_repository: SqlAlchemyStyleRepository | None = None,
     *,
+    target_date: date,
     scene: str | None = None,
     context_constraints: list[str] | None = None,
 ) -> DailyRecommendation:
@@ -78,8 +86,7 @@ async def refresh_today_recommendation(
     Feature-flagged: when `ENABLE_TODAY_REFRESH=False` the endpoint should
     not have called us (router gate). This belt-and-suspenders raises 503
     so a misconfigured router can't accidentally bypass the gate."""
-    await assert_refresh_allowed(repository, user_id)
-    today = datetime.now(UTC).date()
+    await assert_refresh_allowed(repository, user_id, target_date)
     return await RecommendationGenerator(
         repository,
         style_repository,
@@ -87,7 +94,7 @@ async def refresh_today_recommendation(
         weather_service=weather_service(),
     ).generate_for_user(
         user_id,
-        today,
+        target_date,
         generation_source="refresh",
         scene=scene,
         refresh=True,

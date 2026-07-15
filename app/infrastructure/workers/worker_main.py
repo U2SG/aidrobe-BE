@@ -31,6 +31,9 @@ from app.infrastructure.workers.outfit_board_worker import (
     reconcile_dead_outfit_board_assets,
 )
 from app.infrastructure.workers.pdf_worker import drain_pdf_ingest_jobs
+from app.infrastructure.workers.recommendation_recompute_worker import (
+    drain_recommendation_recompute_jobs,
+)
 from app.infrastructure.workers.storage_purge_worker import drain_storage_purge_jobs
 from app.infrastructure.workers.style_learn_worker import learn_style_source
 from app.infrastructure.workers.user_export_worker import drain_user_export_jobs
@@ -82,6 +85,7 @@ class WorkerSettings:
         drain_ootd_poster_jobs,
         drain_cutout_jobs,
         drain_pdf_ingest_jobs,
+        drain_recommendation_recompute_jobs,
         drain_user_export_jobs,
         drain_user_purge_jobs,
         drain_storage_purge_jobs,
@@ -113,6 +117,11 @@ class WorkerSettings:
             # PDF ingest is heavy (download + rasterize N pages) and drains one
             # at a time; a coarser cadence is plenty.
             cron(drain_pdf_ingest_jobs, second={0}, name="pdf_ingest_drain"),
+            cron(
+                drain_recommendation_recompute_jobs,
+                second=set(range(0, 60, 5)),
+                name="recommendation_recompute_drain",
+            ),
             cron(
                 recover_async_job_leases,
                 minute={0, 15, 30, 45},

@@ -35,7 +35,9 @@ def create_scheduler(session_factory: async_sessionmaker[AsyncSession]) -> Async
             await session.commit()
 
     scheduler.add_job(run_departure_job, "interval", minutes=5, id="departure_pre_generate")
-    scheduler.add_job(run_nightly_job, "cron", hour=3, minute=0, id="nightly_fallback")
+    # Run frequently and let the job select users whose local clock is in the
+    # 03:00 hour. Existing daily rows make repeated ticks idempotent.
+    scheduler.add_job(run_nightly_job, "interval", minutes=15, id="nightly_fallback")
     scheduler.add_job(run_fit_profile_job, "cron", hour=3, minute=30, id="fit_profile_aggregation")
     logger.warning(
         "scheduler_single_process_required",

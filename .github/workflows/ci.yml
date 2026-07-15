@@ -46,3 +46,36 @@ jobs:
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: uv run pytest -q
+
+  migration:
+    name: Alembic round-trip
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aidrobe
+          POSTGRES_PASSWORD: aidrobe
+          POSTGRES_DB: aidrobe
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aidrobe -d aidrobe"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://aidrobe:aidrobe@localhost:5432/aidrobe
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install deps
+        run: uv sync --group dev --frozen
+      - name: Upgrade, downgrade, and re-upgrade
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade -1
+          uv run alembic upgrade head

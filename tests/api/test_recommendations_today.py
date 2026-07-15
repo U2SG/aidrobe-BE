@@ -3,11 +3,14 @@ from datetime import date
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.recommendations.generator import RecommendationGenerator
 from app.common.enums import Category, ItemStatus
+from app.common.local_time import local_datetime, utc_now
 from app.config.settings import Settings, get_settings
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.recommendation_repo import (
@@ -16,6 +19,10 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import recommendations as recommendations_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
+
+
+def _default_local_today() -> date:
+    return local_datetime(utc_now(), None, Settings().DEFAULT_TIMEZONE).date()
 
 
 def build_recommendations_app(session: AsyncSession) -> FastAPI:
@@ -53,7 +60,7 @@ async def seed_ready_recommendation(session: AsyncSession, user_id: uuid.UUID) -
         )
     await session.flush()
     await RecommendationGenerator(SqlAlchemyRecommendationRepository(session)).generate_for_user(
-        user_id, date.today(), "manual"
+        user_id, _default_local_today(), "manual"
     )
 
 
@@ -70,8 +77,11 @@ async def test_existing_ready_recommendation_returns_immediately(db_session: Asy
         )
 
     assert response.status_code == 200
-    assert response.json()["data"]["status"] == "ready"
-    assert response.json()["data"]["outfits"]
+    data = response.json()["data"]
+    assert data["status"] == "ready"
+    assert data["outfits"]
+    assert data["recommendation_id"]
+    assert data["revision"] == 1
 
 
 async def seed_tops_only_recommendation(session: AsyncSession, user_id: uuid.UUID) -> None:
@@ -89,7 +99,7 @@ async def seed_tops_only_recommendation(session: AsyncSession, user_id: uuid.UUI
         )
     await session.flush()
     await RecommendationGenerator(SqlAlchemyRecommendationRepository(session)).generate_for_user(
-        user_id, date.today(), "manual"
+        user_id, _default_local_today(), "manual"
     )
 
 
@@ -130,3 +140,14 @@ async def test_missing_today_returns_insufficient_not_generating(db_session: Asy
     assert response.json()["data"]["status"] == "insufficient_items"
     assert response.json()["data"]["status"] != "generating"
     assert response.json()["data"]["guidance_text"]
+    job = await db_session.scalar(
+        select(AsyncJob).where(
+            AsyncJob.user_id == user_id,
+            AsyncJob.job_type == "recommendation_recompute",
+        )
+    )
+    assert job is not None
+    assert job.status == "queued"
+    assert await SqlAlchemyRecommendationRepository(db_session).get_daily(
+        user_id, _default_local_today()
+    ) is None

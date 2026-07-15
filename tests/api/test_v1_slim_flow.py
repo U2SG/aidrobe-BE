@@ -1,7 +1,6 @@
 import asyncio
 import uuid
 
-import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,15 +75,6 @@ async def add_item(
     return confirm.json()["data"]["item_id"]
 
 
-# Quarantined: this end-to-end smoke intermittently reads back empty outfits from
-# GET /today in the full CI suite even though generation logs status=ready — the
-# product is healthy, it's a test-harness flake (see #100). strict=False so a
-# green run (which is the common case) doesn't fail as an unexpected xpass. Remove
-# the marker once #100 is root-caused.
-@pytest.mark.xfail(
-    reason="Flaky read-back of /today outfits in full CI suite; product healthy (#100)",
-    strict=False,
-)
 async def test_v1_slim_full_flow(db_session: AsyncSession) -> None:
     user_id = uuid.uuid4()
     app = build_flow_app(db_session)
@@ -108,8 +98,25 @@ async def test_v1_slim_full_flow(db_session: AsyncSession) -> None:
         await add_item(client, user_id, "https://cdn/pants.jpg", "bottom")
         await add_item(client, user_id, "https://cdn/shoes.jpg", "shoes")
 
+        # V2 activation explicitly crosses the feasibility Gate. Recompute after
+        # imports is asynchronous, so the Gate owns same-session first-outfit
+        # generation instead of relying on request-blocking mutation hooks.
+        first_outfit = await client.get(
+            "/v1/recommendations/first-outfit",
+            headers={"X-User-Id": str(user_id)},
+        )
+        assert first_outfit.status_code == 200
+        assert first_outfit.json()["data"]["state"] in {
+            "single_outfit",
+            "ready",
+        }
+        assert first_outfit.json()["data"]["first_outfit"] is not None
+
         today = await client.get("/v1/recommendations/today", headers={"X-User-Id": str(user_id)})
-        outfit_id = today.json()["data"]["outfits"][0]["outfit_id"]
+        today_data = today.json()["data"]
+        assert today_data["recommendation_id"]
+        assert today_data["revision"] == 1
+        outfit_id = today_data["outfits"][0]["outfit_id"]
         wear = await client.post(
             f"/v1/recommendations/outfits/{outfit_id}/wear",
             headers={"X-User-Id": str(user_id)},
@@ -121,7 +128,7 @@ async def test_v1_slim_full_flow(db_session: AsyncSession) -> None:
             json={"feedback_type": "like"},
         )
 
-    assert today.json()["data"]["status"] == "ready"
+    assert today_data["status"] == "ready"
     assert wear.status_code == 200
     assert feedback.status_code == 200
 

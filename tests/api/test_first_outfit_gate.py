@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.recommendations.first_outfit_gate import missing_core_slots
 from app.application.recommendations.generator import RecommendationGenerator
 from app.common.enums import ItemStatus
+from app.common.local_time import local_datetime, utc_now
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -80,7 +81,11 @@ async def _add_item(
 async def _generate(session: AsyncSession, user_id: uuid.UUID) -> None:
     await RecommendationGenerator(
         SqlAlchemyRecommendationRepository(session)
-    ).generate_for_user(user_id, date.today(), "test")
+    ).generate_for_user(
+        user_id,
+        local_datetime(utc_now(), None, Settings().DEFAULT_TIMEZONE).date(),
+        "test",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +208,7 @@ async def test_partial_wardrobe_top_and_shoes_missing_bottom(db_session: AsyncSe
 
 
 async def test_dress_and_shoes_passes_slot_check(db_session: AsyncSession) -> None:
-    """Dress + shoes → slot check passes; state derived from generation outcome."""
+    """Dress + shoes is a complete first outfit and must generate successfully."""
     user_id = uuid.uuid4()
     await _add_user(db_session, user_id)
     await _add_item(db_session, user_id, category="dress", color="red")
@@ -219,13 +224,9 @@ async def test_dress_and_shoes_passes_slot_check(db_session: AsyncSession) -> No
 
     assert response.status_code == 200
     data = response.json()["data"]
-    # Slot check passes; state is engine-derived (ready or single_outfit or
-    # engine_insufficient — all are valid depending on the engine's output for
-    # a 2-item wardrobe). What matters: missing_slots is empty.
     assert data["missing_slots"] == []
-    # If the engine succeeded, first_outfit is present.
-    if data["state"] != "no_outfit":
-        assert data["first_outfit"] is not None
+    assert data["state"] in {"ready", "single_outfit"}
+    assert data["first_outfit"] is not None
 
 
 async def test_full_wardrobe_returns_ready_or_single_outfit(db_session: AsyncSession) -> None:
@@ -337,9 +338,10 @@ async def test_state_derivation_n1_and_n2(n_outfits_hint: int, db_session: Async
     assert result.first_outfit is not None
 
 
-async def test_image_unavailable_flag_does_not_block(db_session: AsyncSession) -> None:
-    """Items without cover_image_url and no image rows → gate_failures has 'image_unavailable',
-    but state is not 'no_outfit' (FE has SVG fallback)."""
+async def test_image_unavailable_blocks_untrustworthy_first_outfit(
+    db_session: AsyncSession,
+) -> None:
+    """A first outfit with no identifiable item images must not be declared ready."""
     user_id = uuid.uuid4()
     await _add_user(db_session, user_id)
     # cover_image_url=None and no images table rows
@@ -361,13 +363,10 @@ async def test_image_unavailable_flag_does_not_block(db_session: AsyncSession) -
 
     assert response.status_code == 200
     data = response.json()["data"]
-    # Slot check passes; engine may succeed or fail. We care:
-    if data["state"] in {"ready", "single_outfit"}:
-        assert "image_unavailable" in data["gate_failures"]
-        assert data["first_outfit"] is not None
-    else:
-        # Engine couldn't build — engine_insufficient is expected
-        assert "engine_insufficient" in data["gate_failures"]
+    assert data["state"] == "no_outfit"
+    assert data["feasible_outfit_count"] == 0
+    assert data["gate_failures"] == ["image_unavailable"]
+    assert data["first_outfit"] is None
 
 
 async def test_today_route_unaffected(db_session: AsyncSession) -> None:

@@ -17,6 +17,8 @@ class UserSettingsUseCase:
         user_id: uuid.UUID,
         departure_time: time | None = None,
         departure_time_set: bool = False,
+        timezone: str | None = None,
+        timezone_set: bool = False,
         device_token: str | None = None,
         push_enabled: bool | None = None,
         location: str | None = None,
@@ -27,6 +29,8 @@ class UserSettingsUseCase:
         settings = await self.user_repository.get_or_create_settings(user_id)
         if departure_time_set:
             settings.departure_time = departure_time
+        if timezone_set:
+            settings.timezone = timezone
         if device_token is not None:
             settings.device_token = device_token
         if push_enabled is not None:

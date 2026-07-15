@@ -1,5 +1,4 @@
 import uuid
-from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import cast
 
@@ -8,7 +7,7 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from app.config.settings import get_settings
-from app.infrastructure.cache.keys import build_daily_recommendation_cache_pattern
+from app.infrastructure.cache.keys import build_user_recommendation_cache_pattern
 
 logger = structlog.get_logger(__name__)
 
@@ -30,14 +29,13 @@ async def close_redis_client() -> None:
 
 
 async def invalidate_daily_recommendation_cache(redis_client: Redis, user_id: uuid.UUID) -> None:
-    # BE#77 made Today date-aware, so a cached TOMORROW payload goes stale on
-    # exactly the same mutations as today's — invalidate both days' patterns.
-    today = datetime.now(UTC).date()
+    # Clear every date/scene/flag variant for this user. This remains a narrow
+    # scan because keys are namespaced by user, and it is correct across local
+    # midnight and timezone changes.
     try:
-        for target in (today, today + timedelta(days=1)):
-            pattern = build_daily_recommendation_cache_pattern(user_id, target)
-            keys = [key async for key in redis_client.scan_iter(match=pattern)]
-            if keys:
-                await redis_client.delete(*keys)
+        pattern = build_user_recommendation_cache_pattern(user_id)
+        keys = [key async for key in redis_client.scan_iter(match=pattern)]
+        if keys:
+            await redis_client.delete(*keys)
     except RedisError:
         logger.warning("daily_recommendation_cache_invalidation_failed", user_id=str(user_id))

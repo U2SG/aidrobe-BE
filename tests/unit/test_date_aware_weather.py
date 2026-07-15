@@ -21,6 +21,9 @@ class _FakeRepo:
     async def get_user_location(self, user_id: uuid.UUID) -> str:
         return "beijing"
 
+    async def get_user_timezone(self, user_id: uuid.UUID) -> str:
+        return "UTC"
+
 
 class _FakeWeather:
     def __init__(self, forecast: WeatherInfo | None) -> None:

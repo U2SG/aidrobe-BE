@@ -15,8 +15,10 @@ from app.common import error_codes
 from app.common.enums import RecommendationEventType, WardrobeItemStatus
 from app.common.exceptions import FriendlyException
 from app.common.item_labels import localized_item_name
+from app.common.local_time import local_datetime, utc_now
 from app.common.locale import resolve_locale
 from app.common.season import SeasonName
+from app.config.settings import get_settings
 from app.infrastructure.cache.client import (
     get_redis_client,
     invalidate_daily_recommendation_cache,
@@ -205,7 +207,14 @@ async def get_item_wear_history(
     if item is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Wardrobe item not found", status_code=404)
 
-    cutoff = datetime.now(UTC).date() - timedelta(days=days)
+    user_settings = await session.scalar(
+        select(UserSettings).where(UserSettings.user_id == current_user.id)
+    )
+    cutoff = local_datetime(
+        utc_now(),
+        user_settings.timezone if user_settings else None,
+        get_settings().DEFAULT_TIMEZONE,
+    ).date() - timedelta(days=days)
     stmt = (
         select(WearHistory.worn_date, WearHistory.outfit_id, Outfit.outfit_type)
         .join(OutfitItem, OutfitItem.outfit_id == WearHistory.outfit_id)
@@ -268,8 +277,7 @@ async def mark_item_worn(
     payload: MarkItemWornRequest | None = None,
 ) -> ResponseModel[WardrobeItemResponse]:
     """Record that the user wore this item (no outfit context), for
-    `worn_date` (defaults to today, UTC — client sends its local date for
-    timezone correctness, same as the outfit wear path).
+    `worn_date` (defaults to the user's local date).
 
     Updates last_worn_at and wear_count on the item so insights / detail
     screens reflect the real-world wear immediately. Also emits a
@@ -279,7 +287,14 @@ async def mark_item_worn(
     if item is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Wardrobe item not found", status_code=404)
 
-    worn_date = (payload.worn_date if payload else None) or datetime.now(UTC).date()
+    user_settings = await session.scalar(
+        select(UserSettings).where(UserSettings.user_id == current_user.id)
+    )
+    worn_date = (payload.worn_date if payload else None) or local_datetime(
+        utc_now(),
+        user_settings.timezone if user_settings else None,
+        get_settings().DEFAULT_TIMEZONE,
+    ).date()
     effective_locale = await _effective_locale(session, current_user.id)
 
     # Idempotent per (item, worn_date), mirroring the outfit wear path — a

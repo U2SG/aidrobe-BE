@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.generator import RecommendationGenerator
 from app.common.enums import Category, ItemStatus
+from app.common.local_time import local_datetime, utc_now
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.recommendation import DailyRecommendation
 from app.infrastructure.persistence.models.user import User, UserSettings
@@ -25,6 +26,10 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import recommendations as recommendations_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
+
+
+def _local_today() -> date:
+    return local_datetime(utc_now(), None, Settings().DEFAULT_TIMEZONE).date()
 
 
 class _StaticWeather:
@@ -109,9 +114,9 @@ async def test_generator_persists_context_when_weather_available(
     user_id = await _seed_user_and_items(db_session)
     repo = SqlAlchemyRecommendationRepository(db_session)
     await RecommendationGenerator(repo, weather_service=_StaticWeather()).generate_for_user(
-        user_id, date.today(), "manual"
+        user_id, _local_today(), "manual"
     )
-    daily = await repo.get_daily(user_id, date.today())
+    daily = await repo.get_daily(user_id, _local_today())
     assert daily is not None
     ctx: Any = daily.context_json
     assert isinstance(ctx, dict)
@@ -127,8 +132,8 @@ async def test_generator_persists_null_context_without_weather(
     different from `{}` so future explainability can tell them apart."""
     user_id = await _seed_user_and_items(db_session)
     repo = SqlAlchemyRecommendationRepository(db_session)
-    await RecommendationGenerator(repo).generate_for_user(user_id, date.today(), "manual")
-    daily = await repo.get_daily(user_id, date.today())
+    await RecommendationGenerator(repo).generate_for_user(user_id, _local_today(), "manual")
+    daily = await repo.get_daily(user_id, _local_today())
     assert daily is not None
     assert daily.context_json is None
 
@@ -137,7 +142,7 @@ async def test_today_response_omits_context_when_flag_off(db_session: AsyncSessi
     user_id = await _seed_user_and_items(db_session)
     repo = SqlAlchemyRecommendationRepository(db_session)
     await RecommendationGenerator(repo, weather_service=_StaticWeather()).generate_for_user(
-        user_id, date.today(), "manual"
+        user_id, _local_today(), "manual"
     )
 
     app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_TODAY_CONTEXT=False))
@@ -157,7 +162,7 @@ async def test_today_response_exposes_context_when_flag_on(
     user_id = await _seed_user_and_items(db_session)
     repo = SqlAlchemyRecommendationRepository(db_session)
     await RecommendationGenerator(repo, weather_service=_StaticWeather()).generate_for_user(
-        user_id, date.today(), "manual"
+        user_id, _local_today(), "manual"
     )
 
     patched_settings_in_router(ENABLE_TODAY_CONTEXT=True)
@@ -184,7 +189,7 @@ async def test_today_response_handles_legacy_rows_without_context(
     db_session.add(
         DailyRecommendation(
             user_id=user_id,
-            recommendation_date=date.today(),
+            recommendation_date=_local_today(),
             status="ready",
             generation_source="manual",
             context_json=None,
@@ -226,11 +231,11 @@ async def test_generator_persists_null_context_when_weather_provider_raises(
     repo = SqlAlchemyRecommendationRepository(db_session)
     daily = await RecommendationGenerator(
         repo, weather_service=_ExplodingWeather()
-    ).generate_for_user(user_id, date.today(), "manual")
+    ).generate_for_user(user_id, _local_today(), "manual")
     assert daily is not None
     assert daily.context_json is None  # provider exception swallowed
     # And the row IS persisted — not aborted.
-    fresh = await repo.get_daily(user_id, date.today())
+    fresh = await repo.get_daily(user_id, _local_today())
     assert fresh is not None
 
 
@@ -243,7 +248,7 @@ async def test_today_response_drops_malformed_weather_chunk(
     db_session.add(
         DailyRecommendation(
             user_id=user_id,
-            recommendation_date=date.today(),
+            recommendation_date=_local_today(),
             status="ready",
             generation_source="manual",
             context_json={
@@ -283,7 +288,7 @@ async def test_today_backfills_weather_when_snapshot_missing_it(
     user_id = await _seed_user_and_items(db_session)  # location="Beijing"
     repo = SqlAlchemyRecommendationRepository(db_session)
     # Generate WITHOUT a weather port → context_json is NULL.
-    await RecommendationGenerator(repo).generate_for_user(user_id, date.today(), "manual")
+    await RecommendationGenerator(repo).generate_for_user(user_id, _local_today(), "manual")
 
     monkeypatch.setattr(
         "app.presentation.api.v1.routers.recommendations.weather_service",
@@ -315,7 +320,7 @@ async def test_today_no_weather_backfill_without_location(
     settings_row.location = None
     await db_session.flush()
     repo = SqlAlchemyRecommendationRepository(db_session)
-    await RecommendationGenerator(repo).generate_for_user(user_id, date.today(), "manual")
+    await RecommendationGenerator(repo).generate_for_user(user_id, _local_today(), "manual")
 
     # Provider IS available; if the backfill ignored the missing location it
     # would populate weather and fail the assertion below.

@@ -1,12 +1,14 @@
+import hashlib
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import cast
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.common.enums import ItemStatus, RecommendationEventType
+from app.common.local_time import local_datetime
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
@@ -153,17 +155,9 @@ class SqlAlchemyRecommendationRepository:
         first-refresh case where no current row yet exists — there is
         nothing to lock at row level, but the advisory key is independent
         of row existence."""
-        import hashlib
+        from sqlalchemy import func
 
-        from sqlalchemy import func, text
-
-        # Hash (user_id, date) into a signed bigint for pg_advisory_xact_lock.
-        # SHA1 first 8 bytes gives a stable 64-bit key; signed-int cast just
-        # for Postgres bigint range. Collisions across different (user, date)
-        # pairs are statistically irrelevant at our scale.
-        digest = hashlib.sha1(f"refresh:{daily.user_id}:{daily.recommendation_date.isoformat()}".encode()).digest()[:8]
-        lock_key = int.from_bytes(digest, "big", signed=True)
-        await self.session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": lock_key})
+        await self._lock_daily_write(daily.user_id, daily.recommendation_date)
 
         # Under the lock now: serialize UPDATE → INSERT.
         await self.session.execute(
@@ -205,20 +199,56 @@ class SqlAlchemyRecommendationRepository:
             ),
         )
 
-    async def replace_daily(self, daily: DailyRecommendation) -> DailyRecommendation:
+    async def replace_daily(
+        self,
+        daily: DailyRecommendation,
+        *,
+        preserve_refresh_after: datetime | None = None,
+    ) -> tuple[DailyRecommendation, bool]:
+        """Replace an unengaged daily and report whether outfits should be written.
+
+        The final guard runs under the shared daily advisory lock. This prevents
+        an older background job from overwriting a user refresh that committed
+        while the job was generating outside the lock.
+        """
+        await self._lock_daily_write(daily.user_id, daily.recommendation_date)
         existing = await self.get_daily(daily.user_id, daily.recommendation_date)
         if existing is not None:
+            if (
+                preserve_refresh_after is not None
+                and existing.generation_source == "refresh"
+                and existing.updated_at is not None
+            ):
+                updated_at = existing.updated_at
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=UTC)
+                if updated_at >= preserve_refresh_after:
+                    return existing, False
             if await self.daily_has_engagement(existing.id):
-                return existing
+                return existing, False
             await self.session.execute(delete(Outfit).where(Outfit.daily_recommendation_id == existing.id))
             existing.status = daily.status
             existing.generation_source = daily.generation_source
             existing.score_breakdown = daily.score_breakdown
+            existing.context_json = daily.context_json
             await self.session.flush()
-            return existing
+            return existing, True
         self.session.add(daily)
         await self.session.flush()
-        return daily
+        return daily, True
+
+    async def _lock_daily_write(
+        self, user_id: uuid.UUID, recommendation_date: date
+    ) -> None:
+        # Refresh and background replacement share one lock namespace so their
+        # update/insert paths cannot race each other or create split current rows.
+        digest = hashlib.sha1(
+            f"daily:{user_id}:{recommendation_date.isoformat()}".encode()
+        ).digest()[:8]
+        lock_key = int.from_bytes(digest, "big", signed=True)
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key}
+        )
 
     async def add_outfit(self, outfit: Outfit) -> Outfit:
         self.session.add(outfit)
@@ -427,24 +457,34 @@ class SqlAlchemyRecommendationRepository:
         )
         return list(result)
 
-    async def users_due_for_departure_generation(self, now: datetime) -> list[User]:
+    async def users_due_for_departure_generation(
+        self, now: datetime, default_timezone: str
+    ) -> list[User]:
         result = await self.session.scalars(
             select(User)
             .options(selectinload(User.settings))
             .join(UserSettings)
             .where(UserSettings.departure_time.is_not(None))
         )
-        now_time = now.time()
         return [
             user
             for user in result
             if user.settings is not None
             and user.settings.departure_time is not None
-            and _time_in_next_window(user.settings.departure_time, now_time, minutes=90)
+            and _time_in_next_window(
+                user.settings.departure_time,
+                local_datetime(now, user.settings.timezone, default_timezone).time(),
+                minutes=90,
+            )
         ]
 
-    async def get_recent_wear_history(self, user_id: uuid.UUID, days: int = 30) -> list[WearHistory]:
-        since = datetime.now(UTC).date() - timedelta(days=days)
+    async def get_recent_wear_history(
+        self,
+        user_id: uuid.UUID,
+        target_date: date,
+        days: int = 30,
+    ) -> list[WearHistory]:
+        since = target_date - timedelta(days=days)
         result = await self.session.scalars(
             select(WearHistory).where(
                 WearHistory.user_id == user_id,
@@ -455,6 +495,11 @@ class SqlAlchemyRecommendationRepository:
 
     async def get_user_location(self, user_id: uuid.UUID) -> str | None:
         return await self.session.scalar(select(UserSettings.location).where(UserSettings.user_id == user_id))
+
+    async def get_user_timezone(self, user_id: uuid.UUID) -> str | None:
+        return await self.session.scalar(
+            select(UserSettings.timezone).where(UserSettings.user_id == user_id)
+        )
 
     async def get_recent_worn_outfit_item_ids(
         self, user_id: uuid.UUID, target_date: date, days: int = 7

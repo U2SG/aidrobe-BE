@@ -21,6 +21,7 @@ from app.application.outfits.prep import compute_prep
 from app.application.outfits.replacements import find_replacement_candidates
 from app.application.outfits.scoring.dynamic import compute_dynamic_scores
 from app.application.outfits.wear import WearOutfit
+from app.application.recommendations.background import schedule_today_recompute
 from app.application.recommendations.context_override import resolve_constraints
 from app.application.recommendations.feedback_tags import get_tags_for_scene
 from app.application.recommendations.generator import RecommendationGenerator
@@ -41,9 +42,13 @@ from app.common.enums import (
 )
 from app.common.exceptions import FriendlyException
 from app.common.i18n import I18nMessage
+from app.common.local_time import local_datetime, seconds_until_local_day_end, utc_now
 from app.common.season import current_season
 from app.config.settings import get_settings
-from app.infrastructure.cache.client import get_redis_client
+from app.infrastructure.cache.client import (
+    get_redis_client,
+    invalidate_daily_recommendation_cache,
+)
 from app.infrastructure.cache.keys import build_daily_recommendation_cache_key
 from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit
 from app.infrastructure.persistence.models.user import User
@@ -305,6 +310,7 @@ async def today_response(
     today: date,
     departure_time: time | None = None,
     scene: str | None = None,
+    current_time: time | None = None,
 ) -> TodayRecommendationResponse:
     guidance = None
     if daily.status == RecommendationStatus.INSUFFICIENT_ITEMS.value:
@@ -315,7 +321,9 @@ async def today_response(
         # banner never fires here, so surface a hint to unlock more combinations.
         guidance = await _coverage_gap_hint(session, daily.user_id)
     outfits = sorted(daily.outfits, key=lambda o: o.rank_order)
-    selected_outfits = _select_outfits_for_remaining_time(outfits, departure_time)
+    selected_outfits = _select_outfits_for_remaining_time(
+        outfits, departure_time, current_time=current_time
+    )
     selected_outfits = _select_outfits_for_scene(selected_outfits, scene)
     favorited = await _get_favorited_outfit_ids(
         session, daily.user_id, [outfit.id for outfit in selected_outfits]
@@ -332,6 +340,8 @@ async def today_response(
         else []
     )
     return TodayRecommendationResponse(
+        recommendation_id=daily.id,
+        revision=daily.revision,
         recommendation_date=daily.recommendation_date,
         status=daily.status,
         guidance_text=guidance,
@@ -364,10 +374,17 @@ def _build_context_response(raw: object) -> TodayContextResponse | None:
             weather = None
     scene_raw = raw.get("scene")
     fetched_at_raw = raw.get("fetched_at")
+    constraints_raw = raw.get("constraints")
+    constraints = (
+        [token for token in constraints_raw if isinstance(token, str)]
+        if isinstance(constraints_raw, list)
+        else []
+    )
     return TodayContextResponse(
         weather=weather,
         scene=scene_raw if isinstance(scene_raw, str) else None,
         fetched_at=fetched_at_raw if isinstance(fetched_at_raw, str) else None,
+        constraints=constraints,
     )
 
 
@@ -402,11 +419,14 @@ async def _backfill_weather_if_missing(
 
 
 def _select_outfits_for_remaining_time(
-    outfits: list[Outfit], departure_time: time | None
+    outfits: list[Outfit],
+    departure_time: time | None,
+    *,
+    current_time: time | None = None,
 ) -> list[Outfit]:
     if departure_time is None:
         return outfits[:3]
-    now = datetime.now(UTC).time()
+    now = current_time or utc_now().time()
     remaining_minutes = (departure_time.hour * 60 + departure_time.minute) - (
         now.hour * 60 + now.minute
     )
@@ -441,11 +461,6 @@ def _select_outfits_for_scene(outfits: list[Outfit], scene: str | None) -> list[
     return outfits
 
 
-def _seconds_until_utc_day_end(now: datetime) -> int:
-    end_of_day = datetime.combine(now.date(), time(23, 59, 59), tzinfo=UTC)
-    return max(1, int((end_of_day - now).total_seconds()))
-
-
 @router.get("/first-outfit", response_model=ResponseModel[FirstOutfitGateResponse])
 async def get_first_outfit_gate(
     current_user: Annotated[User, Depends(get_current_user)],
@@ -460,7 +475,13 @@ async def get_first_outfit_gate(
     """
     from app.application.recommendations.first_outfit_gate import FirstOutfitGate
 
-    today = datetime.now(UTC).date()
+    user_settings = await SqlAlchemyUserRepository(session).get_or_create_settings(
+        current_user.id
+    )
+    app_settings = get_settings()
+    today = local_datetime(
+        utc_now(), user_settings.timezone, app_settings.DEFAULT_TIMEZONE
+    ).date()
 
     repository = SqlAlchemyRecommendationRepository(session)
     result = await FirstOutfitGate(repository).execute(current_user.id, today)
@@ -468,25 +489,8 @@ async def get_first_outfit_gate(
     if result.generated:
         # The gate just wrote today's daily. Any /today payload cached earlier
         # (e.g. insufficient_items) would contradict the gate until end of day —
-        # drop every scene variant of the key (mirrors refresh_today).
-        user_settings = await SqlAlchemyUserRepository(session).get_or_create_settings(
-            current_user.id
-        )
-        for scene_variant in (None, "commute", "formal", "casual"):
-            stale_key = build_daily_recommendation_cache_key(
-                current_user.id,
-                today,
-                user_settings.departure_time,
-                scene_variant,
-                reasoning=get_settings().ENABLE_TODAY_REASONING,
-                vision_style=get_settings().ENABLE_VISION_STYLE_LEARNING,
-            )
-            try:
-                await redis_client.delete(stale_key)
-            except RedisError:
-                logger.warning(
-                    "first_outfit_cache_invalidate_failed", user_id=str(current_user.id)
-                )
+        # drop every date/scene/flag variant for this user.
+        await invalidate_daily_recommendation_cache(redis_client, current_user.id)
 
     first_outfit_response: OutfitResponse | None = None
     if result.first_outfit is not None:
@@ -511,14 +515,17 @@ async def get_today_recommendation(
     scene: str | None = Query(default=None, pattern="^(commute|formal|casual)$"),
     target_date: Annotated[date | None, Query()] = None,
 ) -> ResponseModel[TodayRecommendationResponse]:
-    now = datetime.now(UTC)
-    today = now.date()
+    now = utc_now()
+    settings = await SqlAlchemyUserRepository(session).get_or_create_settings(current_user.id)
+    app_settings = get_settings()
+    local_now = local_datetime(now, settings.timezone, app_settings.DEFAULT_TIMEZONE)
+    today = local_now.date()
     # BE#77 — date-aware Today: evening mode may request tomorrow. Bounded to
     # [today, tomorrow] so this can't be abused to generate arbitrary future
     # dates. Flag off → target_date is ignored (legacy behavior).
     target = today
     mode: str | None = None
-    if target_date is not None and get_settings().ENABLE_DATE_AWARE_TODAY:
+    if target_date is not None and app_settings.ENABLE_DATE_AWARE_TODAY:
         if target_date < today or target_date > today + timedelta(days=1):
             raise FriendlyException(
                 error_codes.VALIDATION_ERROR,
@@ -527,12 +534,12 @@ async def get_today_recommendation(
             )
         target = target_date
         mode = "tomorrow" if target > today else "today"
-    settings = await SqlAlchemyUserRepository(session).get_or_create_settings(current_user.id)
     cache_key = build_daily_recommendation_cache_key(
         current_user.id,
         target,
         settings.departure_time,
         scene,
+        timezone_name=settings.timezone or app_settings.DEFAULT_TIMEZONE,
         reasoning=get_settings().ENABLE_TODAY_REASONING,
         vision_style=get_settings().ENABLE_VISION_STYLE_LEARNING,
     )
@@ -575,14 +582,23 @@ async def get_today_recommendation(
             )
     else:
         daily = await GetTodayRecommendation(repository).execute(current_user.id, target)
+        if not had_cache:
+            await schedule_today_recompute(current_user.id, repository)
     await SqlAlchemyOperationLogRepository(session).add(
         current_user.id,
         "app_open",
-        {"hour_of_day": datetime.now(UTC).hour, "had_cache": had_cache, "scene": scene},
+        {"hour_of_day": local_now.hour, "had_cache": had_cache, "scene": scene},
     )
     style_ctx_data = await build_style_context(current_user.id, session)
     style_ctx = StyleContextResponse(**style_ctx_data)
-    today_data = await today_response(daily, session, target, settings.departure_time, scene)
+    today_data = await today_response(
+        daily,
+        session,
+        target,
+        settings.departure_time,
+        scene,
+        current_time=local_now.time(),
+    )
     today_data.style_context = style_ctx
     today_data.mode = mode
     await _backfill_weather_if_missing(today_data, settings.location)
@@ -593,7 +609,7 @@ async def get_today_recommendation(
         insight = await build_resurface_insight(
             repository,
             current_user.id,
-            current_season(today),
+            current_season(target),
             now=now,
             min_unworn_days=get_settings().RESURFACE_MIN_UNWORN_DAYS,
         )
@@ -606,14 +622,23 @@ async def get_today_recommendation(
                 cooldown_key=str(insight.item_id),
             )
     response = ResponseModel(data=today_data)
-    try:
-        await redis_client.set(
-            cache_key,
-            response.model_dump_json(),
-            ex=_seconds_until_utc_day_end(now),
-        )
-    except RedisError:
-        logger.warning("daily_recommendation_cache_set_failed", user_id=str(current_user.id))
+    # Do not cache a historical/empty fallback while its replacement is queued.
+    # This removes the race where the worker invalidates first and the request
+    # then writes the stale fallback back into Redis.
+    if had_cache or mode == "tomorrow":
+        try:
+            await redis_client.set(
+                cache_key,
+                response.model_dump_json(),
+                ex=seconds_until_local_day_end(
+                    now, settings.timezone, app_settings.DEFAULT_TIMEZONE
+                ),
+            )
+        except RedisError:
+            logger.warning(
+                "daily_recommendation_cache_set_failed",
+                user_id=str(current_user.id),
+            )
     return response
 
 
@@ -635,11 +660,18 @@ async def refresh_today(
 
     repository = SqlAlchemyRecommendationRepository(session)
     style_repo = SqlAlchemyStyleRepository(session)
+    user_settings = await SqlAlchemyUserRepository(session).get_or_create_settings(
+        current_user.id
+    )
+    local_now = local_datetime(
+        utc_now(), user_settings.timezone, get_settings().DEFAULT_TIMEZONE
+    )
+    target_date = local_now.date()
 
     # Gate on refresh eligibility BEFORE any LLM override parse, so an over-quota
     # client can't burn LLM spend just to get a 429. refresh_today_recommendation
     # re-checks — the gate is a cheap, idempotent read.
-    await assert_refresh_allowed(repository, current_user.id)
+    await assert_refresh_allowed(repository, current_user.id, target_date)
 
     # BE#78 — resolve a context override (chip / free text) into session-scoped
     # constraints; emit the signal and echo applied_context. Flag-gated and only
@@ -651,21 +683,21 @@ async def refresh_today(
         context_constraints = await resolve_constraints(
             override.chip_id, override.text, override.source, llm_service()
         )
+        if not context_constraints:
+            raise FriendlyException(
+                error_codes.VALIDATION_ERROR,
+                "context override could not be applied",
+                status_code=422,
+            )
         applied_context = AppliedContextResponse(
             override_text=override.text, constraints=context_constraints
-        )
-        await IngestRecommendationEvent(repository).execute(
-            current_user.id,
-            event_type=RecommendationEventType.CONTEXT_OVERRIDE_SUBMITTED.value,
-            signal_strength="medium",
-            source_surface="today",
-            metadata={"chip_id": override.chip_id, "constraints": context_constraints},
         )
 
     daily = await refresh_today_recommendation(
         current_user.id,
         repository,
         style_repo,
+        target_date=target_date,
         scene=scene,
         context_constraints=context_constraints,
     )
@@ -681,27 +713,29 @@ async def refresh_today(
             status_code=500,
         )
     daily = refreshed
+    if applied_context is not None:
+        await IngestRecommendationEvent(repository).execute(
+            current_user.id,
+            event_type=RecommendationEventType.CONTEXT_OVERRIDE_SUBMITTED.value,
+            signal_strength="medium",
+            source_surface="today",
+            recommendation_id=daily.id,
+            metadata={
+                "chip_id": override.chip_id if override else None,
+                "constraints": context_constraints,
+            },
+        )
 
-    # Drop any stale /today cache for this user so the next GET reads the
-    # new revision rather than serving the prior cached payload.
-    user_settings = await SqlAlchemyUserRepository(session).get_or_create_settings(
-        current_user.id
-    )
-    cache_key = build_daily_recommendation_cache_key(
-        current_user.id,
+    # Drop every cached date/scene/flag variant so all consumers see this revision.
+    await invalidate_daily_recommendation_cache(redis_client, current_user.id)
+
+    today_data = await today_response(
+        daily,
+        session,
         daily.recommendation_date,
         user_settings.departure_time,
         scene,
-        reasoning=get_settings().ENABLE_TODAY_REASONING,
-        vision_style=get_settings().ENABLE_VISION_STYLE_LEARNING,
-    )
-    try:
-        await redis_client.delete(cache_key)
-    except RedisError:
-        logger.warning("today_refresh_cache_invalidate_failed", user_id=str(current_user.id))
-
-    today_data = await today_response(
-        daily, session, daily.recommendation_date, user_settings.departure_time, scene
+        current_time=local_now.time(),
     )
     today_data.applied_context = applied_context
     return ResponseModel(data=today_data)
@@ -723,10 +757,16 @@ async def get_outfit_detail(
         {"outfit_type": outfit.outfit_type},
     )
     favorited = await repository.list_favorited_outfit_ids(current_user.id, [outfit.id])
+    user_settings = await SqlAlchemyUserRepository(session).get_or_create_settings(
+        current_user.id
+    )
+    local_today = local_datetime(
+        utc_now(), user_settings.timezone, get_settings().DEFAULT_TIMEZONE
+    ).date()
     enriched = await _enrich_outfits(
         session,
         [outfit],
-        datetime.now(UTC).date(),
+        local_today,
         favorited_outfit_ids=favorited,
     )
     return ResponseModel(data=enriched[0])
@@ -821,7 +861,12 @@ async def wear_outfit(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ResponseModel[WearOutfitResponse]:
-    worn_date = payload.worn_date or datetime.now(UTC).date()
+    user_settings = await SqlAlchemyUserRepository(session).get_or_create_settings(
+        current_user.id
+    )
+    worn_date = payload.worn_date or local_datetime(
+        utc_now(), user_settings.timezone, get_settings().DEFAULT_TIMEZONE
+    ).date()
     use_case = WearOutfit(SqlAlchemyRecommendationRepository(session))
     await use_case.execute(outfit_id, current_user.id, worn_date)
     await SqlAlchemyOperationLogRepository(session).add(

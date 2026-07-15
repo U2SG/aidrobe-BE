@@ -16,6 +16,7 @@ from app.application.recommendations.context_override import (
     REDUCE_WEATHER,
     REMOVABLE_LAYER,
 )
+from app.application.recommendations.feasibility import has_first_outfit_core
 from app.application.recommendations.indoor_climate import IndoorClimateSignal
 from app.application.recommendations.reasoning import build_reasoning
 from app.application.safety.copy_guard import sanitize_generated_copy
@@ -151,7 +152,9 @@ class RecommendationEngine:
         recent_worn_outfit_item_ids = recent_worn_outfit_item_ids or []
         disliked_colors = disliked_colors or set()
         wearable = [item for item in items if item.fit_status != NO_LONGER_FITS]
-        if len(wearable) < 3:
+        if len(wearable) < 3 and not has_first_outfit_core(
+            item.category for item in wearable
+        ):
             return EngineResult(
                 status="insufficient_items",
                 outfits=[],

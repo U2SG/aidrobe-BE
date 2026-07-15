@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.users.settings import UserSettingsUseCase
 from app.bootstrap.container import user_repository
 from app.common.locale import LocaleSetting
+from app.config.settings import get_settings
 from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
@@ -22,6 +23,7 @@ router = APIRouter(prefix="/v1/user", tags=["settings"])
 def settings_response(settings: UserSettings) -> UserSettingsResponse:
     return UserSettingsResponse(
         departure_time=settings.departure_time,
+        timezone=settings.timezone or get_settings().DEFAULT_TIMEZONE,
         push_enabled=settings.push_enabled,
         device_token=settings.device_token,
         location=settings.location,
@@ -59,6 +61,8 @@ async def update_user_settings(
         current_user.id,
         departure_time=payload.departure_time,
         departure_time_set=payload.is_set("departure_time"),
+        timezone=payload.timezone,
+        timezone_set=payload.is_set("timezone"),
         device_token=payload.device_token,
         push_enabled=payload.push_enabled,
         location=payload.location,

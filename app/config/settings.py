@@ -1,7 +1,10 @@
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
 
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.common.local_time import validate_timezone_name
 
 
 class Settings(BaseSettings):
@@ -13,6 +16,7 @@ class Settings(BaseSettings):
     ARQ_JOB_TIMEOUT_SECONDS: int = 300
     ARQ_MAX_JOBS: int = 50
     APP_ENV: Literal["dev", "test", "prod"] = "dev"
+    DEFAULT_TIMEZONE: str = "Asia/Shanghai"
     ENABLE_SCHEDULER: bool = False
     VISION_PROVIDER: str = "fake"
     STORAGE_PROVIDER: str = "local"
@@ -331,6 +335,19 @@ class Settings(BaseSettings):
     # surface is locked off. This is intentional so a misconfigured prod
     # deployment fails closed rather than open.
     ADMIN_USER_IDS: str = ""
+
+    @field_validator("DEFAULT_TIMEZONE")
+    @classmethod
+    def validate_default_timezone(cls, value: str) -> str:
+        return validate_timezone_name(value)
+
+    @model_validator(mode="after")
+    def validate_feature_dependencies(self) -> Self:
+        if self.ENABLE_CONTEXT_OVERRIDES and not self.ENABLE_TODAY_REFRESH:
+            raise ValueError(
+                "ENABLE_CONTEXT_OVERRIDES requires ENABLE_TODAY_REFRESH"
+            )
+        return self
 
 
 @lru_cache

@@ -36,6 +36,7 @@ class UserSettings(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True
     )
     departure_time: Mapped[time | None] = mapped_column(Time(timezone=False), nullable=True)
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
     device_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
     push_enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
     location: Mapped[str | None] = mapped_column(String(120), nullable=True)

@@ -56,6 +56,36 @@ async def test_patch_user_settings_updates_departure_time(db_session: AsyncSessi
     assert response.json()["data"]["departure_time"] == "07:45:00"
 
 
+async def test_patch_user_settings_updates_iana_timezone(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    app = build_settings_app(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.patch(
+            "/v1/user/settings",
+            headers={"X-User-Id": str(user_id)},
+            json={"timezone": "Asia/Singapore"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["timezone"] == "Asia/Singapore"
+
+
+async def test_patch_user_settings_rejects_invalid_timezone(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    app = build_settings_app(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.patch(
+            "/v1/user/settings",
+            headers={"X-User-Id": str(user_id)},
+            json={"timezone": "Mars/Olympus_Mons"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == 4001
+
+
 async def test_settings_locale_defaults_to_system(db_session: AsyncSession) -> None:
     # BE#30 — new settings default to 'system' (resolves to the zh-CN product
     # default at use time) so unset users get Chinese names.

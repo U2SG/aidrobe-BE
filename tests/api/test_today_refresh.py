@@ -8,15 +8,18 @@ from datetime import date, datetime, time, timedelta
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.recommendations.generator import RecommendationGenerator
 from app.common.enums import Category, FeedbackType, ItemStatus, RecommendationStatus
+from app.common.local_time import local_datetime, utc_now
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
     OutfitFeedback,
+    RecommendationEvent,
 )
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -52,6 +55,9 @@ def _build_app(
             "app.application.recommendations.refresh_today.get_settings",
             lambda: settings_override,
         )
+        monkeypatch.setattr(
+            recommendations_router, "get_settings", lambda: settings_override
+        )
     app.include_router(recommendations_router.router)
     return app
 
@@ -80,8 +86,12 @@ async def _seed_user_with_wardrobe(session: AsyncSession) -> uuid.UUID:
 
 async def _generate_initial_revision(session: AsyncSession, user_id: uuid.UUID) -> None:
     await RecommendationGenerator(SqlAlchemyRecommendationRepository(session)).generate_for_user(
-        user_id, date.today(), "manual"
+        user_id, _local_today(), "manual"
     )
+
+
+def _local_today() -> date:
+    return local_datetime(utc_now(), None, Settings().DEFAULT_TIMEZONE).date()
 
 
 async def test_refresh_endpoint_returns_403_when_flag_off(db_session: AsyncSession) -> None:
@@ -105,7 +115,7 @@ async def test_refresh_writes_new_revision_and_archives_old(
     await _generate_initial_revision(db_session, user_id)
 
     repo = SqlAlchemyRecommendationRepository(db_session)
-    rev1 = await repo.get_daily(user_id, date.today())
+    rev1 = await repo.get_daily(user_id, _local_today())
     assert rev1 is not None
     rev1_id = rev1.id
     assert rev1.revision == 1
@@ -121,7 +131,7 @@ async def test_refresh_writes_new_revision_and_archives_old(
     assert resp.status_code == 200, resp.text
 
     db_session.expire_all()
-    rev2 = await repo.get_daily(user_id, date.today())
+    rev2 = await repo.get_daily(user_id, _local_today())
     assert rev2 is not None
     assert rev2.id != rev1_id
     assert rev2.revision == 2
@@ -167,7 +177,7 @@ async def test_refresh_preserves_old_outfit_feedback_via_outfit_id(
     user_id = await _seed_user_with_wardrobe(db_session)
     await _generate_initial_revision(db_session, user_id)
     repo = SqlAlchemyRecommendationRepository(db_session)
-    rev1 = await repo.get_daily(user_id, date.today())
+    rev1 = await repo.get_daily(user_id, _local_today())
     assert rev1 is not None
     old_outfit = sorted(rev1.outfits, key=lambda o: o.rank_order)[0]
 
@@ -216,8 +226,94 @@ async def test_refresh_disabled_use_case_does_not_create_revision(
     assert resp.status_code == 403
 
     repo = SqlAlchemyRecommendationRepository(db_session)
-    count = await repo.count_revisions_for_date(user_id, date.today())
+    count = await repo.count_revisions_for_date(user_id, _local_today())
     assert count == 1  # only the initial gen
+
+
+async def test_known_context_override_is_persisted_and_attributed(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await _seed_user_with_wardrobe(db_session)
+    await _generate_initial_revision(db_session, user_id)
+    settings = Settings(
+        APP_ENV="dev",
+        ENABLE_TODAY_REFRESH=True,
+        ENABLE_CONTEXT_OVERRIDES=True,
+        ENABLE_TODAY_CONTEXT=True,
+    )
+    app = _build_app(db_session, settings, monkeypatch)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.post(
+            "/v1/recommendations/today/refresh",
+            headers={"X-User-Id": str(user_id)},
+            json={
+                "context_override": {
+                    "source": "chip",
+                    "chip_id": "noSkirt",
+                }
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["recommendation_id"]
+    assert data["revision"] == 2
+    assert data["applied_context"]["constraints"] == ["exclude_dress"]
+    assert data["context"]["constraints"] == ["exclude_dress"]
+
+    daily = await SqlAlchemyRecommendationRepository(db_session).get_daily(
+        user_id, _local_today()
+    )
+    assert daily is not None
+    assert daily.context_json is not None
+    assert daily.context_json["constraints"] == ["exclude_dress"]
+    event = await db_session.scalar(
+        select(RecommendationEvent).where(
+            RecommendationEvent.user_id == user_id,
+            RecommendationEvent.event_type == "context_override_submitted",
+        )
+    )
+    assert event is not None
+    assert event.recommendation_id == daily.id
+
+
+async def test_unapplied_free_text_override_returns_422_without_fake_success(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await _seed_user_with_wardrobe(db_session)
+    await _generate_initial_revision(db_session, user_id)
+    settings = Settings(
+        APP_ENV="dev",
+        ENABLE_TODAY_REFRESH=True,
+        ENABLE_CONTEXT_OVERRIDES=True,
+    )
+    app = _build_app(db_session, settings, monkeypatch)
+    monkeypatch.setattr(recommendations_router, "llm_service", lambda: None)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.post(
+            "/v1/recommendations/today/refresh",
+            headers={"X-User-Id": str(user_id)},
+            json={
+                "context_override": {
+                    "source": "free_text",
+                    "text": "今天想穿得特别一点",
+                }
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == 4001
+    assert await SqlAlchemyRecommendationRepository(db_session).count_revisions_for_date(
+        user_id, _local_today()
+    ) == 1
 
 
 # Wide imports to keep module-level fixture resolution stable on partial runs.

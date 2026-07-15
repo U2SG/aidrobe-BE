@@ -14,6 +14,7 @@ from typing import Literal
 
 from sqlalchemy import select
 
+from app.application.recommendations.feasibility import missing_first_outfit_slots
 from app.common.enums import RecommendationStatus
 from app.infrastructure.persistence.models.recommendation import Outfit
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
@@ -38,51 +39,7 @@ def missing_core_slots(items: list[WardrobeItem]) -> list[str]:
     - Both paths started             → report shorter missing list (separates path on tie)
     - Neither path started (empty)   → report separates path ["top", "bottom", "shoes"]
     """
-    cats = {item.category for item in items}
-
-    has_top = "top" in cats
-    has_bottom = "bottom" in cats
-    has_dress = "dress" in cats
-    has_shoes = "shoes" in cats
-
-    # Separates path: top + bottom + shoes
-    sep_missing = []
-    if not has_top:
-        sep_missing.append("top")
-    if not has_bottom:
-        sep_missing.append("bottom")
-    if not has_shoes:
-        sep_missing.append("shoes")
-
-    # Dress path: dress + shoes
-    dress_missing = []
-    if not has_dress:
-        dress_missing.append("dress")
-    if not has_shoes:
-        dress_missing.append("shoes")
-
-    # Both complete
-    if not sep_missing:
-        return []
-    if not dress_missing:
-        return []
-
-    # Determine which path is "started" (has at least one slot present)
-    sep_started = has_top or has_bottom or has_shoes
-    dress_started = has_dress or has_shoes
-
-    if sep_started and not dress_started:
-        return sep_missing
-    if dress_started and not sep_started:
-        return dress_missing
-    if sep_started and dress_started:
-        # Both started — report the one with strictly fewer missing.
-        # On a tie, prefer separates path (spec: "equally far → separates path").
-        if len(dress_missing) < len(sep_missing):
-            return dress_missing
-        return sep_missing
-    # Neither started (empty wardrobe)
-    return sep_missing  # separates path is the default
+    return missing_first_outfit_slots(item.category for item in items)
 
 
 @dataclasses.dataclass
@@ -145,7 +102,29 @@ class FirstOutfitGate:
                 generated=generated,
             )
 
-        outfits = list(daily.outfits)
+        generated_outfits = list(daily.outfits)
+        item_map = {item.id: item for item in items}
+        missing_cover_ids = {
+            item.id for item in items if item.id is not None and not item.cover_image_url
+        }
+        image_item_ids: set[uuid.UUID] = set()
+        if missing_cover_ids:
+            image_item_ids = set(
+                await self.repository.session.scalars(
+                    select(WardrobeItemImage.item_id).where(
+                        WardrobeItemImage.item_id.in_(missing_cover_ids)
+                    )
+                )
+            )
+        outfits = [
+            outfit
+            for outfit in generated_outfits
+            if all(
+                (item := item_map.get(outfit_item.item_id)) is not None
+                and bool(item.cover_image_url or item.id in image_item_ids)
+                for outfit_item in outfit.items
+            )
+        ]
         n = len(outfits)
 
         if n == 0:
@@ -154,7 +133,9 @@ class FirstOutfitGate:
                 feasible_outfit_count=0,
                 missing_slots=[],
                 first_outfit=None,
-                gate_failures=["engine_insufficient"],
+                gate_failures=[
+                    "image_unavailable" if generated_outfits else "engine_insufficient"
+                ],
                 generated=generated,
             )
 
@@ -168,32 +149,11 @@ class FirstOutfitGate:
             else max(outfits, key=lambda o: o.score_total)
         )
 
-        # Step 5 — image_unavailable check (non-blocking; FE has SVG fallback).
-        # We check cover_image_url from the in-memory items list (safe: column
-        # attribute), then fall back to a targeted DB query for items rows only
-        # when a cover is missing (avoids lazy-loading the images relationship
-        # in async context, which would raise MissingGreenlet).
-        gate_failures: list[str] = []
-        item_map = {it.id: it for it in items}
-        outfit_item_ids = [oi.item_id for oi in first_outfit.items]
-        for item_id in outfit_item_ids:
-            wardrobe_item = item_map.get(item_id)
-            if wardrobe_item is not None and not wardrobe_item.cover_image_url:
-                # cover absent — check for any image row via explicit query
-                image_count = await self.repository.session.scalar(
-                    select(WardrobeItemImage).where(
-                        WardrobeItemImage.item_id == item_id
-                    ).limit(1)
-                )
-                if image_count is None:
-                    gate_failures.append("image_unavailable")
-                    break
-
         return FirstOutfitGateResult(
             state=state,
             feasible_outfit_count=n,
             missing_slots=[],
             first_outfit=first_outfit,
-            gate_failures=gate_failures,
+            gate_failures=[],
             generated=generated,
         )

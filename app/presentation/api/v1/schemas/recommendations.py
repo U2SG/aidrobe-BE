@@ -121,6 +121,7 @@ class TodayContextResponse(BaseModel):
     weather: WeatherContextResponse | None = None
     scene: str | None = None
     fetched_at: str | None = None
+    constraints: list[str] = Field(default_factory=list)
 
 
 class AppliedContextResponse(BaseModel):
@@ -143,6 +144,8 @@ class ResurfaceInsightResponse(BaseModel):
 
 
 class TodayRecommendationResponse(BaseModel):
+    recommendation_id: UUID | None = None
+    revision: int | None = None
     recommendation_date: date
     status: str
     guidance_text: str | None = None

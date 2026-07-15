@@ -86,6 +86,20 @@ async def test_fewer_than_three_items_returns_insufficient_items() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dress_and_shoes_is_a_complete_outfit() -> None:
+    result = await RecommendationEngine().generate(
+        [
+            EngineItem("1", "Red dress", "dress", "red"),
+            EngineItem("2", "Beige shoes", "shoes", "beige"),
+        ]
+    )
+
+    assert result.status == "ready"
+    assert result.outfits
+    assert all(set(outfit.item_ids) == {"1", "2"} for outfit in result.outfits)
+
+
+@pytest.mark.asyncio
 async def test_three_items_can_produce_at_least_one_outfit() -> None:
     result = await RecommendationEngine().generate(
         [
