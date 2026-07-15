@@ -126,7 +126,7 @@ class RecommendationGenerator:
             recent = recent | await self.repository.recent_recommended_main_item_ids(
                 user_id, target_date, days=window
             )
-        style_profile = await self._load_style_profile(user_id)
+        style_profile = await self._load_style_profile(user_id, target_date)
         weather = await self._load_weather(user_id, target_date)
         fit_profile = await self._load_fit_profile(user_id)
         # BE#82 — infer indoor-climate tendency (flag-gated; None → legacy ranking).
@@ -383,10 +383,19 @@ class RecommendationGenerator:
             logger.warning("feedback_learning_load_failed", user_id=str(user_id), error=str(exc))
             return []
 
-    async def _load_style_profile(self, user_id: uuid.UUID) -> dict[str, Any]:
+    async def _load_style_profile(
+        self,
+        user_id: uuid.UUID,
+        target_date: date | None = None,
+    ) -> dict[str, Any]:
         if self.style_repository is None:
             return {}
         try:
+            if target_date is None:
+                timezone = await self.repository.get_user_timezone(user_id)
+                target_date = local_datetime(
+                    utc_now(), timezone, get_settings().DEFAULT_TIMEZONE
+                ).date()
             profiles = await self.style_repository.list_by_user(user_id)
             wear_history = await self.repository.get_recent_wear_history(
                 user_id,

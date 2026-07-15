@@ -3,7 +3,7 @@ insights sufficiency fields, commute_exposure round-trip, data-export
 polling."""
 
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 
 import pytest
 from fastapi import FastAPI
