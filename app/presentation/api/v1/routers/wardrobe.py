@@ -55,6 +55,14 @@ from app.presentation.api.v1.schemas.wardrobe import (
 router = APIRouter(prefix="/v1/wardrobe-items", tags=["wardrobe"])
 
 
+def _tag_values(value: object) -> list[str] | None:
+    if isinstance(value, dict):
+        value = value.get("tags")
+    if not isinstance(value, list):
+        return None
+    return [tag for tag in value if isinstance(tag, str)]
+
+
 async def _effective_locale(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -92,6 +100,14 @@ def item_response(item: WardrobeItem, locale: str) -> WardrobeItemResponse:
         fit_intent=item.fit_intent,
         fit_status=item.fit_status,
         comfort_score=item.comfort_score,
+        sub_category=item.sub_category,
+        color_secondary=item.color_secondary,
+        material=item.material,
+        season_tags=_tag_values(item.season_tags),
+        style_tags=_tag_values(item.style_tags),
+        formality_score=item.formality_score,
+        time_cost_level=item.time_cost_level,
+        purchase_price=item.purchase_price,
         wear_count=item.wear_count,
         last_worn=item.last_worn_at,
         purchase_date=item.purchase_date,
@@ -102,6 +118,7 @@ def item_response(item: WardrobeItem, locale: str) -> WardrobeItemResponse:
 async def list_wardrobe_items(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    query: Annotated[str | None, Query(max_length=120)] = None,
     category: str | None = None,
     # Enum/Literal-typed so an invalid value 422s early instead of silently
     # returning an empty list.
@@ -114,8 +131,14 @@ async def list_wardrobe_items(
 ) -> ResponseModel[WardrobeListResponse]:
     use_case = ListWardrobeItems(SqlAlchemyWardrobeRepository(session))
     items, total = await use_case.execute(
-        current_user.id, category, limit, offset,
-        status=status.value if status else None, season=season, color=color,
+        current_user.id,
+        category,
+        limit,
+        offset,
+        query=query,
+        status=status.value if status else None,
+        season=season,
+        color=color,
     )
     effective_locale = await _effective_locale(session, current_user.id, locale)
     return ResponseModel(

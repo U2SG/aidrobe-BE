@@ -14,6 +14,7 @@ import asyncio
 import uuid
 from datetime import date
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.common.enums import Category, ItemStatus
@@ -98,6 +99,40 @@ async def _archive_in_isolated_session(engine: object, user_id: uuid.UUID) -> in
         return result.revision
 
 
+async def _reserve_limited_refresh_slot(engine: object, user_id: uuid.UUID) -> int:
+    """Lock, re-check quota, and persist one revision in an isolated transaction."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.application.recommendations.refresh_today import assert_refresh_allowed
+    from app.common.exceptions import FriendlyException
+    from app.infrastructure.persistence.repositories.recommendation_repo import (
+        SqlAlchemyRecommendationRepository,
+    )
+
+    factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
+        engine,  # type: ignore[arg-type]
+        expire_on_commit=False,
+    )
+    async with factory() as session:
+        repository = SqlAlchemyRecommendationRepository(session)
+        try:
+            await repository.lock_daily_write(user_id, date.today())
+            await assert_refresh_allowed(repository, user_id, date.today())
+            daily = DailyRecommendation(
+                user_id=user_id,
+                recommendation_date=date.today(),
+                status="ready",
+                generation_source="refresh",
+            )
+            result = await repository.archive_current_and_revise(daily)
+            await asyncio.sleep(0.2)
+            await session.commit()
+            return result.revision
+        except FriendlyException as exc:
+            await session.rollback()
+            return exc.status_code
+
+
 async def test_concurrent_refresh_serializes_via_advisory_lock_first_revision(
     postgres_url: str,
 ) -> None:
@@ -156,3 +191,36 @@ async def test_concurrent_refresh_serializes_with_existing_current_row(
     # rev=1 was the seeded current; refreshes archive it then INSERT 2 + 3.
     revisions = sorted(results)  # type: ignore[type-var]
     assert revisions == [2, 3], f"expected sequential revisions 2,3; got {revisions}"
+
+
+async def test_concurrent_refresh_cannot_exceed_daily_limit(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.config.settings import Settings
+
+    settings = Settings(
+        APP_ENV="dev",
+        ENABLE_TODAY_REFRESH=True,
+        TODAY_REFRESH_DAILY_LIMIT=2,
+    )
+    monkeypatch.setattr(
+        "app.application.recommendations.refresh_today.get_settings",
+        lambda: settings,
+    )
+    seed_engine = create_async_engine(postgres_url, future=True)
+    engine_a = create_async_engine(postgres_url, future=True)
+    engine_b = create_async_engine(postgres_url, future=True)
+    try:
+        user_id = await _seed_user_with_first_revision(
+            seed_engine, has_existing_current=True
+        )
+        results = await asyncio.gather(
+            _reserve_limited_refresh_slot(engine_a, user_id),
+            _reserve_limited_refresh_slot(engine_b, user_id),
+        )
+    finally:
+        await seed_engine.dispose()
+        await engine_a.dispose()
+        await engine_b.dispose()
+
+    assert sorted(results) == [2, 429]

@@ -144,6 +144,74 @@ async def test_refresh_writes_new_revision_and_archives_old(
     assert archived.revision == 1
 
 
+async def test_refresh_target_date_writes_tomorrow_without_overwriting_today(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id = await _seed_user_with_wardrobe(db_session)
+    await _generate_initial_revision(db_session, user_id)
+    tomorrow = _local_today() + timedelta(days=1)
+
+    repo = SqlAlchemyRecommendationRepository(db_session)
+    today_before = await repo.get_daily(user_id, _local_today())
+    assert today_before is not None
+
+    app = _build_app(
+        db_session,
+        Settings(
+            APP_ENV="dev",
+            ENABLE_TODAY_REFRESH=True,
+            ENABLE_DATE_AWARE_TODAY=True,
+        ),
+        monkeypatch,
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        resp = await client.post(
+            "/v1/recommendations/today/refresh",
+            headers={"X-User-Id": str(user_id)},
+            params={"target_date": tomorrow.isoformat()},
+        )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["recommendation_date"] == tomorrow.isoformat()
+    assert data["mode"] == "tomorrow"
+
+    db_session.expire_all()
+    today_after = await repo.get_daily(user_id, _local_today())
+    tomorrow_daily = await repo.get_daily(user_id, tomorrow)
+    assert today_after is not None
+    assert today_after.id == today_before.id
+    assert tomorrow_daily is not None
+
+
+async def test_refresh_target_date_rejects_dates_after_tomorrow(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id = await _seed_user_with_wardrobe(db_session)
+    app = _build_app(
+        db_session,
+        Settings(
+            APP_ENV="dev",
+            ENABLE_TODAY_REFRESH=True,
+            ENABLE_DATE_AWARE_TODAY=True,
+        ),
+        monkeypatch,
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        resp = await client.post(
+            "/v1/recommendations/today/refresh",
+            headers={"X-User-Id": str(user_id)},
+            params={"target_date": (_local_today() + timedelta(days=2)).isoformat()},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["code"] == 4001
+
+
 async def test_refresh_rate_limit_returns_429_after_exhaustion(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -162,6 +230,8 @@ async def test_refresh_rate_limit_returns_429_after_exhaustion(
             "/v1/recommendations/today/refresh", headers={"X-User-Id": str(user_id)}
         )
         assert first.status_code == 200
+        assert first.json()["data"]["can_refresh"] is False
+        assert first.json()["data"]["can_context_override"] is False
         second = await client.post(
             "/v1/recommendations/today/refresh", headers={"X-User-Id": str(user_id)}
         )
@@ -264,6 +334,8 @@ async def test_known_context_override_is_persisted_and_attributed(
     assert data["revision"] == 2
     assert data["applied_context"]["constraints"] == ["exclude_dress"]
     assert data["context"]["constraints"] == ["exclude_dress"]
+    assert data["can_refresh"] is True
+    assert data["can_context_override"] is True
 
     daily = await SqlAlchemyRecommendationRepository(db_session).get_daily(
         user_id, _local_today()

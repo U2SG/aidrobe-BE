@@ -39,7 +39,7 @@ deletion (PIPL), cost guard, and DSAR export.
 | `ENABLE_OBSTACLES` | OutfitResponse.obstacles + replacement candidates + weather_mismatch | OFF |
 | `ENABLE_PREP_STEPS` | OutfitResponse.prep_steps + prep_notes | OFF |
 | `ENABLE_TODAY_CONTEXT` | TodayRecommendationResponse.context | OFF |
-| `ENABLE_TODAY_REFRESH` | POST /today/refresh (returns 503 when off) | OFF |
+| `ENABLE_TODAY_REFRESH` | POST /today/refresh (returns 403 when off) | OFF |
 | `ENABLE_USER_PURGE` | DELETE /me (returns 503 when off) | OFF |
 | `ENABLE_OSS_STS` | POST /uploads/sts-token (returns 503 when off) | OFF |
 | `ENABLE_COST_GUARD` | quota enforcement on cost-bearing jobs | OFF |
@@ -122,6 +122,16 @@ Returns pre-aggregated daily counts for a heatmap. Capped at 365 days.
 `wardrobe_items` now also carry `last_worn_at` and `purchase_date` (DATE,
 nullable). These are denormalized — updated atomically on the wear path.
 
+### 3.2 `GET /v1/wardrobe-items` query and pagination
+
+The list route supports composable server-side `query`, `category`, `status`,
+`season`, and `color` filters with `limit` / `offset`. `total` is the count after
+all filters. Free-text `query` matches title, canonical name, color, and category.
+
+Offset pages use stable `created_at DESC, item_id DESC` ordering. Clients must
+not filter one fetched page locally or use the loaded page length as the filtered
+total. Empty wardrobe and empty current query are distinct UI states.
+
 ---
 
 ## 4. Recommendation versioning + refresh
@@ -173,12 +183,12 @@ When the weather provider was down at generation time, `context` may be
 
 ### 4.3 Today refresh
 
-`POST /v1/recommendations/today/refresh` (gated by `ENABLE_TODAY_REFRESH`).
+`POST /v1/recommendations/today/refresh` (gated by `ENABLE_TODAY_REFRESH`; returns 403 when off).
 
 **Status codes**:
 - `200` — new revision generated, response is the standard `TodayRecommendationResponse`
 - `429` — daily refresh limit exhausted (`TODAY_REFRESH_DAILY_LIMIT`, default 3)
-- `503` — flag is off
+- `403` — flag is off
 
 Idempotency / concurrency:
 - Concurrent refreshes for the same user-day **serialize** via Postgres
@@ -189,6 +199,16 @@ Idempotency / concurrency:
 🔶 **iOS**: invalidate any local /today cache after a successful refresh.
 The server invalidates its Redis cache; client-side caches are your
 responsibility.
+
+`target_date=YYYY-MM-DD` is accepted as a query parameter and follows the same
+local-date bounds as GET Today: today or tomorrow only when
+`ENABLE_DATE_AWARE_TODAY=true`. The response echoes `recommendation_date` and
+`mode`; refresh quota and revisioning are scoped to that target date. A Tomorrow
+refresh must never overwrite the current Today row or client cache key.
+
+Today responses also expose `can_refresh` and `can_context_override`. Clients
+must use these capabilities instead of inferring action availability from
+`mode`; both become false when refresh is disabled or the date quota is spent.
 
 ---
 

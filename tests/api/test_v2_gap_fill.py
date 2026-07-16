@@ -115,6 +115,132 @@ async def test_wardrobe_list_filters_status_season_color(db_session: AsyncSessio
     assert combined.json()["data"]["items"][0]["title"] == "Blue spring tee"
 
 
+async def test_wardrobe_list_search_composes_with_filters_and_total(
+    db_session: AsyncSession,
+) -> None:
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    await _seed_item(
+        db_session,
+        user_id,
+        title="Blue spring tee",
+        canonical_name="crew neck tee",
+        color_main="blue",
+        status="wearable",
+        season_tags={"tags": ["spring"]},
+    )
+    await _seed_item(
+        db_session,
+        user_id,
+        title="Blue winter coat",
+        category="outerwear",
+        color_main="blue",
+        status="dirty",
+        season_tags={"tags": ["winter"]},
+    )
+    await _seed_item(
+        db_session,
+        user_id,
+        title="Black trousers",
+        category="bottom",
+        color_main="black",
+        status="wearable",
+    )
+    app = build_app(db_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        by_title = await client.get(
+            "/v1/wardrobe-items",
+            headers={"X-User-Id": str(user_id)},
+            params={"query": "spring", "status": "wearable"},
+        )
+        by_canonical = await client.get(
+            "/v1/wardrobe-items",
+            headers={"X-User-Id": str(user_id)},
+            params={"query": "crew neck"},
+        )
+        by_category = await client.get(
+            "/v1/wardrobe-items",
+            headers={"X-User-Id": str(user_id)},
+            params={"query": "outer", "color": "blue"},
+        )
+
+    assert by_title.status_code == 200
+    assert by_title.json()["data"]["total"] == 1
+    assert by_title.json()["data"]["items"][0]["title"] == "Blue spring tee"
+    assert by_canonical.json()["data"]["total"] == 1
+    assert by_category.json()["data"]["total"] == 1
+    assert by_category.json()["data"]["items"][0]["title"] == "Blue winter coat"
+
+
+@pytest.mark.parametrize(
+    ("literal", "title"),
+    [("%", "100% linen"), ("_", "under_score"), ("\\", "back\\slash")],
+)
+async def test_wardrobe_search_treats_sql_wildcards_as_literals(
+    db_session: AsyncSession, literal: str, title: str
+) -> None:
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    await _seed_item(db_session, user_id, title=title)
+    await _seed_item(db_session, user_id, title="plain linen")
+    app = build_app(db_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            "/v1/wardrobe-items",
+            headers={"X-User-Id": str(user_id)},
+            params={"query": literal},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["total"] == 1
+    assert response.json()["data"]["items"][0]["title"] == title
+
+
+async def test_wardrobe_list_returns_existing_extended_fields(
+    db_session: AsyncSession,
+) -> None:
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    await _seed_item(
+        db_session,
+        user_id,
+        title="Linen shirt",
+        sub_category="shirt",
+        color_secondary="cream",
+        material="linen",
+        season_tags={"tags": ["spring", "summer"]},
+        style_tags={"tags": ["minimal"]},
+        formality_score=2,
+        time_cost_level="low",
+        purchase_price=99.5,
+    )
+    app = build_app(db_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        resp = await client.get(
+            "/v1/wardrobe-items", headers={"X-User-Id": str(user_id)}
+        )
+
+    assert resp.status_code == 200
+    item = resp.json()["data"]["items"][0]
+    assert item["sub_category"] == "shirt"
+    assert item["color_secondary"] == "cream"
+    assert item["material"] == "linen"
+    assert item["season_tags"] == ["spring", "summer"]
+    assert item["style_tags"] == ["minimal"]
+    assert item["formality_score"] == 2
+    assert item["time_cost_level"] == "low"
+    assert item["purchase_price"] == 99.5
+
+
 @pytest.mark.parametrize("query", ["status=bogus", "season=rainy"])
 async def test_wardrobe_list_rejects_invalid_filter_values(
     db_session: AsyncSession, query: str

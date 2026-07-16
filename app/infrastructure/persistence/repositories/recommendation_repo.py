@@ -137,6 +137,12 @@ class SqlAlchemyRecommendationRepository:
             or 0,
         )
 
+    async def lock_daily_write(
+        self, user_id: uuid.UUID, recommendation_date: date
+    ) -> None:
+        """Enter the shared user/date write critical section for this transaction."""
+        await self._lock_daily_write(user_id, recommendation_date)
+
     async def archive_current_and_revise(self, daily: DailyRecommendation) -> DailyRecommendation:
         """Phase D3 — refresh path. Flips the current row to is_current=False
         (engagement, wear_history, feedback all stay attached to the OLD

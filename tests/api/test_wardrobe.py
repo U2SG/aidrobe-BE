@@ -83,6 +83,57 @@ async def test_list_wardrobe_items_returns_total_and_pagination(db_session: Asyn
     assert len(data["items"]) == 1
 
 
+async def test_list_wardrobe_items_uses_stable_id_tiebreaker(
+    db_session: AsyncSession,
+) -> None:
+    user_id = uuid.uuid4()
+    created_at = datetime.now(UTC)
+    db_session.add(User(id=user_id))
+    lower_id = uuid.UUID(int=1)
+    higher_id = uuid.UUID(int=2)
+    db_session.add_all(
+        [
+            WardrobeItem(
+                id=lower_id,
+                user_id=user_id,
+                title="Lower id",
+                category="top",
+                color_main="white",
+                status="wearable",
+                created_at=created_at,
+                updated_at=created_at,
+            ),
+            WardrobeItem(
+                id=higher_id,
+                user_id=user_id,
+                title="Higher id",
+                category="top",
+                color_main="black",
+                status="wearable",
+                created_at=created_at,
+                updated_at=created_at,
+            ),
+        ]
+    )
+    await db_session.flush()
+    app = build_wardrobe_app(db_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        first = await client.get(
+            "/v1/wardrobe-items?limit=1&offset=0",
+            headers={"X-User-Id": str(user_id)},
+        )
+        second = await client.get(
+            "/v1/wardrobe-items?limit=1&offset=1",
+            headers={"X-User-Id": str(user_id)},
+        )
+
+    assert first.json()["data"]["items"][0]["item_id"] == str(higher_id)
+    assert second.json()["data"]["items"][0]["item_id"] == str(lower_id)
+
+
 async def test_get_wardrobe_item_enforces_ownership(db_session: AsyncSession) -> None:
     user_id = uuid.uuid4()
     other_user_id = uuid.uuid4()

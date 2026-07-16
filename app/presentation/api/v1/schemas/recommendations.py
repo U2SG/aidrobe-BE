@@ -157,6 +157,10 @@ class TodayRecommendationResponse(BaseModel):
     # BE#77 — "today" | "tomorrow"; None for legacy consumers (flag off). Lets FE
     # render honest copy for evening-mode tomorrow previews.
     mode: str | None = None
+    # Explicit action capabilities keep clients from inferring one flag from
+    # another or rendering a refresh action after the daily quota is exhausted.
+    can_refresh: bool = False
+    can_context_override: bool = False
 
 
 class WearOutfitRequest(BaseModel):

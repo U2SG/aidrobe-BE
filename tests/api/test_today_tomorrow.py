@@ -114,3 +114,5 @@ async def test_flag_off_ignores_target_date(db_session: AsyncSession) -> None:
     data = response.json()["data"]
     assert data["recommendation_date"] == _local_today().isoformat()
     assert data["mode"] is None
+    assert data["can_refresh"] is False
+    assert data["can_context_override"] is False

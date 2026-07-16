@@ -249,6 +249,23 @@ async def _refresh_favorite_flags(
         outfit.is_favorited = outfit.outfit_id in favorited
 
 
+async def _set_refresh_capabilities(
+    data: TodayRecommendationResponse,
+    repository: SqlAlchemyRecommendationRepository,
+    user_id: uuid.UUID,
+    target_date: date,
+) -> None:
+    settings = get_settings()
+    if not settings.ENABLE_TODAY_REFRESH:
+        data.can_refresh = False
+        data.can_context_override = False
+        return
+    used = await repository.count_revisions_for_date(user_id, target_date)
+    limit = settings.TODAY_REFRESH_DAILY_LIMIT
+    data.can_refresh = limit <= 0 or used < limit
+    data.can_context_override = data.can_refresh and settings.ENABLE_CONTEXT_OVERRIDES
+
+
 async def _preferred_thumbnail_sources(
     session: AsyncSession,
     item_ids: list[uuid.UUID],
@@ -543,6 +560,7 @@ async def get_today_recommendation(
         reasoning=get_settings().ENABLE_TODAY_REASONING,
         vision_style=get_settings().ENABLE_VISION_STYLE_LEARNING,
     )
+    repository = SqlAlchemyRecommendationRepository(session)
     try:
         cached = await redis_client.get(cache_key)
     except RedisError:
@@ -554,9 +572,11 @@ async def get_today_recommendation(
         if response.data is not None:
             await _refresh_favorite_flags(session, current_user.id, response.data.outfits)
             await _backfill_weather_if_missing(response.data, settings.location)
+            await _set_refresh_capabilities(
+                response.data, repository, current_user.id, target
+            )
         return response
 
-    repository = SqlAlchemyRecommendationRepository(session)
     had_cache = await repository.get_daily(current_user.id, target) is not None
     if mode == "tomorrow":
         # BE#77 — tomorrow must NOT fall back to today's recommendation (that's
@@ -601,6 +621,7 @@ async def get_today_recommendation(
     )
     today_data.style_context = style_ctx
     today_data.mode = mode
+    await _set_refresh_capabilities(today_data, repository, current_user.id, target)
     await _backfill_weather_if_missing(today_data, settings.location)
     # BE#80 — at most one resurface insight (forgotten + season-suitable item).
     # Flag-gated; absent when there's no genuine candidate. Attached before the
@@ -649,6 +670,7 @@ async def refresh_today(
     redis_client: Annotated[Redis, Depends(get_redis_client)],
     payload: RefreshTodayRequest | None = None,
     scene: str | None = Query(default=None, pattern="^(commute|formal|casual)$"),
+    target_date: Annotated[date | None, Query()] = None,
 ) -> ResponseModel[TodayRecommendationResponse]:
     """Phase D3 — user-initiated refresh. Writes a new revision; old revision
     rows + their wear/feedback references are preserved. Rate-limited per
@@ -663,15 +685,30 @@ async def refresh_today(
     user_settings = await SqlAlchemyUserRepository(session).get_or_create_settings(
         current_user.id
     )
+    app_settings = get_settings()
     local_now = local_datetime(
-        utc_now(), user_settings.timezone, get_settings().DEFAULT_TIMEZONE
+        utc_now(), user_settings.timezone, app_settings.DEFAULT_TIMEZONE
     )
-    target_date = local_now.date()
+    local_today = local_now.date()
+    target = local_today
+    if target_date is not None and app_settings.ENABLE_DATE_AWARE_TODAY:
+        if target_date < local_today or target_date > local_today + timedelta(days=1):
+            raise FriendlyException(
+                error_codes.VALIDATION_ERROR,
+                "target_date must be today or tomorrow",
+                status_code=400,
+            )
+        target = target_date
 
     # Gate on refresh eligibility BEFORE any LLM override parse, so an over-quota
     # client can't burn LLM spend just to get a 429. refresh_today_recommendation
     # re-checks — the gate is a cheap, idempotent read.
-    await assert_refresh_allowed(repository, current_user.id, target_date)
+    await assert_refresh_allowed(repository, current_user.id, target)
+    # Enter the same user/date write critical section before parsing a free-text
+    # override. The second check is authoritative under the lock, so concurrent
+    # taps cannot both spend on override parsing or outfit generation.
+    await repository.lock_daily_write(current_user.id, target)
+    await assert_refresh_allowed(repository, current_user.id, target)
 
     # BE#78 — resolve a context override (chip / free text) into session-scoped
     # constraints; emit the signal and echo applied_context. Flag-gated and only
@@ -697,7 +734,7 @@ async def refresh_today(
         current_user.id,
         repository,
         style_repo,
-        target_date=target_date,
+        target_date=target,
         scene=scene,
         context_constraints=context_constraints,
     )
@@ -738,6 +775,8 @@ async def refresh_today(
         current_time=local_now.time(),
     )
     today_data.applied_context = applied_context
+    today_data.mode = "tomorrow" if target > local_today else "today"
+    await _set_refresh_capabilities(today_data, repository, current_user.id, target)
     return ResponseModel(data=today_data)
 
 

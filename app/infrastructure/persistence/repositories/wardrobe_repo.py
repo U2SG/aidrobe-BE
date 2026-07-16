@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import cast
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
@@ -38,6 +38,7 @@ class SqlAlchemyWardrobeRepository:
         self,
         user_id: uuid.UUID,
         category: str | None = None,
+        query: str | None = None,
         status: str | None = None,
         season: str | None = None,
         color: str | None = None,
@@ -47,6 +48,21 @@ class SqlAlchemyWardrobeRepository:
         filters = [WardrobeItem.user_id == user_id, WardrobeItem.deleted_at.is_(None)]
         if category is not None:
             filters.append(WardrobeItem.category == category)
+        if query is not None and (normalized_query := query.strip()):
+            escaped_query = (
+                normalized_query.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            pattern = f"%{escaped_query}%"
+            filters.append(
+                or_(
+                    WardrobeItem.title.ilike(pattern, escape="\\"),
+                    WardrobeItem.canonical_name.ilike(pattern, escape="\\"),
+                    WardrobeItem.color_main.ilike(pattern, escape="\\"),
+                    WardrobeItem.category.ilike(pattern, escape="\\"),
+                )
+            )
         if status is not None:
             filters.append(WardrobeItem.status == status)
         if season is not None:
@@ -61,7 +77,7 @@ class SqlAlchemyWardrobeRepository:
         result = await self.session.scalars(
             select(WardrobeItem)
             .where(*filters)
-            .order_by(WardrobeItem.created_at.desc())
+            .order_by(WardrobeItem.created_at.desc(), WardrobeItem.id.desc())
             .limit(limit)
             .offset(offset)
         )

@@ -84,8 +84,12 @@ async def refresh_today_recommendation(
     so a limit of N means N total daily rows (1 background + N-1 refresh).
 
     Feature-flagged: when `ENABLE_TODAY_REFRESH=False` the endpoint should
-    not have called us (router gate). This belt-and-suspenders raises 503
+    not have called us (router gate). This belt-and-suspenders raises 403
     so a misconfigured router can't accidentally bypass the gate."""
+    # Serialize the final quota check with every write for this user/date. The
+    # router's earlier check is only a cheap fast-fail; without this lock two
+    # concurrent requests can both pass the count and both spend on generation.
+    await repository.lock_daily_write(user_id, target_date)
     await assert_refresh_allowed(repository, user_id, target_date)
     return await RecommendationGenerator(
         repository,
