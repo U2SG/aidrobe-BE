@@ -14,6 +14,7 @@ images, titles, or the raw user_id.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from collections import Counter
 from dataclasses import dataclass
@@ -122,6 +123,21 @@ _REFINEMENT_MARKERS = (
 # Not a redirect: it tells the user we can't give a more detailed answer
 # right now, without exposing what was filtered.
 _ASK_FALLBACK_COPY = "这身搭配上我给不出更细的说法，但可以从舒服和得体的角度先选。"
+
+# The contract forbids list positions in the user-facing answer (they are an
+# internal referenced_items mechanism); these backstop the occasional
+# violation, e.g. "白色上衣（序号1）" / "the white shirt (item 2)".
+_PAREN_ORDINAL_RE = re.compile(r"[（(]\s*(?:序号|编号|item|no\.?|#)\s*\d+\s*[)）]", re.IGNORECASE)
+_BARE_ORDINAL_RE = re.compile(r"(?:序号|编号)\s*\d+")
+
+
+def _strip_ordinal_leaks(text: str) -> str:
+    """Remove leaked list-position references from a user-facing answer."""
+    cleaned = _PAREN_ORDINAL_RE.sub("", text)
+    cleaned = _BARE_ORDINAL_RE.sub("", cleaned)
+    if cleaned != text:
+        logger.warning("ask.answer.ordinal_leak_stripped")
+    return re.sub(r" {2,}", " ", cleaned).strip()
 
 
 def _project_tokens(item_count: int) -> int:
@@ -835,7 +851,7 @@ async def answer_question(
         item_refs = [str(focused_item.id)] if focused_item is not None else []
         parsed_deltas = ConversationDeltas(reasoning=None, applied_constraints=[])
     answer_text = sanitize_generated_copy(
-        answer_text,
+        _strip_ordinal_leaks(answer_text),
         fallback=_ASK_FALLBACK_COPY,
     )
     tokens_used = answer.tokens_used
