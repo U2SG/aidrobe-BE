@@ -3,10 +3,11 @@
 Single source of each feature's LLM output JSON contract, so the contract text
 lives in one place instead of being duplicated inside feature use cases.
 
-`ask_structured_contract(lang)` is byte-for-byte the legacy
-`_STRUCTURED_INSTRUCTION` from the Ask use case — `answer_question._extract_structured`
-parses exactly this shape, so the text must NOT drift. A snapshot test
-(`tests/services/test_llm_prompts.py`) locks it.
+`answer_question._extract_structured` parses exactly the JSON SHAPE
+`ask_structured_contract(lang)` advertises, so the envelope keys must not
+drift (instruction prose around them may evolve — e.g. the answer-style
+rules). `tests/unit/test_llm_prompts.py` locks both the envelope and the
+style rules.
 """
 
 from __future__ import annotations
@@ -38,6 +39,11 @@ _ASK_STRUCTURED: dict[str, str] = {
         "若没有引用任何单品，referenced_items 返回空数组。"
         f"stated_preferences 只收录用户本轮明确表达的长期偏好（如「我不喜欢宽松衬衫」），"
         f"type 必须是以下之一：{PREFERENCE_TYPE_VOCAB}；不要从一次性的请求里推断，没有就返回空数组。"
+        "answer 是唯一展示给用户的文字：提及单品只用「白色上衣」这类自然名称，"
+        "严禁出现「序号1」「（序号2）」「第 3 件」等列表位置——位置只能写进 referenced_items。"
+        "不要用「根据您的衣橱和偏好」这类模板开场；单品卡片会另行展示，不要逐条罗列清单。"
+        "结构为：先直接说穿什么，再用一两句讲最贴合当前场合的理由，"
+        "必要时补一句天气或舒适度上的调整建议；全文控制在 2–3 句。"
     ),
     "en": (
         "\nRespond with a single JSON object and nothing else: "
@@ -52,7 +58,14 @@ _ASK_STRUCTURED: dict[str, str] = {
         "stated_preferences captures ONLY durable preferences the user explicitly stated this turn "
         '(e.g. "I dislike oversized shirts"); '
         f"type must be one of: {PREFERENCE_TYPE_VOCAB}. Do not infer from a one-off request; "
-        "return an empty array when there are none."
+        "return an empty array when there are none. "
+        "The answer field is the only text the user sees: refer to items by natural name "
+        '(like "the white shirt"), never by list position ("item 2", "#3") — positions belong '
+        "only in referenced_items. Skip template openers such as \"Based on your wardrobe and "
+        'preferences"; the item cards render separately, so do not enumerate the list. '
+        "Structure it as: lead with what to wear, follow with one or two sentences of the "
+        "reasoning most relevant to the occasion, and add a weather/comfort adjustment only "
+        "when useful. Keep the whole answer to 2–3 sentences."
     ),
 }
 

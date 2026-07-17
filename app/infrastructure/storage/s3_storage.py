@@ -1,14 +1,45 @@
 import re
 import uuid
 from collections.abc import Sequence
+from urllib.parse import urlparse
 
 import boto3
 import structlog
+from botocore.config import Config
 
 from app.application.ports.storage import PresignResult
 from app.config.settings import Settings
 
 logger = structlog.get_logger(__name__)
+
+
+def _public_presign_target(
+    public_base_url: str | None, bucket: str
+) -> tuple[str, str] | None:
+    """Map `S3_PUBLIC_BASE_URL` (a *file* URL prefix) onto a boto3 signing
+    target: (endpoint_url, addressing_style).
+
+    - Path-style base (`http://host:9000/<bucket>`): endpoint is the bare
+      host; addressing must be pinned to "path" so signed paths carry the
+      bucket exactly once.
+    - Virtual-host base (`https://<bucket>.host`): endpoint drops the bucket
+      label and addressing is pinned to "virtual" — passing the full base as
+      the endpoint would let botocore prepend the bucket AGAIN
+      (`bucket.bucket.host`, PR #109 review).
+    - Anything else (e.g. an opaque CDN host that hides the bucket entirely)
+      can't be expressed as an S3 signing client — return None so the caller
+      falls back to the internal client instead of emitting broken URLs."""
+    if not public_base_url:
+        return None
+    parsed = urlparse(public_base_url.rstrip("/"))
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    path = parsed.path.rstrip("/")
+    if path == f"/{bucket}":
+        return f"{parsed.scheme}://{parsed.netloc}", "path"
+    if not path and parsed.netloc.startswith(f"{bucket}."):
+        return f"{parsed.scheme}://{parsed.netloc[len(bucket) + 1:]}", "virtual"
+    return None
 
 
 class S3ObjectStorage:
@@ -24,6 +55,30 @@ class S3ObjectStorage:
             aws_access_key_id=settings.S3_ACCESS_KEY_ID,
             aws_secret_access_key=settings.S3_SECRET_ACCESS_KEY,
         )
+        # Read-path presigns must be generated AGAINST the device-reachable
+        # host: the GET signature binds the host, so a URL signed against the
+        # in-cluster endpoint (minio:9000) 403s after any host rewrite —
+        # verified empirically. Upload presigns stay on the internal client
+        # (presigned POST signs the form policy, not the host; the FE rewrite
+        # owns that path — see aidrobe-frontend CLAUDE.md).
+        target = _public_presign_target(settings.S3_PUBLIC_BASE_URL, self.bucket)
+        if target:
+            endpoint, addressing_style = target
+            self._render_sign_client = boto3.client(
+                "s3",
+                endpoint_url=endpoint,
+                region_name=settings.S3_REGION,
+                aws_access_key_id=settings.S3_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.S3_SECRET_ACCESS_KEY,
+                config=Config(s3={"addressing_style": addressing_style}),
+            )
+        else:
+            if settings.S3_PUBLIC_BASE_URL:
+                logger.warning(
+                    "s3.render_sign.public_base_unmappable",
+                    public_base_url=settings.S3_PUBLIC_BASE_URL,
+                )
+            self._render_sign_client = self.client
 
     async def create_presigned_upload(
         self,
@@ -107,9 +162,10 @@ class S3ObjectStorage:
         ttl_seconds: int = 1800,
         process: str | None = None,
     ) -> str:
-        """S3 presigned GET. `process` is OSS-specific; on S3 it is
-        ignored (no equivalent server-side image processing)."""
-        return self.client.generate_presigned_url(  # type: ignore[no-any-return]
+        """S3 presigned GET against the public endpoint (host-bound signature).
+        `process` is OSS-specific; on S3 it is ignored (no equivalent
+        server-side image processing)."""
+        return self._render_sign_client.generate_presigned_url(  # type: ignore[no-any-return]
             "get_object",
             Params={"Bucket": self.bucket, "Key": key},
             ExpiresIn=ttl_seconds,
