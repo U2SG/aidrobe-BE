@@ -126,9 +126,14 @@ _ASK_FALLBACK_COPY = "这身搭配上我给不出更细的说法，但可以从�
 
 # The contract forbids list positions in the user-facing answer (they are an
 # internal referenced_items mechanism); these backstop the occasional
-# violation, e.g. "白色上衣（序号1）" / "the white shirt (item 2)".
+# violation across every forbidden format the prompt names: parenthesized
+# ("白色上衣（序号1）", "the white shirt (item 2)") and bare ("序号1",
+# "第 3 件", "item 2", "#3") — PR #109 review asked for full coverage.
 _PAREN_ORDINAL_RE = re.compile(r"[（(]\s*(?:序号|编号|item|no\.?|#)\s*\d+\s*[)）]", re.IGNORECASE)
-_BARE_ORDINAL_RE = re.compile(r"(?:序号|编号)\s*\d+")
+_BARE_ORDINAL_RE = re.compile(
+    r"(?:序号|编号)\s*\d+|第\s*\d+\s*件(?:单品)?|\bitem\s+\d+\b|#\d+",
+    re.IGNORECASE,
+)
 
 
 def _strip_ordinal_leaks(text: str) -> str:

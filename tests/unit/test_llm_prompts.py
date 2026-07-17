@@ -129,6 +129,13 @@ def test_strip_ordinal_leaks_removes_positions_but_keeps_clean_text() -> None:
         _strip_ordinal_leaks("Wear the white shirt (item 2) with loafers (#5).")
         == "Wear the white shirt with loafers ."
     )
+    # Bare forms the prompt also forbids (PR #109 review): 第 N 件 / item N / #N.
+    assert _strip_ordinal_leaks("搭配第 2 件白色上衣") == "搭配白色上衣"
+    assert _strip_ordinal_leaks("外套选第3件单品即可") == "外套选即可"
+    assert _strip_ordinal_leaks("Wear item 2 with the loafers") == "Wear with the loafers"
+    assert _strip_ordinal_leaks("Pair #4 with white sneakers") == "Pair with white sneakers"
+    # "items" (plural word, not a position) must survive.
+    assert _strip_ordinal_leaks("These items 2-in-1 style") == "These items 2-in-1 style"
     clean = "白色上衣配米色长裤，天气热外套拿在手上。"
     assert _strip_ordinal_leaks(clean) == clean
 

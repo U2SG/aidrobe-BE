@@ -1,9 +1,11 @@
 import re
 import uuid
 from collections.abc import Sequence
+from urllib.parse import urlparse
 
 import boto3
 import structlog
+from botocore.config import Config
 
 from app.application.ports.storage import PresignResult
 from app.config.settings import Settings
@@ -11,18 +13,33 @@ from app.config.settings import Settings
 logger = structlog.get_logger(__name__)
 
 
-def _public_presign_endpoint(public_base_url: str | None, bucket: str) -> str | None:
-    """Derive the client endpoint from `S3_PUBLIC_BASE_URL`.
+def _public_presign_target(
+    public_base_url: str | None, bucket: str
+) -> tuple[str, str] | None:
+    """Map `S3_PUBLIC_BASE_URL` (a *file* URL prefix) onto a boto3 signing
+    target: (endpoint_url, addressing_style).
 
-    The public base is a *file* URL prefix and may therefore carry the
-    path-style bucket suffix (`http://host:9000/aidrobe`); the boto3 endpoint
-    must not, or the bucket appears twice in signed paths."""
+    - Path-style base (`http://host:9000/<bucket>`): endpoint is the bare
+      host; addressing must be pinned to "path" so signed paths carry the
+      bucket exactly once.
+    - Virtual-host base (`https://<bucket>.host`): endpoint drops the bucket
+      label and addressing is pinned to "virtual" — passing the full base as
+      the endpoint would let botocore prepend the bucket AGAIN
+      (`bucket.bucket.host`, PR #109 review).
+    - Anything else (e.g. an opaque CDN host that hides the bucket entirely)
+      can't be expressed as an S3 signing client — return None so the caller
+      falls back to the internal client instead of emitting broken URLs."""
     if not public_base_url:
         return None
-    base = public_base_url.rstrip("/")
-    if base.endswith(f"/{bucket}"):
-        base = base[: -(len(bucket) + 1)]
-    return base or None
+    parsed = urlparse(public_base_url.rstrip("/"))
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    path = parsed.path.rstrip("/")
+    if path == f"/{bucket}":
+        return f"{parsed.scheme}://{parsed.netloc}", "path"
+    if not path and parsed.netloc.startswith(f"{bucket}."):
+        return f"{parsed.scheme}://{parsed.netloc[len(bucket) + 1:]}", "virtual"
+    return None
 
 
 class S3ObjectStorage:
@@ -44,18 +61,24 @@ class S3ObjectStorage:
         # verified empirically. Upload presigns stay on the internal client
         # (presigned POST signs the form policy, not the host; the FE rewrite
         # owns that path — see aidrobe-frontend CLAUDE.md).
-        public_endpoint = _public_presign_endpoint(settings.S3_PUBLIC_BASE_URL, self.bucket)
-        self._render_sign_client = (
-            boto3.client(
+        target = _public_presign_target(settings.S3_PUBLIC_BASE_URL, self.bucket)
+        if target:
+            endpoint, addressing_style = target
+            self._render_sign_client = boto3.client(
                 "s3",
-                endpoint_url=public_endpoint,
+                endpoint_url=endpoint,
                 region_name=settings.S3_REGION,
                 aws_access_key_id=settings.S3_ACCESS_KEY_ID,
                 aws_secret_access_key=settings.S3_SECRET_ACCESS_KEY,
+                config=Config(s3={"addressing_style": addressing_style}),
             )
-            if public_endpoint
-            else self.client
-        )
+        else:
+            if settings.S3_PUBLIC_BASE_URL:
+                logger.warning(
+                    "s3.render_sign.public_base_unmappable",
+                    public_base_url=settings.S3_PUBLIC_BASE_URL,
+                )
+            self._render_sign_client = self.client
 
     async def create_presigned_upload(
         self,
