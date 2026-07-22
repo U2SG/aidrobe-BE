@@ -7398,7 +7398,7 @@
         "properties": {
           "input_type": {
             "type": "string",
-            "pattern": "^(image|link|screenshot|image_batch|shared_content|receipt_screenshot|order_screenshot|shopping_email)$",
+            "pattern": "^(image|outfit_image|link|screenshot|image_batch|shared_content|receipt_screenshot|order_screenshot|shopping_email)$",
             "title": "Input Type"
           },
           "source_type": {

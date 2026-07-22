@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field
 class CreateImportTaskRequest(BaseModel):
     input_type: str = Field(
         pattern=(
-            "^(image|link|screenshot|image_batch|shared_content|receipt_screenshot|order_screenshot|shopping_email)$"
+            "^(image|outfit_image|link|screenshot|image_batch|shared_content|"
+            "receipt_screenshot|order_screenshot|shopping_email)$"
         )
     )
     source_type: str = Field(pattern="^(camera|album|taobao|jd|xhs|douyin|web|share|screenshot)$")

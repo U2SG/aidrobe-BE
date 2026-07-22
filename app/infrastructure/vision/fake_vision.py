@@ -34,23 +34,32 @@ _ITEMS: dict[str, _FakeItem] = {
 }
 
 
+def _result_for(key: str, locale: str) -> VisionResult:
+    spec = _ITEMS[key]
+    resolved = resolve_locale(locale)
+    display_name = spec.names.get(resolved, spec.canonical_name)
+    return VisionResult(
+        title=display_name,
+        category=spec.category,
+        color_main=spec.color_main,
+        confidence_score=spec.confidence_score,
+        canonical_name=spec.canonical_name,
+        display_name=display_name,
+        localized_names=dict(spec.names),
+    )
+
+
 class FakeVision:
     async def analyze_image(self, image_url: str, locale: str = DEFAULT_LOCALE) -> VisionResult:
         if "fail" in image_url:
             raise ValueError("fake vision failure")
         key = "bottom" if ("pants" in image_url or "bottom" in image_url) else "top"
-        spec = _ITEMS[key]
-        resolved = resolve_locale(locale)
-        display_name = spec.names.get(resolved, spec.canonical_name)
-        return VisionResult(
-            title=display_name,
-            category=spec.category,
-            color_main=spec.color_main,
-            confidence_score=spec.confidence_score,
-            canonical_name=spec.canonical_name,
-            display_name=display_name,
-            localized_names=dict(spec.names),
-        )
+        return _result_for(key, locale)
+
+    async def analyze_outfit(self, image_url: str, locale: str = DEFAULT_LOCALE) -> list[VisionResult]:
+        if "fail" in image_url:
+            raise ValueError("fake vision failure")
+        return [_result_for("top", locale), _result_for("bottom", locale)]
 
     async def analyze_style(self, image_url: str, locale: str = DEFAULT_LOCALE) -> StyleAnalysis:
         if "fail" in image_url:
