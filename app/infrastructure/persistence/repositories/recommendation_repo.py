@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import cast
 
-from sqlalchemy import delete, or_, select, text, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -95,6 +95,23 @@ class SqlAlchemyRecommendationRepository:
             await self.session.scalar(
                 select(DailyRecommendation)
                 .options(selectinload(DailyRecommendation.outfits).selectinload(Outfit.items))
+                .where(
+                    DailyRecommendation.user_id == user_id,
+                    DailyRecommendation.recommendation_date == recommendation_date,
+                    DailyRecommendation.is_current.is_(True),
+                )
+            ),
+        )
+
+    async def count_current_dailies(self, user_id: uuid.UUID, recommendation_date: date) -> int:
+        """Issue #100 diagnostics — the is_current invariant is exactly one row
+        per (user, date); any other count at read time indicates a revision
+        write race."""
+        return cast(
+            int,
+            await self.session.scalar(
+                select(func.count())
+                .select_from(DailyRecommendation)
                 .where(
                     DailyRecommendation.user_id == user_id,
                     DailyRecommendation.recommendation_date == recommendation_date,
