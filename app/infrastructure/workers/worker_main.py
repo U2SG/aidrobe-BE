@@ -175,3 +175,8 @@ class WorkerSettings:
     redis_settings = _redis_settings_from_url(settings.ARQ_REDIS_URL)
     job_timeout = settings.ARQ_JOB_TIMEOUT_SECONDS
     max_jobs = settings.ARQ_MAX_JOBS
+    # Heartbeat cadence for the compose healthcheck (`arq --check`): arq writes
+    # its health-check key with TTL = interval + 1s, so the arq default (3600s)
+    # would take up to an hour to flag a hung worker. 60s bounds detection to
+    # ~3 min with the compose retries.
+    health_check_interval = 60
