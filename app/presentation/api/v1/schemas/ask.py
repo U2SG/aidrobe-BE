@@ -67,6 +67,9 @@ class AskResponse(BaseModel):
 
 class AskHistoryItem(BaseModel):
     ask_session_id: uuid.UUID
+    # Conversation this turn belongs to (resolved via ask_messages) so the
+    # client can resume it; None for legacy rows without message linking.
+    conversation_id: uuid.UUID | None = None
     question: str
     answer: str | None = None
     item_refs: list[str] = Field(default_factory=list)
