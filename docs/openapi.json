@@ -6660,6 +6660,16 @@
             "type": "string",
             "title": "Source Surface",
             "default": "ask"
+          },
+          "trip_intent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskTripIntent"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -6670,6 +6680,31 @@
           "tokens_used"
         ],
         "title": "AskResponse"
+      },
+      "AskTripIntent": {
+        "properties": {
+          "is_trip": {
+            "type": "boolean",
+            "title": "Is Trip"
+          },
+          "duration_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Days"
+          }
+        },
+        "type": "object",
+        "required": [
+          "is_trip"
+        ],
+        "title": "AskTripIntent",
+        "description": "BE#115 — present only when the structured answer detected a multi-day\ntrip question; the FE uses it to offer the packing-list handoff."
       },
       "AuthTokenResponse": {
         "properties": {

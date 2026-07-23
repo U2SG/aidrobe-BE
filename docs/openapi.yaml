@@ -3945,6 +3945,10 @@ components:
           type: string
           title: Source Surface
           default: ask
+        trip_intent:
+          anyOf:
+          - $ref: '#/components/schemas/AskTripIntent'
+          - type: 'null'
       type: object
       required:
       - ask_session_id
@@ -3952,6 +3956,23 @@ components:
       - item_refs
       - tokens_used
       title: AskResponse
+    AskTripIntent:
+      properties:
+        is_trip:
+          type: boolean
+          title: Is Trip
+        duration_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Duration Days
+      type: object
+      required:
+      - is_trip
+      title: AskTripIntent
+      description: 'BE#115 — present only when the structured answer detected a multi-day
+
+        trip question; the FE uses it to offer the packing-list handoff.'
     AuthTokenResponse:
       properties:
         user_id:
