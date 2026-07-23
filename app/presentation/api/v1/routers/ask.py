@@ -24,6 +24,7 @@ from app.common import error_codes
 from app.common.enums import FeedbackType, RecommendationEventType
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
+from app.infrastructure.persistence.models.ask_conversation import AskMessage
 from app.infrastructure.persistence.models.ask_session import AskSession
 from app.infrastructure.persistence.models.recommendation import RecommendationEvent
 from app.infrastructure.persistence.models.user import User, UserSettings
@@ -168,6 +169,19 @@ async def ask_history(
         session, current_user.id, all_refs, settings_locale=settings_locale
     )
     by_id = {str(snap.item_id): snap for snap in snapshots}
+    # Resolve each session's conversation through ask_messages (sessions carry
+    # no conversation column; messages do). One IN-query for the page — the FE
+    # uses this to resume a past conversation (#114).
+    conversation_by_session: dict[uuid.UUID, uuid.UUID] = {}
+    if rows:
+        message_rows = await session.execute(
+            select(AskMessage.ask_session_id, AskMessage.conversation_id).where(
+                AskMessage.ask_session_id.in_([row.id for row in rows])
+            )
+        )
+        for ask_session_id, conversation_id in message_rows:
+            if ask_session_id is not None:
+                conversation_by_session[ask_session_id] = conversation_id
     out: list[AskHistoryItem] = []
     for row in rows:
         refs = [str(ref) for ref in (row.item_refs or [])]
@@ -175,6 +189,7 @@ async def ask_history(
         out.append(
             AskHistoryItem(
                 ask_session_id=row.id,
+                conversation_id=conversation_by_session.get(row.id),
                 question=row.question,
                 answer=row.answer,
                 item_refs=refs,

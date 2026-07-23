@@ -802,7 +802,7 @@ async def test_ask_history(
         llm=_FakeLlm(),
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
-        await client.post(
+        ask_resp = await client.post(
             "/v1/ask",
             headers={"X-User-Id": str(user_id)},
             json={"question": "第一个问题？"},
@@ -813,6 +813,9 @@ async def test_ask_history(
     assert len(rows) == 1
     assert rows[0]["question"] == "第一个问题？"
     assert rows[0]["answer"] == "建议搭配白衬衫和黑裤子。"
+    # #114 — history carries the conversation so the client can resume it.
+    assert rows[0]["conversation_id"] == ask_resp.json()["conversation_id"]
+    assert rows[0]["conversation_id"] is not None
 
 
 async def _seed_item_with_image(
