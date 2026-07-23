@@ -171,9 +171,10 @@ async def ask_history(
     by_id = {str(snap.item_id): snap for snap in snapshots}
     # Resolve each session's conversation through ask_messages (sessions carry
     # no conversation column; messages do). One IN-query for the page — the FE
-    # uses this to resume a past conversation (#114).
+    # uses this to resume a past conversation (#114). Exposure follows
+    # ENABLE_ASK_CONVERSATIONS, same as POST /v1/ask — rows persist regardless.
     conversation_by_session: dict[uuid.UUID, uuid.UUID] = {}
-    if rows:
+    if rows and get_settings().ENABLE_ASK_CONVERSATIONS:
         message_rows = await session.execute(
             select(AskMessage.ask_session_id, AskMessage.conversation_id).where(
                 AskMessage.ask_session_id.in_([row.id for row in rows])

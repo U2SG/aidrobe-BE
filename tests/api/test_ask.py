@@ -795,7 +795,7 @@ async def test_ask_history(
     db_session: AsyncSession, patch_router_settings
 ) -> None:
     user_id = await _seed_user_and_items(db_session)
-    patch_router_settings(ENABLE_ASK_AIDROBE=True)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True, ENABLE_ASK_CONVERSATIONS=True)
     app = _build_app(
         db_session,
         Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True),
