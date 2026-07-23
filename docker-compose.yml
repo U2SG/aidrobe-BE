@@ -44,6 +44,11 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    # No HTTP listener here — the image-level HEALTHCHECK (curl :8000) inherited
+    # from the Dockerfile reports unhealthy forever. Liveness signal is process
+    # exit + restart policy.
+    healthcheck:
+      disable: true
 
   # arq worker — drains the async-jobs queues (embedding, outfit_board,
   # ootd_poster, cutout, user_purge) via worker_main's cron ticks + the
@@ -68,6 +73,16 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # arq refreshes a redis heartbeat key every health_check_interval (60s, set
+    # in WorkerSettings); `arq --check` reads it back, so health reflects the
+    # worker loop actually ticking — unlike the inherited curl :8000 check
+    # (no HTTP listener here).
+    healthcheck:
+      test: ["CMD", "arq", "--check", "app.infrastructure.workers.worker_main.WorkerSettings"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
 
   migrate:
     build: .
@@ -79,6 +94,10 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+    # One-shot alembic run gated on service_completed_successfully; the
+    # inherited curl :8000 HEALTHCHECK is meaningless for it.
+    healthcheck:
+      disable: true
 
   postgres:
     image: pgvector/pgvector:pg16
