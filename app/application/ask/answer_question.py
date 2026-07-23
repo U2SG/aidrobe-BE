@@ -221,6 +221,16 @@ class ConversationDeltas:
 
 
 @dataclass(frozen=True)
+class TripIntent:
+    """BE#115 — structured "this question is about a multi-day trip" signal, so
+    the FE can hand off to the packing-list flow instead of leaving the user
+    with a single-outfit answer."""
+
+    is_trip: bool
+    duration_days: int | None = None
+
+
+@dataclass(frozen=True)
 class AskResult:
     ask_session_id: uuid.UUID
     conversation_id: uuid.UUID
@@ -232,6 +242,8 @@ class AskResult:
     # Effective BCP-47 locale (request > settings > default) already resolved
     # here, so the router can build snapshots without re-querying settings.
     effective_locale: str
+    # Only the structured channel can surface trip intent; None elsewhere.
+    trip_intent: TripIntent | None = None
 
 
 @dataclass(frozen=True)
@@ -498,6 +510,22 @@ def _extract_structured(
             if isinstance(ptype, str) and isinstance(pvalue, str) and isinstance(ppolarity, str):
                 preferences.append({"type": ptype, "value": pvalue, "polarity": ppolarity})
     return answer, indices, preferences
+
+
+def _extract_trip_intent(data: dict[str, Any]) -> TripIntent | None:
+    """BE#115 — pull the trip-intent block from the structured envelope.
+
+    Returns None unless the model affirmatively set is_trip=true (missing /
+    malformed blocks and is_trip=false all collapse to None so the response
+    field stays absent for non-trip questions). duration_days survives only as
+    a plausible integer (1–90); anything else degrades to None, not an error."""
+    raw = data.get("trip_intent")
+    if not isinstance(raw, dict) or raw.get("is_trip") is not True:
+        return None
+    duration = raw.get("duration_days")
+    if isinstance(duration, bool) or not isinstance(duration, int) or not 1 <= duration <= 90:
+        duration = None
+    return TripIntent(is_trip=True, duration_days=duration)
 
 
 def _extract_conversation_deltas(data: dict[str, Any]) -> ConversationDeltas:
@@ -804,6 +832,7 @@ async def answer_question(
     # structured off / parse failed we leave durable rejection untouched rather
     # than guess from substrings.
     focus_is_rejection = False
+    trip_intent: TripIntent | None = None
     if structured:
         # Parse the JSON envelope exactly once; feed both the item/preference
         # extractor and the conversation-deltas extractor from the same dict.
@@ -828,6 +857,7 @@ async def answer_question(
             referenced_items = [items[i] for i in indices]
             item_refs = [str(it.id) for it in referenced_items]
             parsed_deltas = _extract_conversation_deltas(cast(dict[str, Any], parsed_data))
+            trip_intent = _extract_trip_intent(cast(dict[str, Any], parsed_data))
             # BE#66 — deterministic self-critique: surface (do NOT mutate) any
             # cited item that contradicts an explicit negative preference, so the
             # regression is observable without risking suppressing a valid answer.
@@ -1014,6 +1044,7 @@ async def answer_question(
         tokens_used=tokens_used,
         deltas=response_deltas,
         effective_locale=effective_locale,
+        trip_intent=trip_intent,
     )
 
 

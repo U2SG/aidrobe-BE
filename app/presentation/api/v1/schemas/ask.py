@@ -45,6 +45,14 @@ class AskConversationDeltas(BaseModel):
     applied_constraints: list[str] = Field(default_factory=list)
 
 
+class AskTripIntent(BaseModel):
+    """BE#115 — present only when the structured answer detected a multi-day
+    trip question; the FE uses it to offer the packing-list handoff."""
+
+    is_trip: bool
+    duration_days: int | None = None
+
+
 class AskResponse(BaseModel):
     ask_session_id: uuid.UUID
     conversation_id: uuid.UUID | None = None
@@ -63,6 +71,8 @@ class AskResponse(BaseModel):
     # `source_surface` is a fixed literal so FE/analytics never guess the origin.
     recommendation_id: uuid.UUID | None = None
     source_surface: str = "ask"
+    # BE#115 — set only when the model flagged trip intent (structured path).
+    trip_intent: AskTripIntent | None = None
 
 
 class AskHistoryItem(BaseModel):

@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 
-from app.application.ask.answer_question import _extract_structured, _strip_ordinal_leaks
+from app.application.ask.answer_question import (
+    _extract_structured,
+    _extract_trip_intent,
+    _strip_ordinal_leaks,
+)
 from app.application.llm_prompts.assemble import assemble_system_prompt
 from app.application.llm_prompts.persona import stylist_persona
 from app.application.llm_prompts.preference_memory import render_preferences
@@ -101,10 +105,25 @@ def test_ask_contract_carries_one_canonical_envelope() -> None:
             '"stated_preferences"',
             '"conversation_deltas"',
             '"rejected_focused_item"',
+            '"trip_intent"',
+            '"duration_days"',
         ):
             assert token in contract
         assert PREFERENCE_TYPE_VOCAB in contract
     assert ask_structured_contract("fr") == ask_structured_contract("zh")
+
+
+def test_extract_trip_intent_only_surfaces_affirmative_plausible_trips() -> None:
+    # BE#115 — missing block, is_trip=false, and malformed shapes all collapse
+    # to None; duration survives only as a plausible integer.
+    assert _extract_trip_intent({}) is None
+    assert _extract_trip_intent({"trip_intent": "5 days"}) is None
+    assert _extract_trip_intent({"trip_intent": {"is_trip": False, "duration_days": 5}}) is None
+    ok = _extract_trip_intent({"trip_intent": {"is_trip": True, "duration_days": 5}})
+    assert ok is not None and ok.is_trip and ok.duration_days == 5
+    for bad_duration in (None, "five", True, 0, -3, 365):
+        got = _extract_trip_intent({"trip_intent": {"is_trip": True, "duration_days": bad_duration}})
+        assert got is not None and got.is_trip and got.duration_days is None
 
 
 def test_ask_contract_pins_the_answer_style() -> None:

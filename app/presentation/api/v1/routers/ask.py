@@ -39,6 +39,7 @@ from app.presentation.api.v1.schemas.ask import (
     AskItemRefSnapshot,
     AskRequest,
     AskResponse,
+    AskTripIntent,
 )
 from app.presentation.api.v1.schemas.recommendations import FeedbackRequest, FeedbackResponse
 
@@ -129,6 +130,14 @@ async def ask(
             else None
         ),
         recommendation_id=recommendation_id,
+        trip_intent=(
+            AskTripIntent(
+                is_trip=result.trip_intent.is_trip,
+                duration_days=result.trip_intent.duration_days,
+            )
+            if result.trip_intent is not None
+            else None
+        ),
     )
 
 

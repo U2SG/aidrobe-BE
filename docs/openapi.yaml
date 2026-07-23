@@ -760,9 +760,7 @@ paths:
       summary: Mark Item Worn
       description: 'Record that the user wore this item (no outfit context), for
 
-        `worn_date` (defaults to today, UTC — client sends its local date for
-
-        timezone correctness, same as the outfit wear path).
+        `worn_date` (defaults to the user''s local date).
 
 
         Updates last_worn_at and wear_count on the item so insights / detail
@@ -3941,6 +3939,10 @@ components:
           type: string
           title: Source Surface
           default: ask
+        trip_intent:
+          anyOf:
+          - $ref: '#/components/schemas/AskTripIntent'
+          - type: 'null'
       type: object
       required:
       - ask_session_id
@@ -3948,6 +3950,23 @@ components:
       - item_refs
       - tokens_used
       title: AskResponse
+    AskTripIntent:
+      properties:
+        is_trip:
+          type: boolean
+          title: Is Trip
+        duration_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Duration Days
+      type: object
+      required:
+      - is_trip
+      title: AskTripIntent
+      description: 'BE#115 — present only when the structured answer detected a multi-day
+
+        trip question; the FE uses it to offer the packing-list handoff.'
     AuthTokenResponse:
       properties:
         user_id:
@@ -7093,6 +7112,11 @@ components:
           - type: string
           - type: 'null'
           title: Fetched At
+        constraints:
+          items:
+            type: string
+          type: array
+          title: Constraints
       type: object
       title: TodayContextResponse
       description: 'Phase D — context snapshot the engine saw at generation time.
@@ -7103,6 +7127,17 @@ components:
         Phase D landed.'
     TodayRecommendationResponse:
       properties:
+        recommendation_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Recommendation Id
+        revision:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Revision
         recommendation_date:
           type: string
           format: date
@@ -7259,6 +7294,12 @@ components:
             format: time
           - type: 'null'
           title: Departure Time
+        timezone:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Timezone
         push_enabled:
           anyOf:
           - type: boolean
@@ -7395,6 +7436,11 @@ components:
             format: time
           - type: 'null'
           title: Departure Time
+        timezone:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Timezone
         push_enabled:
           anyOf:
           - type: boolean

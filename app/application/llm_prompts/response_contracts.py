@@ -35,7 +35,9 @@ _ASK_STRUCTURED: dict[str, str] = {
         '"stated_preferences": [{"type": "类型", "value": "简短的值", "polarity": "positive 或 negative"}], '
         '"conversation_deltas": {"reasoning": "一句话说明如何延续上一轮", '
         '"applied_constraints": ["本轮临时约束"], '
-        '"rejected_focused_item": 仅当用户明确表示不要/换掉当前聚焦的那件单品时为 true，否则为 false}}。'
+        '"rejected_focused_item": 仅当用户明确表示不要/换掉当前聚焦的那件单品时为 true，否则为 false}, '
+        '"trip_intent": {"is_trip": 仅当用户在为多天出行/旅行准备穿搭或行李时为 true，否则为 false, '
+        '"duration_days": 行程天数（整数），用户没说清就为 null}}。'
         "若没有引用任何单品，referenced_items 返回空数组。"
         f"stated_preferences 只收录用户本轮明确表达的长期偏好（如「我不喜欢宽松衬衫」），"
         f"type 必须是以下之一：{PREFERENCE_TYPE_VOCAB}；不要从一次性的请求里推断，没有就返回空数组。"
@@ -53,7 +55,10 @@ _ASK_STRUCTURED: dict[str, str] = {
         '"conversation_deltas": {"reasoning": "one sentence on how this refines the previous turn", '
         '"applied_constraints": ["temporary constraints applied this turn"], '
         '"rejected_focused_item": true only when the user explicitly rejects / wants to swap out the '
-        'focused item, otherwise false}}. '
+        'focused item, otherwise false}, '
+        '"trip_intent": {"is_trip": true only when the user is preparing outfits or packing for a '
+        'multi-day trip, otherwise false, "duration_days": the trip length in days as an integer, '
+        "or null when unstated}}. "
         "If you reference no item, return an empty array. "
         "stated_preferences captures ONLY durable preferences the user explicitly stated this turn "
         '(e.g. "I dislike oversized shirts"); '
