@@ -47,6 +47,24 @@ def build_vision_prompt(locale: str) -> str:
     )
 
 
+def build_outfit_vision_prompt(locale: str) -> str:
+    resolved = resolve_locale(locale)
+    language = _LOCALE_LANGUAGE.get(resolved, "Simplified Chinese (简体中文)")
+    return (
+        "Analyze this outfit photo and identify every distinct wearable garment. "
+        "Return only valid JSON with one key, items, whose value is an array of objects. "
+        "Each object must contain canonical_name, display_name, category, color_main, "
+        "and confidence_score. Do not merge a top and bottom into one item. Exclude the "
+        "person, body parts, background, and non-wearable objects. Return at most 12 items. "
+        "category must be one of top, bottom, outerwear, dress, shoes, accessory, other "
+        "(stable English snake_case; never translate it). color_main must be a stable "
+        "English color word. canonical_name must be a short English name. "
+        f"display_name MUST be a natural {language} name for the garment. "
+        "confidence_score must be a number from 0 to 1. If no garment is visible, "
+        "return {\"items\": []}."
+    )
+
+
 def build_style_prompt() -> str:
     # Tags must be stable English (the recommendation template rules key on
     # English words), so — unlike the wardrobe prompt — this one is locale-free.
@@ -93,53 +111,24 @@ class QwenVision:
         self.settings = settings
 
     async def analyze_image(self, image_url: str, locale: str = DEFAULT_LOCALE) -> VisionResult:
-        # Inline the image as base64 instead of handing DashScope a URL to fetch:
-        # wardrobe images live in private / non-public-internet storage (local
-        # minio in dev, private OSS bucket in prod), which a remote model can't
-        # reach — and we shouldn't expose signed URLs to a third party anyway.
         resolved = resolve_locale(locale)
-        image_payload_url = await self._to_data_uri(image_url)
-        payload = {
-            "model": self.settings.QWEN_VISION_MODEL,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": build_vision_prompt(resolved)},
-                        {"type": "image_url", "image_url": {"url": image_payload_url}},
-                    ],
-                }
-            ],
-            "response_format": {"type": "json_object"},
-        }
-        headers = {
-            "Authorization": f"Bearer {self.settings.QWEN_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        async with httpx.AsyncClient(timeout=self.settings.VISION_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                self.settings.QWEN_VISION_BASE_URL,
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-
-        content = response.json()["choices"][0]["message"]["content"]
+        content = await self._request_content(image_url, build_vision_prompt(resolved))
         data = self._parse_json_content(content)
-        # Lenient on the naming keys: an older model variant may only return
-        # `title`. Fall back so a missing display_name/canonical_name never
-        # crashes the import — canonical defaults to whatever name we got.
-        canonical = str(data.get("canonical_name") or data.get("title") or "")[:120]
-        display = str(data.get("display_name") or data.get("title") or canonical)[:120]
-        return VisionResult(
-            title=display,
-            category=str(data["category"])[:32],
-            color_main=str(data["color_main"])[:32],
-            confidence_score=max(0.0, min(1.0, float(data["confidence_score"]))),
-            canonical_name=canonical,
-            display_name=display,
-            localized_names={resolved: display} if display else {},
-        )
+        return self._vision_result(data, resolved)
+
+    async def analyze_outfit(self, image_url: str, locale: str = DEFAULT_LOCALE) -> list[VisionResult]:
+        resolved = resolve_locale(locale)
+        content = await self._request_content(image_url, build_outfit_vision_prompt(resolved))
+        payload = cast(dict[str, Any], json.loads(self._strip_json_fence(content)))
+        raw_items = payload.get("items")
+        if not isinstance(raw_items, list) or not raw_items:
+            raise ValueError("Outfit response contains no garments")
+        if len(raw_items) > 12:
+            raise ValueError("Outfit response contains too many garments")
+        return [
+            self._vision_result(self._validate_vision_data(raw), resolved)
+            for raw in raw_items
+        ]
 
     async def analyze_style(self, image_url: str, locale: str = DEFAULT_LOCALE) -> StyleAnalysis:
         # `locale` is accepted for interface parity but ignored: style tags must
@@ -187,6 +176,36 @@ class QwenVision:
             confidence=confidence,
         )
 
+    async def _request_content(self, image_url: str, prompt: str) -> str:
+        # Inline private wardrobe images instead of exposing signed URLs to the
+        # third-party vision provider.
+        image_payload_url = await self._to_data_uri(image_url)
+        payload = {
+            "model": self.settings.QWEN_VISION_MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_payload_url}},
+                    ],
+                }
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        headers = {
+            "Authorization": f"Bearer {self.settings.QWEN_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=self.settings.VISION_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                self.settings.QWEN_VISION_BASE_URL,
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+        return str(response.json()["choices"][0]["message"]["content"])
+
     async def _to_data_uri(self, image_url: str) -> str:
         # Already inlined (e.g. a caller passed a data URI) — pass through.
         if image_url.startswith("data:"):
@@ -215,10 +234,32 @@ class QwenVision:
         return text
 
     def _parse_json_content(self, content: str) -> dict[str, Any]:
-        data = cast(dict[str, Any], json.loads(self._strip_json_fence(content)))
+        return self._validate_vision_data(json.loads(self._strip_json_fence(content)))
+
+    @staticmethod
+    def _validate_vision_data(raw: Any) -> dict[str, Any]:
+        if not isinstance(raw, dict):
+            raise ValueError("Vision response item must be an object")
+        data = cast(dict[str, Any], raw)
         for key in ("category", "color_main", "confidence_score"):
             if key not in data:
                 raise ValueError(f"Vision response missing {key}")
         if not (data.get("canonical_name") or data.get("display_name") or data.get("title")):
             raise ValueError("Vision response missing a name field")
         return data
+
+    @staticmethod
+    def _vision_result(data: dict[str, Any], locale: str) -> VisionResult:
+        # Lenient on naming keys for older model variants; category/color remain
+        # required and stable English fields.
+        canonical = str(data.get("canonical_name") or data.get("title") or "")[:120]
+        display = str(data.get("display_name") or data.get("title") or canonical)[:120]
+        return VisionResult(
+            title=display,
+            category=str(data["category"])[:32],
+            color_main=str(data["color_main"])[:32],
+            confidence_score=max(0.0, min(1.0, float(data["confidence_score"]))),
+            canonical_name=canonical,
+            display_name=display,
+            localized_names={locale: display} if display else {},
+        )

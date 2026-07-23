@@ -372,3 +372,29 @@ async def test_vision_worker_writes_length_one_candidate_items(db_session: Async
     assert candidate_items[0]["temp_item_id"]
     assert candidate_items[0]["should_import"] is True
     assert data["candidate_item"]["title"] == candidate_items[0]["title"]
+
+
+async def test_outfit_vision_worker_writes_each_detected_garment(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    app = build_import_tasks_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        create_response = await client.post(
+            "/v1/import-tasks",
+            headers={"X-User-Id": str(user_id)},
+            json={
+                "input_type": "outfit_image",
+                "source_type": "album",
+                "image_url": "https://cdn/outfit.jpg",
+            },
+        )
+        assert create_response.status_code == 202
+        task_id = create_response.json()["data"]["task_id"]
+        data = await wait_for_task_status(client, task_id, user_id, "waiting_confirm")
+
+    candidate_items = data["candidate_items"]
+    assert len(candidate_items) == 2
+    assert [item["category"] for item in candidate_items] == ["top", "bottom"]
+    assert all(item["temp_item_id"] for item in candidate_items)
+    assert len({item["temp_item_id"] for item in candidate_items}) == 2
+    assert all(item["should_import"] is True for item in candidate_items)
+    assert data["candidate_item"]["title"] == candidate_items[0]["title"]

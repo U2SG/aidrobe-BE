@@ -15,7 +15,7 @@ from app.bootstrap.container import (
     vision_rate_limiter,
     vision_service,
 )
-from app.common.enums import ImportStatus
+from app.common.enums import ImportStatus, InputType
 from app.common.locale import resolve_locale
 from app.infrastructure.importers.ocr_router import OcrCandidateAdapter, ocr_adapter_for
 from app.infrastructure.persistence.models.async_job import AsyncJob
@@ -102,7 +102,12 @@ class ProcessImageImportTask:
             # BE#30 — name the candidate in the request locale, falling back to
             # the user's persisted settings locale (then the zh-CN default).
             locale = await self._resolve_locale(task, user_id)
-            result = await self.vision.analyze_image(image_url, locale)
+            if task.input_type == InputType.OUTFIT_IMAGE.value:
+                results = await self.vision.analyze_outfit(image_url, locale)
+                if not results:
+                    raise ValueError("No garments detected in outfit image")
+            else:
+                results = [await self.vision.analyze_image(image_url, locale)]
         except Exception as exc:
             logger.warning("import_task_processing_failed", task_id=str(task_id), error=str(exc))
             task.task_status = ImportStatus.FAILED.value
@@ -112,31 +117,29 @@ class ProcessImageImportTask:
             return
 
         task.task_status = ImportStatus.WAITING_CONFIRM.value
-        # `title` mirrors display_name for old clients; the structured naming
-        # keys carry the stable English canonical + the per-locale map. The
-        # top-level keys stay the single-candidate shape that confirm_import
-        # reads; BE#24 adds the `candidate_items` list (length 1 here — the
-        # vision port yields one item) for multi-candidate-aware clients.
-        single_candidate: dict[str, object] = {
-            "title": result.display_name or result.title,
-            "canonical_name": result.canonical_name or result.title,
-            "display_name": result.display_name or result.title,
-            "localized_names": result.localized_names,
-            "category": result.category,
-            "color_main": result.color_main,
-            "confidence_score": result.confidence_score,
-            "original_image_url": image_url,
-        }
-        task.candidate_payload = {
-            **single_candidate,
-            "candidate_items": [
+        candidate_items: list[dict[str, object]] = []
+        for result in results:
+            candidate_items.append(
                 {
-                    **single_candidate,
-                    # BE#24 — stable per-candidate id #25 confirm-items keys off.
+                    "title": result.display_name or result.title,
+                    "canonical_name": result.canonical_name or result.title,
+                    "display_name": result.display_name or result.title,
+                    "localized_names": result.localized_names,
+                    "category": result.category,
+                    "color_main": result.color_main,
+                    "confidence_score": result.confidence_score,
+                    "original_image_url": image_url,
                     "temp_item_id": uuid.uuid4().hex,
                     "should_import": True,
                 }
-            ],
+            )
+
+        # Keep the first result in the legacy top-level shape while exposing all
+        # garments through the existing multi-candidate contract.
+        first_candidate = candidate_items[0]
+        task.candidate_payload = {
+            **{key: value for key, value in first_candidate.items() if key not in {"temp_item_id", "should_import"}},
+            "candidate_items": candidate_items,
         }
         await self.repository.flush()
 

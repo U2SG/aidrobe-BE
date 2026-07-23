@@ -24,6 +24,7 @@ class ImportStatus(StrEnum):
 
 class InputType(StrEnum):
     IMAGE = "image"
+    OUTFIT_IMAGE = "outfit_image"
     LINK = "link"
     SCREENSHOT = "screenshot"
     IMAGE_BATCH = "image_batch"
