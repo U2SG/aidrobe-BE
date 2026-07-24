@@ -7,8 +7,12 @@ scenarios run without testcontainers fixtures beyond the autouse truncate.
 from __future__ import annotations
 
 import uuid
+from datetime import date
+from typing import Any, cast
 
+from app.application.packing.generate import GeneratePackingList
 from app.application.packing.planner import build_trip_plan, parse_weather_hint
+from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.engine import RecommendationEngine
 from app.common.enums import ItemStatus
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -112,3 +116,63 @@ async def test_no_hallucinated_items_in_plan() -> None:
     )
     referenced = {iid for d in plan.daily_outfits for iid in d.item_ids}
     assert referenced and referenced <= owned  # every referenced item is really owned
+
+
+# ── per-day destination forecast (BE#118) ────────────────────────────
+_HOT = WeatherInfo(temperature_c=30.0, feels_like_c=32.0, rain_probability=0.0, condition="sunny")
+_STORM = WeatherInfo(temperature_c=18.0, feels_like_c=17.0, rain_probability=0.9, condition="storm")
+
+
+async def test_daily_forecast_drives_per_day_reasoning_and_trip_heuristics() -> None:
+    items = [_item("top", "navy"), _item("bottom", "black"), _item("shoes", "white")]  # light shoes
+    plan = await build_trip_plan(
+        candidate_items=items,
+        scenes=["casual"],
+        days=2,
+        weather=None,  # no hint — forecast alone must carry the signal
+        daily_weather=[_HOT, _STORM],
+        engine=RecommendationEngine(),
+    )
+    assert len(plan.daily_outfits) == 2
+    assert any("heat" in r for r in plan.daily_outfits[0].reasoning)
+    assert any("rain" in r for r in plan.daily_outfits[1].reasoning)
+    # Trip-wide heuristics key off the wettest forecast day, not day 1.
+    assert plan.weather_summary is not None and "rain" in plan.weather_summary
+    assert any(m.category == "waterproof shoes" for m in plan.missing_items)
+
+
+async def test_daily_forecast_gap_falls_back_to_hint() -> None:
+    items = [_item("top", "navy"), _item("bottom", "black"), _item("shoes", "brown")]
+    plan = await build_trip_plan(
+        candidate_items=items,
+        scenes=["casual"],
+        days=2,
+        weather=parse_weather_hint("very cold"),
+        daily_weather=[None, _HOT],  # day 1: provider had no data
+        engine=RecommendationEngine(),
+    )
+    assert any("cold" in r for r in plan.daily_outfits[0].reasoning)
+    assert any("heat" in r for r in plan.daily_outfits[1].reasoning)
+
+
+async def test_destination_forecast_is_fail_soft_per_day() -> None:
+    class _FlakyWeather:
+        async def get_weather(self, city: str) -> WeatherInfo:
+            raise NotImplementedError
+
+        async def get_today(self, location: str) -> WeatherInfo:
+            raise NotImplementedError
+
+        async def get_forecast(self, location: str, target_date: date) -> WeatherInfo | None:
+            if target_date.toordinal() % 2 == 0:
+                raise RuntimeError("provider down")
+            return _HOT
+
+    use_case = GeneratePackingList(cast(Any, None), weather=_FlakyWeather())
+    forecast = await use_case._destination_forecast("Tokyo", date(2026, 8, 1), 3)
+    assert forecast is not None and len(forecast) == 3
+    assert forecast.count(None) >= 1 and any(w is not None for w in forecast)
+    # No weather port / missing inputs → None (planner treats weather as hint-only).
+    assert await GeneratePackingList(cast(Any, None))._destination_forecast("Tokyo", date(2026, 8, 1), 3) is None
+    assert await use_case._destination_forecast(None, date(2026, 8, 1), 3) is None
+    assert await use_case._destination_forecast("Tokyo", None, 3) is None
