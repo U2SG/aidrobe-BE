@@ -11,6 +11,9 @@ plain status flip.
 import uuid
 from datetime import date, timedelta
 
+import structlog
+
+from app.application.ports.weather import WeatherInfo, WeatherPort
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
@@ -19,6 +22,8 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.packing_list_repo import (
     SqlAlchemyPackingListRepository,
 )
+
+logger = structlog.get_logger(__name__)
 
 # Static scene -> expected categories map. Kept deliberately small; the goal is
 # a sensible default selection per scene, not a styling engine. Categories are
@@ -42,8 +47,13 @@ def _categories_for_scene(scene: str) -> list[str]:
 
 
 class GeneratePackingList:
-    def __init__(self, repository: SqlAlchemyPackingListRepository) -> None:
+    def __init__(
+        self,
+        repository: SqlAlchemyPackingListRepository,
+        weather: WeatherPort | None = None,
+    ) -> None:
         self.repository = repository
+        self.weather = weather
 
     async def execute(
         self,
@@ -123,6 +133,33 @@ class GeneratePackingList:
         )
         return await self.repository.add(packing_list)
 
+    async def _destination_forecast(
+        self,
+        destination: str | None,
+        departure_date: date | None,
+        days: int,
+    ) -> list[WeatherInfo | None] | None:
+        """BE#118 — real per-day forecasts for the destination. Needs a weather
+        port plus both destination and departure date; every failure degrades to
+        None for that day (planner falls back to the parsed weather hint), so a
+        provider outage can never block list creation."""
+        if self.weather is None or not destination or departure_date is None:
+            return None
+        forecast: list[WeatherInfo | None] = []
+        for offset in range(days):
+            target = departure_date + timedelta(days=offset)
+            try:
+                forecast.append(await self.weather.get_forecast(destination, target))
+            except Exception as exc:
+                logger.warning(
+                    "packing_forecast_failed",
+                    destination=destination,
+                    target_date=str(target),
+                    error=str(exc),
+                )
+                forecast.append(None)
+        return forecast if any(w is not None for w in forecast) else None
+
     async def _generate_with_planner(
         self,
         user_id: uuid.UUID,
@@ -167,6 +204,7 @@ class GeneratePackingList:
             scenes=scenes,
             days=days,
             weather=parse_weather_hint(weather_hint),
+            daily_weather=await self._destination_forecast(destination, departure_date, days),
             engine=gen.engine,
             disliked_colors=disliked_colors,
             relationship_edges=relationship_edges,

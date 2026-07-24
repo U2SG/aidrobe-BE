@@ -17,6 +17,7 @@ from app.application.packing.generate import (
     ListPackingLists,
     UpdatePackingList,
 )
+from app.bootstrap.container import weather_service
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
@@ -77,7 +78,7 @@ async def create_packing_list(
 ) -> PackingListResponse:
     _gate()
     repo = SqlAlchemyPackingListRepository(session)
-    packing_list = await GeneratePackingList(repo).execute(
+    packing_list = await GeneratePackingList(repo, weather=weather_service()).execute(
         current_user.id,
         payload.destination,
         payload.days,

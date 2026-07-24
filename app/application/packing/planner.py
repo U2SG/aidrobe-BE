@@ -170,18 +170,35 @@ async def build_trip_plan(
     style_profile: dict[str, Any] | None = None,
     fit_profile: dict[str, Any] | None = None,
     destination: str | None = None,
+    daily_weather: list[WeatherInfo | None] | None = None,
 ) -> TripPlan:
     """Build a per-day outfit plan + packing list + missing-item warnings.
 
     Each day cycles through `scenes` and asks the engine for the top outfit,
     feeding prior days' signatures so day-to-day looks vary while individual
     pieces still get reused (packing minimalism). Engine `insufficient_items`
-    yields an empty plan (the wardrobe can't dress the trip)."""
+    yields an empty plan (the wardrobe can't dress the trip).
+
+    `daily_weather` (BE#118) carries real per-day destination forecasts, one
+    entry per trip day (None where the provider had no data). Each day falls
+    back to the trip-wide `weather` (the parsed hint); the rain/summary
+    heuristics use the wettest forecast day so a mid-trip storm still surfaces."""
+
+    def weather_for(day: int) -> WeatherInfo | None:
+        if daily_weather and 0 <= day - 1 < len(daily_weather) and daily_weather[day - 1] is not None:
+            return daily_weather[day - 1]
+        return weather
+
+    # Trip-wide heuristics (summary, rain warnings) key off the wettest day the
+    # forecast knows about, not just the hint.
+    forecast_days = [w for w in (daily_weather or []) if w is not None]
+    trip_weather = max(forecast_days, key=lambda w: w.rain_probability, default=weather)
+
     occasions = scenes or ["casual"]
     engine_items = [_to_engine_item(i) for i in candidate_items]
-    weather_summary = _weather_summary(weather)
+    weather_summary = _weather_summary(trip_weather)
     summary = f"{days}-day {destination or 'trip'} packing plan ({', '.join(occasions)})"
-    missing = _missing_items(candidate_items, occasions, weather)
+    missing = _missing_items(candidate_items, occasions, trip_weather)
 
     daily_outfits: list[DailyOutfit] = []
     prior_signatures: list[set[str]] = []
@@ -192,7 +209,7 @@ async def build_trip_plan(
         occasion = occasions[(day - 1) % len(occasions)]
         result = await engine.generate(
             engine_items,
-            weather=weather,
+            weather=weather_for(day),
             disliked_colors=disliked_colors or set(),
             relationship_edges=relationship_edges or [],
             style_profile=style_profile or {},
@@ -211,7 +228,7 @@ async def build_trip_plan(
                 day=day,
                 occasion=occasion,
                 item_ids=list(top.item_ids),
-                reasoning=_daily_reasoning(occasion, weather, reuses=reuses),
+                reasoning=_daily_reasoning(occasion, weather_for(day), reuses=reuses),
             )
         )
         prior_signatures.append(set(top.item_ids))
@@ -219,7 +236,7 @@ async def build_trip_plan(
             item_use_count[item_id] = item_use_count.get(item_id, 0) + 1
             seen_items.add(item_id)
 
-    packing_items = _packing_items(item_use_count, candidate_items, weather)
+    packing_items = _packing_items(item_use_count, candidate_items, trip_weather)
     return TripPlan(
         summary=summary,
         weather_summary=weather_summary,
