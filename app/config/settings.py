@@ -347,6 +347,10 @@ class Settings(BaseSettings):
             raise ValueError(
                 "ENABLE_CONTEXT_OVERRIDES requires ENABLE_TODAY_REFRESH"
             )
+        if self.ENABLE_PACKING_PLANNER and not self.ENABLE_PACKING_LIST:
+            raise ValueError(
+                "ENABLE_PACKING_PLANNER requires ENABLE_PACKING_LIST"
+            )
         return self
 
 

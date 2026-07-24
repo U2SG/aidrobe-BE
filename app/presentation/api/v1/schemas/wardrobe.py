@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.common.enums import WardrobeItemStatus
+from app.common.enums import FitIntent, WardrobeItemStatus
 
 
 class ConfirmImportRequest(BaseModel):
@@ -14,6 +14,9 @@ class ConfirmImportRequest(BaseModel):
     location: str | None = Field(default=None, max_length=120)
     size_label: str | None = Field(default=None, max_length=32)
     fit_status: str | None = None
+    # BE#121 — the fit chips the FE confirm form collects; enum-typed so bad
+    # values 422 instead of landing in the column.
+    fit_intent: FitIntent | None = None
     # M18 — client may override the OCR-auto-filled values from the candidate.
     purchase_price: Decimal | None = Field(default=None, ge=0)
     purchase_date: date | None = None

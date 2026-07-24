@@ -38,6 +38,7 @@ class ConfirmItemInput:
     location: str | None = None
     size_label: str | None = None
     fit_status: str | None = None
+    fit_intent: str | None = None
 
 
 class ConfirmImageImportTask:
@@ -63,6 +64,7 @@ class ConfirmImageImportTask:
         location: str | None = None,
         size_label: str | None = None,
         fit_status: str | None = None,
+        fit_intent: str | None = None,
         purchase_price: Decimal | None = None,
         purchase_date: date | None = None,
     ) -> WardrobeItem:
@@ -78,6 +80,7 @@ class ConfirmImageImportTask:
             location=location,
             size_label=size_label,
             fit_status=fit_status,
+            fit_intent=fit_intent,
             purchase_price=purchase_price,
             purchase_date=purchase_date,
         )
@@ -143,6 +146,7 @@ class ConfirmImageImportTask:
                 location=entry.location,
                 size_label=entry.size_label,
                 fit_status=entry.fit_status,
+                fit_intent=entry.fit_intent,
             )
             created.append((entry.temp_item_id, item))
 
@@ -175,6 +179,7 @@ class ConfirmImageImportTask:
         location: str | None = None,
         size_label: str | None = None,
         fit_status: str | None = None,
+        fit_intent: str | None = None,
         purchase_price: Decimal | None = None,
         purchase_date: date | None = None,
     ) -> WardrobeItem:
@@ -227,6 +232,9 @@ class ConfirmImageImportTask:
             location=location,
             size_label=size_label,
             fit_status=fit_status or "unknown",
+            # BE#121 — the fit-intent chips the confirm form collects were
+            # previously dropped on the floor; persist them (schema-validated).
+            fit_intent=fit_intent,
             purchase_price=purchase_price,
             purchase_date=purchase_date,
         )

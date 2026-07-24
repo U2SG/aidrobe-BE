@@ -150,6 +150,7 @@ async def confirm_import_task(
         location=payload.location,
         size_label=payload.size_label,
         fit_status=payload.fit_status,
+        fit_intent=payload.fit_intent.value if payload.fit_intent else None,
         purchase_price=payload.purchase_price,
         purchase_date=payload.purchase_date,
     )
@@ -188,6 +189,7 @@ async def confirm_import_items(
                 location=item.location,
                 size_label=item.size_label,
                 fit_status=item.fit_status,
+                fit_intent=item.fit_intent.value if item.fit_intent else None,
             )
             for item in payload.items
         ],
