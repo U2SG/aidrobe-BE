@@ -14,6 +14,7 @@ images, titles, or the raw user_id.
 from __future__ import annotations
 
 import json
+import random
 import re
 import uuid
 from collections import Counter
@@ -188,10 +189,22 @@ _NO_WARDROBE_CONTEXT_CLAUSE: dict[str, str] = {
 }
 
 # Appended when the caller scoped the Ask to one item; that item is placed
-# first in the candidate list, so the clause refers to position #1.
+# first in the candidate list, so the clause refers to position #1. Phrased as
+# a hard requirement — "请优先考虑" was weak enough that the model kept giving
+# its usual generic combo regardless of the focused piece (user report
+# 2026-07-24).
 _FOCUS_CLAUSE: dict[str, str] = {
-    "zh": "用户希望围绕列表中第 1 件单品来搭配，请优先考虑它。\n",
-    "en": "The user wants to build an outfit around the FIRST item in the list; prioritize it.\n",
+    "zh": (
+        "用户想围绕列表中第 1 件单品来搭配：整套答案必须以它为核心构建，"
+        "referenced_items 必须包含 1，且要说明其它单品为什么衬它；"
+        "不要给出与这件单品无关的通用搭配。\n"
+    ),
+    "en": (
+        "The user wants an outfit built AROUND the FIRST item in the list: the answer "
+        "must center on it, referenced_items must include 1, and the other pieces must "
+        "be justified by how they complement it. Never give a generic combination that "
+        "ignores this item.\n"
+    ),
 }
 
 
@@ -399,6 +412,12 @@ def _curate_candidates(
         ),
     )
     budget = max_items - (1 if focused_item is not None else 0)
+    # Shuffle within each category bucket so repeated asks don't present the
+    # byte-identical, wear-count-ordered list every time — LLMs favor early
+    # items, which made every answer converge on the same few pieces (user
+    # report 2026-07-24). Category coverage and the dedupe cap are unaffected.
+    for bucket in buckets.values():
+        random.shuffle(bucket)
     selected: list[WardrobeItem] = []
     cursors = dict.fromkeys(ordered_cats, 0)
     while len(selected) < budget:
@@ -425,7 +444,7 @@ def _candidate_selection_meta(
     explainability / answer-quality tracking. Never reaches the prompt."""
     by_category = Counter(i.category for i in items if i.category)
     return {
-        "strategy": "wear_recency_priority+color_cat_dedupe+category_roundrobin",
+        "strategy": "wear_recency_priority+color_cat_dedupe+bucket_shuffle+category_roundrobin",
         "count_by_category": dict(by_category),
         "focused_in_top1": bool(
             focused_item is not None and items and items[0].id == focused_item.id
