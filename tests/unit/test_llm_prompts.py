@@ -7,6 +7,7 @@ import json
 from app.application.ask.answer_question import (
     _extract_structured,
     _extract_trip_intent,
+    _recent_reference_clause,
     _strip_ordinal_leaks,
 )
 from app.application.llm_prompts.assemble import assemble_system_prompt
@@ -29,6 +30,16 @@ def test_persona_is_locale_aware_with_zh_default() -> None:
     assert stylist_persona("zh").startswith("你是 Aidrobe")
     assert stylist_persona("en").startswith("You are Aidrobe")
     assert stylist_persona("fr").startswith("你是 Aidrobe")  # unknown -> zh default
+
+
+def test_recent_reference_clause_positions_only() -> None:
+    # Anti-repetition observation: positions land in the clause, nothing else;
+    # no positions -> no clause (the variety rule then has no data to act on).
+    assert _recent_reference_clause([], "zh") is None
+    zh = _recent_reference_clause([1, 4], "zh")
+    assert zh is not None and "第 1、4 件" in zh
+    en = _recent_reference_clause([2], "en")
+    assert en is not None and "items 2" in en
 
 
 # ── reasoning policy ─────────────────────────────────────────────────

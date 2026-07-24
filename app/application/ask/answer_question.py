@@ -453,6 +453,23 @@ def _candidate_selection_meta(
     }
 
 
+def _recent_reference_clause(positions: list[int], lang: str) -> str | None:
+    """Anti-repetition observation (user report 2026-07-24): reasoning_policy
+    already ASKS for variety vs recent recommendations, but the model was never
+    told what was recently recommended — the instruction ran on no data. Feed
+    the candidate positions cited by the user's recent asks (positions only;
+    no titles/ids leave the sanitized channel)."""
+    if not positions:
+        return None
+    nums = "、".join(str(p) for p in positions) if lang == "zh" else ", ".join(str(p) for p in positions)
+    if lang == "zh":
+        return f"最近的问答已推荐过列表中第 {nums} 件单品；除非确实是最优选择，请给出与之前不同的组合。\n"
+    return (
+        f"Recent asks already recommended items {nums} from the list; unless one is "
+        "clearly the best choice, propose a different combination this time.\n"
+    )
+
+
 def _build_system_prompt(
     user_id: uuid.UUID,
     items: list[WardrobeItem],
@@ -460,6 +477,7 @@ def _build_system_prompt(
     today: date,
     *,
     structured: bool = False,
+    recent_ref_positions: list[int] | None = None,
 ) -> str:
     # BE#66 — compose the system prompt from the shared `llm_prompts` modules
     # (persona / preference rules / reasoning policy / response contract) instead
@@ -489,6 +507,7 @@ def _build_system_prompt(
             # Durable preferences as PRIORITIZED avoid/prefer rules (fixes
             # "included but not prioritized"); None when there are none.
             render_preferences(ctx.preference_memory, lang),
+            _recent_reference_clause(recent_ref_positions or [], lang),
             json.dumps(payload, ensure_ascii=False),
             reasoning_policy(lang),
             ask_structured_contract(lang) if structured else None,
@@ -831,7 +850,15 @@ async def answer_question(
             else {}
         ),
     )
-    system_prompt = _build_system_prompt(user_id, items, ctx, today, structured=structured)
+    # Positions (1-based, into the curated list) of items the user's recent
+    # asks already cited — the observation the variety rule needs to act on.
+    recent_refs: set[str] = set()
+    for past in await SqlAlchemyAskRepository(session).list_for_user(user_id, limit=5, offset=0):
+        recent_refs.update(str(ref) for ref in (past.item_refs or []))
+    recent_positions = [pos + 1 for pos, it in enumerate(items) if str(it.id) in recent_refs]
+    system_prompt = _build_system_prompt(
+        user_id, items, ctx, today, structured=structured, recent_ref_positions=recent_positions
+    )
     answer = await llm.ask(system_prompt, sanitized_question or question, json_mode=structured)
 
     if not answer.text:
