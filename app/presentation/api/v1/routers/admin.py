@@ -16,6 +16,9 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ports.llm import LlmPort
+from app.application.wardrobe.backfill_names import backfill_missing_localized_names
+from app.bootstrap.container import llm_service
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.session import get_db_session
@@ -108,4 +111,28 @@ async def list_async_jobs(
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+class BackfillItemNamesResponse(BaseModel):
+    scanned: int
+    updated: int
+    remaining: int
+
+
+@router.post("/backfill-item-names", response_model=BackfillItemNamesResponse)
+async def backfill_item_names(
+    _admin: Annotated[User, Depends(require_admin_user)],
+    db: Annotated[AsyncSession, Depends(get_db_session)],
+    llm: Annotated[LlmPort, Depends(llm_service)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> BackfillItemNamesResponse:
+    """One-shot repair for legacy wardrobe items imported before naming
+    localization (BE#30): AI-named rows without `localized_names` render their
+    raw (usually English) title on every surface. Each call batches `limit`
+    items into one LLM request producing zh-CN/en-US name pairs; user-renamed
+    items are never touched. Call repeatedly until `remaining` is 0."""
+    result = await backfill_missing_localized_names(db, llm, limit=limit)
+    return BackfillItemNamesResponse(
+        scanned=result.scanned, updated=result.updated, remaining=result.remaining
     )
