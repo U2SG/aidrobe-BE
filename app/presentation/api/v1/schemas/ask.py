@@ -80,6 +80,9 @@ class AskHistoryItem(BaseModel):
     # Conversation this turn belongs to (resolved via ask_messages) so the
     # client can resume it; None for legacy rows without message linking.
     conversation_id: uuid.UUID | None = None
+    # BE#120 — persisted trip signal so history can re-offer the packing
+    # handoff; None for non-trip turns and rows predating persistence.
+    trip_intent: AskTripIntent | None = None
     question: str
     answer: str | None = None
     item_refs: list[str] = Field(default_factory=list)

@@ -6438,6 +6438,16 @@
             ],
             "title": "Conversation Id"
           },
+          "trip_intent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskTripIntent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "question": {
             "type": "string",
             "title": "Question"

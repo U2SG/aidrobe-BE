@@ -205,9 +205,22 @@ async def ask_history(
                 item_refs=refs,
                 item_ref_snapshots=_to_schema(row_snaps),
                 created_at=row.created_at,
+                trip_intent=_trip_intent_from_context(row.context),
             )
         )
     return out
+
+
+def _trip_intent_from_context(context: dict[str, object] | None) -> AskTripIntent | None:
+    """BE#120 — re-materialize the persisted trip signal (answer_question only
+    stores affirmative intents). Malformed/legacy rows collapse to None."""
+    raw = (context or {}).get("trip_intent")
+    if not isinstance(raw, dict) or raw.get("is_trip") is not True:
+        return None
+    duration = raw.get("duration_days")
+    if isinstance(duration, bool) or not isinstance(duration, int):
+        duration = None
+    return AskTripIntent(is_trip=True, duration_days=duration)
 
 
 @router.post("/{ask_session_id}/feedback", response_model=FeedbackResponse)

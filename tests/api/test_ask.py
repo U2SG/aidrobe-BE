@@ -818,6 +818,41 @@ async def test_ask_history(
     assert rows[0]["conversation_id"] is not None
 
 
+async def test_ask_history_carries_trip_intent(
+    db_session: AsyncSession,
+    patch_router_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # BE#120 — a structured answer that flagged a trip persists the signal so
+    # history can re-offer the packing handoff.
+    user_id = await _seed_user_and_items(db_session)
+    patch_router_settings(ENABLE_ASK_AIDROBE=True, ENABLE_ASK_CONVERSATIONS=True)
+    structured = Settings(
+        APP_ENV="dev",
+        ENABLE_ASK_AIDROBE=True,
+        ENABLE_ASK_STRUCTURED_OUTPUT=True,
+        ENABLE_ASK_CONVERSATIONS=True,
+    )
+    monkeypatch.setattr("app.application.ask.answer_question.get_settings", lambda: structured)
+    llm = _FakeLlm(
+        text=(
+            '{"answer": "轻装出行即可", "referenced_items": [], '
+            '"trip_intent": {"is_trip": true, "duration_days": 5}}'
+        )
+    )
+    app = _build_app(db_session, Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True), llm=llm)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        ask_resp = await client.post(
+            "/v1/ask",
+            headers={"X-User-Id": str(user_id)},
+            json={"question": "我要出行旅游5天"},
+        )
+        resp = await client.get("/v1/ask/history", headers={"X-User-Id": str(user_id)})
+    assert ask_resp.json()["trip_intent"] == {"is_trip": True, "duration_days": 5}
+    assert resp.status_code == 200
+    assert resp.json()[0]["trip_intent"] == {"is_trip": True, "duration_days": 5}
+
+
 async def _seed_item_with_image(
     session: AsyncSession,
     user_id: uuid.UUID,
