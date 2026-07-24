@@ -43,7 +43,10 @@ class QwenLlm:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question},
             ],
-            "temperature": 0.4,
+            # 0.4 made repeated asks over the same wardrobe nearly verbatim
+            # (user report 2026-07-24); ask is a creative surface, so sample
+            # warmer. polish_reason stays at 0.4 — it rewrites fixed facts.
+            "temperature": 0.8,
         }
         if json_mode:
             # OpenAI-compatible JSON mode — constrain output to a JSON object.
