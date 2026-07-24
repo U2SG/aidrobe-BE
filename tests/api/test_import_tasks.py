@@ -117,6 +117,55 @@ async def test_get_import_task_returns_candidate_item(db_session: AsyncSession) 
     assert candidate["category"] == "bottom"
 
 
+async def test_confirm_import_persists_fit_intent(db_session: AsyncSession) -> None:
+    # BE#121 — the fit chips the confirm form collects must land on the item;
+    # they were previously dropped (only fit_status ever reached the row).
+    from sqlalchemy import select
+
+    from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+
+    user_id = uuid.uuid4()
+    app = build_import_tasks_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        create_response = await client.post(
+            "/v1/import-tasks",
+            headers={"X-User-Id": str(user_id)},
+            json={
+                "input_type": "image",
+                "source_type": "album",
+                "image_url": "https://cdn/pants.jpg",
+            },
+        )
+        task_id = create_response.json()["data"]["task_id"]
+        await wait_for_task_status(client, task_id, user_id, "waiting_confirm")
+        confirm = await client.post(
+            f"/v1/import-tasks/{task_id}/confirm",
+            headers={"X-User-Id": str(user_id)},
+            json={
+                "title": "黑色长裤",
+                "category": "bottom",
+                "color_main": "black",
+                "fit_intent": "wide_leg",
+            },
+        )
+        assert confirm.status_code == 200
+        bad = await client.post(
+            f"/v1/import-tasks/{task_id}/confirm",
+            headers={"X-User-Id": str(user_id)},
+            json={
+                "title": "黑色长裤",
+                "category": "bottom",
+                "color_main": "black",
+                "fit_intent": "banana",
+            },
+        )
+        assert bad.status_code == 422  # enum-typed field rejects junk values
+
+    item = await db_session.scalar(select(WardrobeItem).where(WardrobeItem.user_id == user_id))
+    assert item is not None
+    assert item.fit_intent == "wide_leg"
+
+
 async def test_import_candidate_respects_request_locale_en(db_session: AsyncSession) -> None:
     user_id = uuid.uuid4()
     app = build_import_tasks_app(db_session)

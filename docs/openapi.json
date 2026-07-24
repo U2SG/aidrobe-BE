@@ -7143,6 +7143,16 @@
             ],
             "title": "Fit Status"
           },
+          "fit_intent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FitIntent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "purchase_price": {
             "anyOf": [
               {
@@ -7253,6 +7263,16 @@
               }
             ],
             "title": "Fit Status"
+          },
+          "fit_intent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FitIntent"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",

@@ -4228,6 +4228,10 @@ components:
           - type: string
           - type: 'null'
           title: Fit Status
+        fit_intent:
+          anyOf:
+          - $ref: '#/components/schemas/FitIntent'
+          - type: 'null'
         purchase_price:
           anyOf:
           - type: number
@@ -4296,6 +4300,10 @@ components:
           - type: string
           - type: 'null'
           title: Fit Status
+        fit_intent:
+          anyOf:
+          - $ref: '#/components/schemas/FitIntent'
+          - type: 'null'
       type: object
       required:
       - temp_item_id

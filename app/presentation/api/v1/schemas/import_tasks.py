@@ -2,6 +2,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.common.enums import FitIntent
+
 
 class CreateImportTaskRequest(BaseModel):
     input_type: str = Field(
@@ -60,6 +62,7 @@ class ConfirmItemInput(BaseModel):
     location: str | None = Field(default=None, max_length=120)
     size_label: str | None = Field(default=None, max_length=32)
     fit_status: str | None = None
+    fit_intent: FitIntent | None = None
 
 
 class ConfirmItemsRequest(BaseModel):
