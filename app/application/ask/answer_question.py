@@ -919,6 +919,13 @@ async def answer_question(
             },
         },
     }
+    if trip_intent is not None:
+        # BE#120 — persist the trip signal so history can re-offer the
+        # packing-list handoff; only affirmative intents are stored.
+        persisted_context["trip_intent"] = {
+            "is_trip": True,
+            "duration_days": trip_intent.duration_days,
+        }
 
     # Record cost on async_jobs — the cost-guard ground truth. Inline work,
     # so we write a terminal `succeeded` row directly rather than enqueue.
