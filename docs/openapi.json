@@ -5207,6 +5207,84 @@
         }
       }
     },
+    "/v1/admin/backfill-item-names": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Backfill Item Names",
+        "description": "One-shot repair for legacy wardrobe items imported before naming\nlocalization (BE#30): AI-named rows without `localized_names` render their\nraw (usually English) title on every surface. Each call batches `limit`\nitems into one LLM request producing zh-CN/en-US name pairs; user-renamed\nitems are never touched. Call repeatedly until `remaining` is 0.",
+        "operationId": "backfill_item_names_v1_admin_backfill_item_names_post",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackfillItemNamesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/user/cost-summary": {
       "get": {
         "tags": [
@@ -6749,6 +6827,29 @@
           "expires_in"
         ],
         "title": "AuthTokenResponse"
+      },
+      "BackfillItemNamesResponse": {
+        "properties": {
+          "scanned": {
+            "type": "integer",
+            "title": "Scanned"
+          },
+          "updated": {
+            "type": "integer",
+            "title": "Updated"
+          },
+          "remaining": {
+            "type": "integer",
+            "title": "Remaining"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scanned",
+          "updated",
+          "remaining"
+        ],
+        "title": "BackfillItemNamesResponse"
       },
       "BatchAddInspirationRequest": {
         "properties": {
