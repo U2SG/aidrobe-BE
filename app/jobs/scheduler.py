@@ -10,6 +10,7 @@ from app.infrastructure.persistence.session import AsyncSessionLocal
 from app.jobs.recommendation_jobs import (
     cron_departure_pre_generate,
     cron_fit_profile_aggregation,
+    cron_midday_regenerate,
     cron_nightly_fallback,
 )
 
@@ -34,10 +35,18 @@ def create_scheduler(session_factory: async_sessionmaker[AsyncSession]) -> Async
             await cron_fit_profile_aggregation(session)
             await session.commit()
 
+    async def run_midday_job() -> None:
+        async with session_factory() as session:
+            await cron_midday_regenerate(session)
+            await session.commit()
+
     scheduler.add_job(run_departure_job, "interval", minutes=5, id="departure_pre_generate")
     # Run frequently and let the job select users whose local clock is in the
     # 03:00 hour. Existing daily rows make repeated ticks idempotent.
     scheduler.add_job(run_nightly_job, "interval", minutes=15, id="nightly_fallback")
+    # BE#126 — 11:00-local backstop regen for users who haven't opened today;
+    # the job itself buckets by local hour and accepts only the first quarter.
+    scheduler.add_job(run_midday_job, "interval", minutes=15, id="midday_regenerate")
     scheduler.add_job(run_fit_profile_job, "cron", hour=3, minute=30, id="fit_profile_aggregation")
     logger.warning(
         "scheduler_single_process_required",

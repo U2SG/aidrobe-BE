@@ -21,7 +21,14 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
-from app.jobs.recommendation_jobs import cron_departure_pre_generate, cron_nightly_fallback
+from app.application.ports.weather import WeatherInfo
+from app.application.recommendations.generator import RecommendationGenerator
+from app.infrastructure.persistence.models.operation_log import OperationLog
+from app.jobs.recommendation_jobs import (
+    cron_departure_pre_generate,
+    cron_midday_regenerate,
+    cron_nightly_fallback,
+)
 
 
 def _default_local_today() -> date:
@@ -265,6 +272,98 @@ async def test_schedule_recompute_force_regenerates_after_rapid_mutations(
 
     assert daily is not None
     assert daily.status == "ready"
+
+
+# ── midday checkpoint (BE#126) ───────────────────────────────────────
+async def _seed_sg_user(db_session: AsyncSession) -> User:
+    user = User()
+    db_session.add(user)
+    await db_session.flush()
+    db_session.add(UserSettings(user_id=user.id, timezone="Asia/Singapore"))
+    await db_session.flush()
+    return user
+
+
+async def _recompute_jobs(db_session: AsyncSession) -> list[AsyncJob]:
+    rows = await db_session.scalars(
+        select(AsyncJob).where(AsyncJob.job_type == RECOMMENDATION_RECOMPUTE_JOB_TYPE)
+    )
+    return list(rows)
+
+
+async def test_midday_regenerate_schedules_for_unopened_users(db_session: AsyncSession) -> None:
+    user = await _seed_sg_user(db_session)
+    # 03:05 UTC == 11:05 Asia/Singapore — inside the single trigger window.
+    run_at = datetime(2026, 7, 25, 3, 5, tzinfo=UTC)
+
+    count = await cron_midday_regenerate(db_session, now=run_at)
+
+    assert count == 1
+    jobs = await _recompute_jobs(db_session)
+    assert len(jobs) == 1 and jobs[0].user_id == user.id
+
+
+async def test_midday_regenerate_skips_users_who_opened_today(db_session: AsyncSession) -> None:
+    user = await _seed_sg_user(db_session)
+    db_session.add(OperationLog(user_id=user.id, event="app_open"))
+    await db_session.flush()
+    run_at = datetime(2026, 7, 25, 3, 5, tzinfo=UTC)
+
+    count = await cron_midday_regenerate(db_session, now=run_at)
+
+    assert count == 0
+    assert await _recompute_jobs(db_session) == []
+
+
+async def test_midday_regenerate_fires_only_in_the_first_quarter(db_session: AsyncSession) -> None:
+    await _seed_sg_user(db_session)
+    # 11:20 local — outside the first-quarter window; and 10:05 local — wrong hour.
+    for run_at in (
+        datetime(2026, 7, 25, 3, 20, tzinfo=UTC),
+        datetime(2026, 7, 25, 2, 5, tzinfo=UTC),
+    ):
+        assert await cron_midday_regenerate(db_session, now=run_at) == 0
+    assert await _recompute_jobs(db_session) == []
+
+
+# ── day-outlook weather for today (BE#126) ───────────────────────────
+class _SplitWeather:
+    """Distinguishable forecast vs instantaneous responses."""
+
+    def __init__(self, forecast_available: bool) -> None:
+        self.forecast_available = forecast_available
+
+    async def get_weather(self, city: str) -> WeatherInfo:
+        return WeatherInfo(temperature_c=27.0, feels_like_c=27.0, rain_probability=0.0, condition="now")
+
+    async def get_today(self, location: str) -> WeatherInfo:
+        return await self.get_weather(location)
+
+    async def get_forecast(self, location: str, target_date: date) -> WeatherInfo | None:
+        if not self.forecast_available:
+            return None
+        return WeatherInfo(temperature_c=35.0, feels_like_c=37.0, rain_probability=0.8, condition="outlook")
+
+
+async def test_generation_weather_prefers_day_outlook_with_now_fallback(
+    db_session: AsyncSession,
+) -> None:
+    user = User()
+    db_session.add(user)
+    await db_session.flush()
+    db_session.add(UserSettings(user_id=user.id, timezone="Asia/Singapore", location="Shenzhen"))
+    await db_session.flush()
+    repository = SqlAlchemyRecommendationRepository(db_session)
+
+    outlook = await RecommendationGenerator(
+        repository, weather_service=_SplitWeather(forecast_available=True)
+    )._load_weather(user.id)
+    assert outlook is not None and outlook.condition == "outlook"
+
+    fallback = await RecommendationGenerator(
+        repository, weather_service=_SplitWeather(forecast_available=False)
+    )._load_weather(user.id)
+    assert fallback is not None and fallback.condition == "now"
 
 
 async def test_recompute_skips_daily_with_wear_history(db_session: AsyncSession) -> None:
