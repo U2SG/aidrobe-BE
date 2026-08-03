@@ -43,8 +43,17 @@ def _generator(forecast: WeatherInfo | None) -> RecommendationGenerator:
     return RecommendationGenerator(_FakeRepo(), weather_service=_FakeWeather(forecast))
 
 
-async def test_today_uses_current_weather() -> None:
+async def test_today_prefers_day_outlook() -> None:
+    # BE#126 — today dresses for the DAY outlook (daily forecast), not the
+    # instantaneous observation.
     gen = _generator(forecast=_weather("forecast"))
+    weather = await gen._load_weather(uuid.uuid4(), _TODAY)
+    assert weather is not None
+    assert weather.condition == "forecast"
+
+
+async def test_today_falls_back_to_current_without_forecast() -> None:
+    gen = _generator(forecast=None)
     weather = await gen._load_weather(uuid.uuid4(), _TODAY)
     assert weather is not None
     assert weather.condition == "current"

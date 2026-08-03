@@ -465,6 +465,14 @@ class RecommendationGenerator:
             # substitute today's conditions for tomorrow.
             if target_date is not None and target_date > local_today:
                 return await self.weather_service.get_forecast(location, target_date)
+            # BE#126 — today dresses for the DAY outlook (daytime high + rain
+            # peak from the daily forecast, which includes today), not the
+            # instantaneous observation: a 03:00 nightly generation would
+            # otherwise dress for 03:00 temperatures. Fall back to now-weather
+            # when the forecast is unavailable.
+            outlook = await self.weather_service.get_forecast(location, local_today)
+            if outlook is not None:
+                return outlook
             return await self.weather_service.get_weather(location)
         except Exception as exc:
             logger.warning("weather_load_failed", user_id=str(user_id), error=str(exc))

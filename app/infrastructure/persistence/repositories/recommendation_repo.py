@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.common.enums import ItemStatus, RecommendationEventType
 from app.common.local_time import local_datetime
+from app.infrastructure.persistence.models.operation_log import OperationLog
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
@@ -464,6 +465,27 @@ class SqlAlchemyRecommendationRepository:
             statement = statement.where(WearHistory.worn_date <= end_date)
         rows = await self.session.execute(statement)
         return [(row[0], row[1], row[2]) for row in rows.all()]
+
+    async def users_with_settings(self) -> list[User]:
+        """All users with settings eagerly loaded — the midday checkpoint
+        (BE#126) needs each user's timezone to bucket by local hour."""
+        result = await self.session.scalars(select(User).options(selectinload(User.settings)))
+        return list(result)
+
+    async def has_app_open_since(self, user_id: uuid.UUID, since: datetime) -> bool:
+        """BE#126 — whether the user opened the app after `since` (UTC). The
+        /today handler logs an `app_open` operation on every read."""
+        return (
+            await self.session.scalar(
+                select(OperationLog.id)
+                .where(
+                    OperationLog.user_id == user_id,
+                    OperationLog.event == "app_open",
+                    OperationLog.created_at >= since,
+                )
+                .limit(1)
+            )
+        ) is not None
 
     async def users_without_departure_time(self) -> list[User]:
         result = await self.session.scalars(
