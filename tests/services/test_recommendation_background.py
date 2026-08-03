@@ -3,15 +3,18 @@ from datetime import UTC, date, datetime, time, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.background import (
     RECOMMENDATION_RECOMPUTE_JOB_TYPE,
     RecommendationBackgroundService,
     schedule_today_recompute,
 )
+from app.application.recommendations.generator import RecommendationGenerator
 from app.common.enums import Category, ItemStatus
 from app.common.local_time import local_datetime, utc_now
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
+from app.infrastructure.persistence.models.operation_log import OperationLog
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     WearHistory,
@@ -21,9 +24,6 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
-from app.application.ports.weather import WeatherInfo
-from app.application.recommendations.generator import RecommendationGenerator
-from app.infrastructure.persistence.models.operation_log import OperationLog
 from app.jobs.recommendation_jobs import (
     cron_departure_pre_generate,
     cron_midday_regenerate,

@@ -48,6 +48,10 @@ class _StaticWeather:
     async def get_today(self, location: str) -> WeatherInfo:
         return await self.get_weather(location)
 
+    async def get_forecast(self, location: str, target_date: date) -> WeatherInfo | None:
+        # BE#126 — today's generation now asks for the day outlook first.
+        return await self.get_weather(location)
+
 
 def _build_app(session: AsyncSession, settings_override: Settings) -> FastAPI:
     app = FastAPI()

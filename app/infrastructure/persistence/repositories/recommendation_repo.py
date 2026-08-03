@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.common.enums import ItemStatus, RecommendationEventType
 from app.common.local_time import local_datetime
+from app.infrastructure.persistence.models.operation_log import OperationLog
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
@@ -19,7 +20,6 @@ from app.infrastructure.persistence.models.recommendation import (
     RecommendationEvent,
     WearHistory,
 )
-from app.infrastructure.persistence.models.operation_log import OperationLog
 from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
