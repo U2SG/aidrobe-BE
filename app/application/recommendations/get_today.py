@@ -28,7 +28,7 @@ class GetTodayRecommendation:
                 logger.warning(
                     "today_ready_daily_has_no_outfits",
                     user_id=str(user_id),
-                    daily_id=str(daily.id),
+                    recommendation_id=str(daily.id),
                     revision=daily.revision,
                     is_current_count=current_count,
                 )

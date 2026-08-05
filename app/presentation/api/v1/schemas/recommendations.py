@@ -1,10 +1,10 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.common.enums import FitFeedbackType, FitScene
+from app.common.enums import FitFeedbackType, FitScene, RecommendationGenerationSource
 from app.common.i18n import I18nMessage
 
 
@@ -143,9 +143,15 @@ class ResurfaceInsightResponse(BaseModel):
     cooldown_key: str
 
 
-class TodayRecommendationResponse(BaseModel):
+class RecommendationIdentityResponse(BaseModel):
     recommendation_id: UUID | None = None
     revision: int | None = None
+    generated_at: datetime | None = None
+    generation_source: RecommendationGenerationSource | None = None
+    trace_id: UUID | None = None
+
+
+class TodayRecommendationResponse(RecommendationIdentityResponse):
     recommendation_date: date
     status: str
     guidance_text: str | None = None
@@ -276,7 +282,7 @@ class FeedbackTagsResponse(BaseModel):
     tags: list[FeedbackTagResponse]
 
 
-class FirstOutfitGateResponse(BaseModel):
+class FirstOutfitGateResponse(RecommendationIdentityResponse):
     state: Literal["no_outfit", "single_outfit", "ready"]
     feasible_outfit_count: int
     missing_slots: list[str]

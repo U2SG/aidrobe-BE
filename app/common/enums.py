@@ -139,6 +139,16 @@ class RecommendationStatus(StrEnum):
     FAILED = "failed"
 
 
+class RecommendationGenerationSource(StrEnum):
+    NIGHTLY = "nightly"
+    DEPARTURE = "departure"
+    READ_TIME = "read_time"
+    REFRESH = "refresh"
+    CONTEXT_OVERRIDE = "context_override"
+    TOMORROW_PREVIEW = "tomorrow_preview"
+    MIDDAY_CHECKPOINT = "midday_checkpoint"
+
+
 class ImageType(StrEnum):
     ORIGINAL = "original"
     STANDARD = "standard"

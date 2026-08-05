@@ -7,6 +7,7 @@ from app.application.fit_profile.build_fit_profile import build_all_fit_profiles
 from app.application.recommendations.background import schedule_today_recompute
 from app.application.recommendations.generator import RecommendationGenerator
 from app.bootstrap.container import llm_service, push_provider, weather_service
+from app.common.enums import RecommendationGenerationSource
 from app.common.local_time import local_datetime, utc_now
 from app.config.settings import get_settings
 from app.infrastructure.persistence.repositories.recommendation_repo import (
@@ -43,7 +44,12 @@ async def cron_midday_regenerate(session: AsyncSession, now: datetime | None = N
         day_start_utc = local_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
         if await repository.has_app_open_since(user.id, day_start_utc):
             continue
-        if await schedule_today_recompute(user.id, repository, style_repository):
+        if await schedule_today_recompute(
+            user.id,
+            repository,
+            style_repository,
+            generation_source=RecommendationGenerationSource.MIDDAY_CHECKPOINT,
+        ):
             scheduled_count += 1
     logger.info("midday_regenerate_completed", scheduled_count=scheduled_count)
     return scheduled_count

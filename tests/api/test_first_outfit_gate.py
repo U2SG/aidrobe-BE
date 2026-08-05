@@ -84,7 +84,7 @@ async def _generate(session: AsyncSession, user_id: uuid.UUID) -> None:
     ).generate_for_user(
         user_id,
         local_datetime(utc_now(), None, Settings().DEFAULT_TIMEZONE).date(),
-        "test",
+        "nightly_fallback",
     )
 
 
@@ -258,6 +258,71 @@ async def test_full_wardrobe_returns_ready_or_single_outfit(db_session: AsyncSes
     assert data["missing_slots"] == []
     assert data["first_outfit"] is not None
     assert data["first_outfit"]["outfit_id"]
+
+
+async def test_today_and_first_outfit_agree_on_daily_identity(
+    db_session: AsyncSession,
+) -> None:
+    user_id = uuid.uuid4()
+    await _add_user(db_session, user_id)
+    for category, color in [
+        ("top", "white"),
+        ("bottom", "black"),
+        ("shoes", "white"),
+    ]:
+        await _add_item(db_session, user_id, category=category, color=color)
+    await _generate(db_session, user_id)
+    app = build_recommendations_app(db_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        today_response = await client.get(
+            "/v1/recommendations/today", headers={"X-User-Id": str(user_id)}
+        )
+        first_outfit_response = await client.get(
+            "/v1/recommendations/first-outfit", headers={"X-User-Id": str(user_id)}
+        )
+
+    assert today_response.status_code == first_outfit_response.status_code == 200
+    identity_fields = (
+        "recommendation_id",
+        "revision",
+        "generated_at",
+        "generation_source",
+        "trace_id",
+    )
+    today_data = today_response.json()["data"]
+    first_outfit_data = first_outfit_response.json()["data"]
+    assert {field: today_data[field] for field in identity_fields} == {
+        field: first_outfit_data[field] for field in identity_fields
+    }
+    assert today_data["recommendation_id"]
+
+
+async def test_no_outfit_gate_does_not_fabricate_recommendation_identity(
+    db_session: AsyncSession,
+) -> None:
+    user_id = uuid.uuid4()
+    await _add_user(db_session, user_id)
+    app = build_recommendations_app(db_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            "/v1/recommendations/first-outfit", headers={"X-User-Id": str(user_id)}
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["state"] == "no_outfit"
+    assert data["first_outfit"] is None
+    assert data["recommendation_id"] is None
+    assert data["revision"] is None
+    assert data["generated_at"] is None
+    assert data["generation_source"] is None
+    assert data["trace_id"] is None
 
 
 @pytest.mark.parametrize("n_outfits_hint", [1, 2])

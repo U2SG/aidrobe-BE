@@ -37,6 +37,7 @@ from app.common.enums import (
     ImageType,
     ItemStatus,
     RecommendationEventType,
+    RecommendationGenerationSource,
     RecommendationStatus,
     TimeSensitivity,
 )
@@ -84,6 +85,7 @@ from app.presentation.api.v1.schemas.recommendations import (
     ReasoningItem,
     RecommendationEventRequest,
     RecommendationEventResponse,
+    RecommendationIdentityResponse,
     RecommendationItemResponse,
     RefreshTodayRequest,
     ReplacementCandidateResponse,
@@ -99,6 +101,37 @@ from app.presentation.api.v1.schemas.recommendations import (
 
 router = APIRouter(prefix="/v1/recommendations", tags=["recommendations"])
 logger = structlog.get_logger(__name__)
+
+_GENERATION_SOURCE_ALIASES: dict[str, RecommendationGenerationSource] = {
+    source.value: source for source in RecommendationGenerationSource
+} | {
+    "nightly_fallback": RecommendationGenerationSource.NIGHTLY,
+    "departure_pre_generate": RecommendationGenerationSource.DEPARTURE,
+    "first_outfit_gate": RecommendationGenerationSource.READ_TIME,
+    "fallback": RecommendationGenerationSource.READ_TIME,
+    "mutation": RecommendationGenerationSource.READ_TIME,
+}
+
+
+def _recommendation_identity(
+    daily: DailyRecommendation | None,
+) -> RecommendationIdentityResponse:
+    if daily is None or daily.id is None:
+        return RecommendationIdentityResponse()
+    generation_source = _GENERATION_SOURCE_ALIASES.get(daily.generation_source)
+    if (
+        daily.generation_source == RecommendationGenerationSource.REFRESH.value
+        and isinstance(daily.context_json, dict)
+        and daily.context_json.get("constraints")
+    ):
+        generation_source = RecommendationGenerationSource.CONTEXT_OVERRIDE
+    return RecommendationIdentityResponse(
+        recommendation_id=daily.id,
+        revision=daily.revision,
+        generated_at=daily.updated_at,
+        generation_source=generation_source,
+        trace_id=None,
+    )
 
 
 def _build_base_outfit_response(outfit: Outfit, *, is_favorited: bool = False) -> OutfitResponse:
@@ -312,6 +345,7 @@ async def today_response(
     scene: str | None = None,
     current_time: time | None = None,
 ) -> TodayRecommendationResponse:
+    identity = _recommendation_identity(daily)
     guidance = None
     if daily.status == RecommendationStatus.INSUFFICIENT_ITEMS.value:
         guidance = "再加一件下装就能搭"
@@ -340,8 +374,11 @@ async def today_response(
         else []
     )
     return TodayRecommendationResponse(
-        recommendation_id=daily.id,
-        revision=daily.revision,
+        recommendation_id=identity.recommendation_id,
+        revision=identity.revision,
+        generated_at=identity.generated_at,
+        generation_source=identity.generation_source,
+        trace_id=identity.trace_id,
         recommendation_date=daily.recommendation_date,
         status=daily.status,
         guidance_text=guidance,
@@ -495,9 +532,15 @@ async def get_first_outfit_gate(
     first_outfit_response: OutfitResponse | None = None
     if result.first_outfit is not None:
         first_outfit_response = outfit_response(result.first_outfit)
+    identity = _recommendation_identity(result.daily)
 
     return ResponseModel(
         data=FirstOutfitGateResponse(
+            recommendation_id=identity.recommendation_id,
+            revision=identity.revision,
+            generated_at=identity.generated_at,
+            generation_source=identity.generation_source,
+            trace_id=identity.trace_id,
             state=result.state,
             feasible_outfit_count=result.feasible_outfit_count,
             missing_slots=result.missing_slots,

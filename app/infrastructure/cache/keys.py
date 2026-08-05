@@ -1,6 +1,13 @@
 import uuid
 from datetime import date, time
 
+# Version segment for the cached /today payload shape. Bump whenever
+# TodayRecommendationResponse gains fields that the cache-hit path must
+# populate — otherwise entries written by the previous deploy validate
+# successfully with null defaults and serve incomplete payloads until the
+# day-end TTL. "p2" = recommendation identity metadata (BE#131).
+_PAYLOAD_VERSION = "p2"
+
 
 def build_daily_recommendation_cache_key(
     user_id: uuid.UUID,
@@ -25,6 +32,7 @@ def build_daily_recommendation_cache_key(
     return (
         f"recommendations:today:{user_id}:{recommendation_date.isoformat()}"
         f":{departure_part}:{scene_part}:{timezone_part}:{reasoning_part}:{vision_part}"
+        f":{_PAYLOAD_VERSION}"
     )
 
 
