@@ -18,6 +18,8 @@ htmlcov/
 local_uploads/
 uploads/
 
+evals/reports/
+
 *.log
 
 # DeepSeek / planning temp files
