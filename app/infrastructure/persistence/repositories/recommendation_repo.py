@@ -18,6 +18,7 @@ from app.infrastructure.persistence.models.recommendation import (
     OutfitItem,
     OutfitPlan,
     RecommendationEvent,
+    RecommendationTrace,
     WearHistory,
 )
 from app.infrastructure.persistence.models.user import User, UserSettings
@@ -95,7 +96,10 @@ class SqlAlchemyRecommendationRepository:
             DailyRecommendation | None,
             await self.session.scalar(
                 select(DailyRecommendation)
-                .options(selectinload(DailyRecommendation.outfits).selectinload(Outfit.items))
+                .options(
+                    selectinload(DailyRecommendation.outfits).selectinload(Outfit.items),
+                    selectinload(DailyRecommendation.trace),
+                )
                 .where(
                     DailyRecommendation.user_id == user_id,
                     DailyRecommendation.recommendation_date == recommendation_date,
@@ -207,7 +211,10 @@ class SqlAlchemyRecommendationRepository:
             DailyRecommendation | None,
             await self.session.scalar(
                 select(DailyRecommendation)
-                .options(selectinload(DailyRecommendation.outfits).selectinload(Outfit.items))
+                .options(
+                    selectinload(DailyRecommendation.outfits).selectinload(Outfit.items),
+                    selectinload(DailyRecommendation.trace),
+                )
                 .where(
                     DailyRecommendation.user_id == user_id,
                     DailyRecommendation.recommendation_date < target_date,
@@ -277,6 +284,11 @@ class SqlAlchemyRecommendationRepository:
         self.session.add(outfit_item)
         await self.session.flush()
         return outfit_item
+
+    async def save_trace(self, trace: RecommendationTrace) -> RecommendationTrace:
+        self.session.add(trace)
+        await self.session.flush()
+        return trace
 
     async def get_outfit_for_user(self, outfit_id: uuid.UUID, user_id: uuid.UUID) -> Outfit | None:
         return cast(

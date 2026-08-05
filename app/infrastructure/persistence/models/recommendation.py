@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     SmallInteger,
     String,
@@ -67,6 +68,31 @@ class DailyRecommendation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     outfits: Mapped[list["Outfit"]] = relationship(
         back_populates="daily_recommendation", cascade="all, delete-orphan"
+    )
+    trace: Mapped["RecommendationTrace | None"] = relationship(
+        back_populates="daily_recommendation",
+        cascade="all, delete-orphan",
+        single_parent=True,
+        uselist=False,
+    )
+
+
+class RecommendationTrace(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "recommendation_traces"
+
+    daily_recommendation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("daily_recommendations.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[JsonDict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    daily_recommendation: Mapped[DailyRecommendation] = relationship(
+        back_populates="trace"
     )
 
 

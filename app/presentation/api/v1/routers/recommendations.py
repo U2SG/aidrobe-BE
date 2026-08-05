@@ -130,7 +130,7 @@ def _recommendation_identity(
         revision=daily.revision,
         generated_at=daily.updated_at,
         generation_source=generation_source,
-        trace_id=None,
+        trace_id=daily.trace.id if daily.trace is not None else None,
     )
 
 

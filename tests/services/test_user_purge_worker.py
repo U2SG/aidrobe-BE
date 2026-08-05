@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -15,6 +15,10 @@ from app.common.enums import Category, ItemStatus
 from app.config.settings import Settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.audit_log import AuditLog
+from app.infrastructure.persistence.models.recommendation import (
+    DailyRecommendation,
+    RecommendationTrace,
+)
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.workers import user_purge_worker
@@ -63,6 +67,7 @@ async def _seed_deactivated_user(
                 deactivated_at=datetime.now(UTC) - timedelta(days=31),
             )
         )
+        await s.flush()
         s.add(
             WardrobeItem(
                 user_id=user_id,
@@ -70,6 +75,21 @@ async def _seed_deactivated_user(
                 category=Category.TOP.value,
                 color_main="white",
                 status=ItemStatus.WEARABLE.value,
+            )
+        )
+        daily = DailyRecommendation(
+            user_id=user_id,
+            recommendation_date=date(2026, 8, 5),
+            status="insufficient_items",
+            generation_source="manual",
+        )
+        s.add(daily)
+        await s.flush()
+        s.add(
+            RecommendationTrace(
+                daily_recommendation_id=daily.id,
+                schema_version=1,
+                payload={"schema_version": 1},
             )
         )
         await s.commit()
@@ -113,6 +133,8 @@ async def test_drain_purges_deactivated_user_and_cascades(
             await s.execute(select(WardrobeItem).where(WardrobeItem.user_id == user_id))
         ).scalars().all()
         assert items == []
+        traces = (await s.execute(select(RecommendationTrace))).scalars().all()
+        assert traces == []
         # Job marked succeeded.
         finalized = await s.get(AsyncJob, job_id)
         assert finalized is not None

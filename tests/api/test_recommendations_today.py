@@ -90,6 +90,7 @@ async def test_existing_ready_recommendation_returns_immediately(db_session: Asy
     assert data["outfits"]
     assert data["recommendation_id"]
     assert data["revision"] == 1
+    assert data["trace_id"]
 
 
 async def test_today_reread_keeps_stable_identity_and_revision(
@@ -126,7 +127,7 @@ async def test_today_reread_keeps_stable_identity_and_revision(
     assert first_data["revision"] == 1
     assert first_data["generated_at"]
     assert first_data["generation_source"] == "nightly"
-    assert first_data["trace_id"] is None
+    assert first_data["trace_id"]
 
 
 async def seed_tops_only_recommendation(session: AsyncSession, user_id: uuid.UUID) -> None:
@@ -179,6 +180,9 @@ async def test_today_and_tomorrow_use_distinct_recommendation_identities(
     assert today_data["recommendation_date"] == _default_local_today().isoformat()
     assert tomorrow_data["recommendation_date"] == tomorrow.isoformat()
     assert today_data["recommendation_id"] != tomorrow_data["recommendation_id"]
+    assert today_data["trace_id"]
+    assert tomorrow_data["trace_id"]
+    assert today_data["trace_id"] != tomorrow_data["trace_id"]
     assert tomorrow_data["generation_source"] == "tomorrow_preview"
 
 
@@ -207,7 +211,7 @@ async def test_persisted_insufficient_daily_still_carries_identity(
     assert data["revision"] == 1
     assert data["generated_at"]
     assert data["generation_source"] == "nightly"
-    assert data["trace_id"] is None
+    assert data["trace_id"]
 
 
 async def test_ready_with_only_tops_surfaces_coverage_gap_hint(db_session: AsyncSession) -> None:
