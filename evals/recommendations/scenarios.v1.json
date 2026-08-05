@@ -1,0 +1,579 @@
+{
+  "schema_version": "1.0",
+  "fixed_clock": "2026-08-05T00:00:00Z",
+  "random_seed": 129,
+  "scenarios": [
+    {
+      "id": "hot-commute-cold-office",
+      "description": "A hot commute with a cold-office override should retain a removable outer layer.",
+      "user_settings": {
+        "timezone": "Asia/Singapore",
+        "location": "Singapore",
+        "commute_exposure": "more_outdoor",
+        "preferences": {"departure_time": "08:30"}
+      },
+      "wardrobe": [
+        {"id": "hot-top", "title": "White cotton shirt", "category": "top", "color_main": "white", "location": "rail-a"},
+        {"id": "hot-bottom", "title": "Beige trousers", "category": "bottom", "color_main": "beige", "location": "rail-a"},
+        {"id": "hot-shoes", "title": "Black loafers", "category": "shoes", "color_main": "black", "location": "shoe-rack"},
+        {"id": "office-cardigan", "title": "Navy cardigan", "category": "outerwear", "color_main": "navy", "location": "rail-a"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {
+          "color_weights": {"white": 1.0, "beige": 0.8, "black": 1.0, "navy": 1.0},
+          "category_weights": {"top": 1.0, "bottom": 1.0, "shoes": 1.0, "outerwear": 1.0}
+        },
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {
+        "current": {"temperature_c": 31, "feels_like_c": 35, "rain_probability": 0.2, "condition": "hot and humid", "location_name": "Singapore"},
+        "forecast_by_date": {}
+      },
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "commute_and_cold_office",
+        "active_constraints": ["removable_layer"],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "weather_suitable", "reason_grounded", "outcome_constraints"],
+        "acceptable_slot_sets": [["top", "bottom", "shoes"]],
+        "selected_outfit": {"required_item_ids": ["office-cardigan"]},
+        "expected_reason_sources": ["weather_rule"]
+      }
+    },
+    {
+      "id": "rainy-walking-heavy-day",
+      "description": "A rainy walking-heavy day should use available dark shoes and avoid laundry footwear.",
+      "user_settings": {
+        "timezone": "Asia/Singapore",
+        "location": "Singapore",
+        "commute_exposure": "more_outdoor",
+        "preferences": {"mobility": "high"}
+      },
+      "wardrobe": [
+        {"id": "rain-top", "title": "Navy tee", "category": "top", "color_main": "navy", "location": "drawer-a", "fit_status": "fits_well"},
+        {"id": "rain-bottom", "title": "Black relaxed trousers", "category": "bottom", "color_main": "black", "location": "drawer-a", "fit_status": "fits_well"},
+        {"id": "rain-shoes", "title": "Black walking shoes", "category": "shoes", "color_main": "black", "location": "drawer-a", "fit_status": "fits_well"},
+        {"id": "light-shoes-laundry", "title": "White trainers", "category": "shoes", "color_main": "white", "availability": "laundry", "location": "laundry"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {
+          "color_weights": {"navy": 1.0, "black": 1.0},
+          "category_weights": {"top": 1.0, "bottom": 1.0, "shoes": 1.0}
+        },
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {
+        "current": {"temperature_c": 20, "feels_like_c": 19, "rain_probability": 0.9, "condition": "heavy rain", "humidity": 92},
+        "forecast_by_date": {}
+      },
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "walking_heavy",
+        "active_constraints": ["comfort"],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "weather_suitable", "reason_grounded", "outcome_constraints"],
+        "acceptable_slot_sets": [["top", "bottom", "shoes"]],
+        "selected_outfit": {
+          "required_item_ids": ["rain-shoes"],
+          "forbidden_item_ids": ["light-shoes-laundry"]
+        },
+        "expected_reason_sources": ["weather_rule"]
+      }
+    },
+    {
+      "id": "formal-meeting",
+      "description": "A formal meeting should retain the focused white shirt over a competing top and add the formal blazer.",
+      "user_settings": {
+        "timezone": "Asia/Singapore",
+        "location": "Singapore",
+        "commute_exposure": "unknown",
+        "preferences": {"work_dress_code": "business"}
+      },
+      "wardrobe": [
+        {"id": "meeting-top", "title": "White poplin shirt", "category": "top", "color_main": "white", "location": "work-rail"},
+        {"id": "alternate-meeting-top", "title": "Red casual knit", "category": "top", "color_main": "red", "location": "casual-rail"},
+        {"id": "meeting-bottom", "title": "Black tailored trousers", "category": "bottom", "color_main": "black", "location": "work-rail"},
+        {"id": "meeting-shoes", "title": "Black leather shoes", "category": "shoes", "color_main": "black", "location": "shoe-rack"},
+        {"id": "formal-blazer", "title": "Navy structured blazer", "category": "outerwear", "color_main": "navy", "location": "work-rail"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {
+          "color_weights": {"white": 1.0, "black": 1.0, "navy": 1.0},
+          "category_weights": {"top": 1.0, "bottom": 1.0, "shoes": 1.0, "outerwear": 1.0}
+        },
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {
+        "current": {"temperature_c": 18, "feels_like_c": 18, "rain_probability": 0.1, "condition": "mild"},
+        "forecast_by_date": {}
+      },
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "formal_meeting",
+        "active_constraints": ["formal"],
+        "focused_item_id": "meeting-top"
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "weather_suitable", "focused_item_included", "reason_grounded", "outcome_constraints"],
+        "acceptable_slot_sets": [["top", "bottom", "shoes"]],
+        "selected_outfit": {"required_item_ids": ["meeting-top", "formal-blazer"]},
+        "expected_reason_sources": ["weather_rule", "style_memory"]
+      }
+    },
+    {
+      "id": "no-skirt-override",
+      "description": "The no-skirt override must exclude dresses and skirt-subcategory bottoms.",
+      "user_settings": {
+        "timezone": "Asia/Singapore",
+        "location": "Singapore",
+        "commute_exposure": "unknown",
+        "preferences": {}
+      },
+      "wardrobe": [
+        {"id": "no-skirt-top", "title": "Blue shirt", "category": "top", "color_main": "navy"},
+        {"id": "trousers", "title": "Black trousers", "category": "bottom", "color_main": "black", "sub_category": "trousers"},
+        {"id": "pleated-skirt", "title": "Beige pleated skirt", "category": "bottom", "color_main": "beige", "sub_category": "skirt"},
+        {"id": "day-dress", "title": "Navy day dress", "category": "dress", "color_main": "navy"},
+        {"id": "no-skirt-shoes", "title": "Black flats", "category": "shoes", "color_main": "black"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {},
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {
+        "current": {"temperature_c": 24, "feels_like_c": 25, "rain_probability": 0.1, "condition": "clear"},
+        "forecast_by_date": {}
+      },
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "casual_day",
+        "active_constraints": ["exclude_dress"],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "weather_suitable", "reason_grounded", "outcome_constraints"],
+        "acceptable_slot_sets": [["top", "bottom", "shoes"]],
+        "selected_outfit": {
+          "required_item_ids": ["trousers"],
+          "forbidden_item_ids": ["pleated-skirt", "day-dress"],
+          "forbidden_categories": ["dress"]
+        },
+        "expected_reason_sources": ["weather_rule"]
+      }
+    },
+    {
+      "id": "comfort-override",
+      "description": "The comfort override should favor the known comfortable same-location core.",
+      "user_settings": {
+        "timezone": "Asia/Singapore",
+        "location": "Singapore",
+        "commute_exposure": "unknown",
+        "preferences": {"fit": "relaxed"}
+      },
+      "wardrobe": [
+        {"id": "comfort-top", "title": "Soft white tee", "category": "top", "color_main": "white", "location": "drawer-a", "fit_status": "fits_well"},
+        {"id": "tight-top", "title": "Tight red knit", "category": "top", "color_main": "red", "location": "rail-b", "fit_status": "tight"},
+        {"id": "comfort-bottom", "title": "Navy relaxed trousers", "category": "bottom", "color_main": "navy", "location": "drawer-a", "fit_status": "fits_well"},
+        {"id": "comfort-shoes", "title": "Black slip-ons", "category": "shoes", "color_main": "black", "location": "drawer-a", "fit_status": "fits_well"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {
+          "color_weights": {"white": 1.0, "navy": 1.0, "black": 1.0},
+          "category_weights": {"top": 1.0, "bottom": 1.0, "shoes": 1.0}
+        },
+        "fit_profile": {"category_preferences": {"top": "prefers_loose"}},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {
+        "current": {"temperature_c": 22, "feels_like_c": 22, "rain_probability": 0.1, "condition": "mild"},
+        "forecast_by_date": {}
+      },
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "long_casual_day",
+        "active_constraints": ["comfort"],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "weather_suitable", "reason_grounded", "outcome_constraints"],
+        "acceptable_slot_sets": [["top", "bottom", "shoes"]],
+        "selected_outfit": {
+          "required_item_ids": ["comfort-top"],
+          "forbidden_item_ids": ["tight-top"]
+        },
+        "expected_reason_sources": ["weather_rule", "style_memory"]
+      }
+    },
+    {
+      "id": "low-key-override",
+      "description": "The low-key override should keep the primary outfit on an understated palette.",
+      "user_settings": {
+        "timezone": "Asia/Singapore",
+        "location": "Singapore",
+        "commute_exposure": "unknown",
+        "preferences": {"palette": "understated"}
+      },
+      "wardrobe": [
+        {"id": "low-key-top", "title": "Navy tee", "category": "top", "color_main": "navy"},
+        {"id": "bright-top", "title": "Bright red tee", "category": "top", "color_main": "red"},
+        {"id": "low-key-bottom", "title": "Black trousers", "category": "bottom", "color_main": "black"},
+        {"id": "low-key-shoes", "title": "Black shoes", "category": "shoes", "color_main": "black"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {
+          "color_weights": {"navy": 1.0, "black": 1.0},
+          "category_weights": {"top": 1.0, "bottom": 1.0, "shoes": 1.0}
+        },
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {
+        "current": {"temperature_c": 25, "feels_like_c": 26, "rain_probability": 0.1, "condition": "clear"},
+        "forecast_by_date": {}
+      },
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "quiet_social_event",
+        "active_constraints": ["low_key"],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "weather_suitable", "reason_grounded", "outcome_constraints"],
+        "acceptable_slot_sets": [["top", "bottom", "shoes"]],
+        "selected_outfit": {
+          "required_item_ids": ["low-key-top"],
+          "forbidden_item_ids": ["bright-top"]
+        },
+        "expected_reason_sources": ["weather_rule"]
+      }
+    },
+    {
+      "id": "tomorrow-forecast-unavailable",
+      "description": "Tomorrow preview must degrade honestly when the target-date forecast is unavailable.",
+      "user_settings": {
+        "timezone": "Asia/Singapore",
+        "location": "Singapore",
+        "commute_exposure": "unknown",
+        "preferences": {}
+      },
+      "wardrobe": [
+        {"id": "tomorrow-top", "title": "White shirt", "category": "top", "color_main": "white"},
+        {"id": "tomorrow-bottom", "title": "Navy trousers", "category": "bottom", "color_main": "navy"},
+        {"id": "tomorrow-shoes", "title": "Black loafers", "category": "shoes", "color_main": "black"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {"color_weights": {"white": 1.0, "navy": 1.0, "black": 1.0}},
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {
+        "current": {"temperature_c": 32, "feels_like_c": 36, "rain_probability": 0.8, "condition": "stormy today"},
+        "forecast_by_date": {"2026-08-06": null}
+      },
+      "request": {
+        "target_date": "2026-08-06",
+        "scene": "tomorrow_preview",
+        "active_constraints": [],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "reason_grounded", "forecast_unavailable_honest"],
+        "acceptable_slot_sets": [["top", "bottom", "shoes"]],
+        "selected_outfit": {},
+        "expected_reason_sources": ["wardrobe_history", "style_memory"]
+      }
+    },
+    {
+      "id": "cold-start-top-bottom-shoes",
+      "description": "A new wardrobe with one top, bottom, and shoes should produce a complete first outfit.",
+      "user_settings": {
+        "timezone": "Asia/Singapore",
+        "location": "Singapore",
+        "commute_exposure": null,
+        "preferences": {}
+      },
+      "wardrobe": [
+        {"id": "first-top", "title": "First white tee", "category": "top", "color_main": "white"},
+        {"id": "first-bottom", "title": "First black trousers", "category": "bottom", "color_main": "black"},
+        {"id": "first-shoes", "title": "First black shoes", "category": "shoes", "color_main": "black"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {},
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {"current": null, "forecast_by_date": {}},
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "first_outfit",
+        "active_constraints": [],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "reason_grounded", "outcome_constraints"],
+        "acceptable_slot_sets": [["top", "bottom", "shoes"]],
+        "selected_outfit": {
+          "required_item_ids": ["first-top", "first-bottom", "first-shoes"]
+        },
+        "expected_reason_sources": ["wardrobe_history", "style_memory"]
+      }
+    },
+    {
+      "id": "dress-shoes-cold-start",
+      "description": "A new wardrobe with a dress and shoes should satisfy the alternate first-outfit core.",
+      "user_settings": {
+        "timezone": "Asia/Singapore",
+        "location": "Singapore",
+        "commute_exposure": null,
+        "preferences": {}
+      },
+      "wardrobe": [
+        {"id": "first-dress", "title": "Navy day dress", "category": "dress", "color_main": "navy"},
+        {"id": "dress-shoes", "title": "Black flats", "category": "shoes", "color_main": "black"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {},
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {
+        "current": {"temperature_c": 25, "feels_like_c": 26, "rain_probability": 0.1, "condition": "clear"},
+        "forecast_by_date": {}
+      },
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "first_outfit",
+        "active_constraints": [],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "weather_suitable", "reason_grounded", "outcome_constraints"],
+        "acceptable_slot_sets": [["dress", "shoes"]],
+        "selected_outfit": {"required_item_ids": ["first-dress", "dress-shoes"]},
+        "expected_reason_sources": ["weather_rule", "style_memory"]
+      }
+    },
+    {
+      "id": "laundry-unavailable-exclusion",
+      "description": "Laundry and explicitly unavailable items must never reach any selected outfit.",
+      "user_settings": {
+        "timezone": "Asia/Singapore",
+        "location": "Singapore",
+        "commute_exposure": "unknown",
+        "preferences": {}
+      },
+      "wardrobe": [
+        {"id": "available-top", "title": "Available white shirt", "category": "top", "color_main": "white"},
+        {"id": "available-bottom", "title": "Available black trousers", "category": "bottom", "color_main": "black"},
+        {"id": "available-shoes", "title": "Available black shoes", "category": "shoes", "color_main": "black"},
+        {"id": "laundry-top", "title": "Laundry navy shirt", "category": "top", "color_main": "navy", "availability": "laundry"},
+        {"id": "unavailable-dress", "title": "Unavailable red dress", "category": "dress", "color_main": "red", "availability": "unavailable"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {},
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {"current": null, "forecast_by_date": {}},
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "daily_commute",
+        "active_constraints": [],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "reason_grounded", "outcome_constraints"],
+        "acceptable_slot_sets": [["top", "bottom", "shoes"]],
+        "selected_outfit": {
+          "forbidden_item_ids": ["laundry-top", "unavailable-dress"],
+          "allowed_item_ids": ["available-top", "available-bottom", "available-shoes"]
+        },
+        "expected_reason_sources": ["wardrobe_history", "style_memory"]
+      }
+    },
+    {
+      "id": "recent-combination-anti-repetition",
+      "description": "A recent exact combination should be displaced by a fresh main item when alternatives exist.",
+      "user_settings": {
+        "timezone": "Asia/Singapore",
+        "location": "Singapore",
+        "commute_exposure": "unknown",
+        "preferences": {}
+      },
+      "wardrobe": [
+        {"id": "repeat-top", "title": "Recently worn white top", "category": "top", "color_main": "white"},
+        {"id": "fresh-top", "title": "Fresh navy top", "category": "top", "color_main": "navy"},
+        {"id": "repeat-bottom", "title": "Recently worn black trousers", "category": "bottom", "color_main": "black"},
+        {"id": "alternate-bottom", "title": "Alternate beige trousers", "category": "bottom", "color_main": "beige"},
+        {"id": "repeat-shoes", "title": "Black shoes", "category": "shoes", "color_main": "black"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": ["repeat-top"],
+        "recent_outfits": [
+          {"worn_at": "2026-08-03T01:00:00Z", "item_ids": ["repeat-top", "repeat-bottom", "repeat-shoes"]}
+        ],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {},
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": true
+      },
+      "weather": {"current": null, "forecast_by_date": {}},
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "daily_commute",
+        "active_constraints": [],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "no_exact_recent_repeat", "reason_grounded", "outcome_constraints"],
+        "acceptable_slot_sets": [["top", "bottom", "shoes"]],
+        "selected_outfit": {"required_item_ids": ["fresh-top"]},
+        "expected_reason_sources": ["wardrobe_history", "style_memory"]
+      }
+    },
+    {
+      "id": "repeated-temperature-mismatch-removable-layer",
+      "description": "Repeated too-cold reports should infer indoor cold and select a removable layer.",
+      "user_settings": {
+        "timezone": "Asia/Singapore",
+        "location": "Singapore",
+        "commute_exposure": "less_outdoor",
+        "preferences": {}
+      },
+      "wardrobe": [
+        {"id": "mismatch-top", "title": "White cotton top", "category": "top", "color_main": "white"},
+        {"id": "mismatch-bottom", "title": "Black trousers", "category": "bottom", "color_main": "black"},
+        {"id": "mismatch-shoes", "title": "Black shoes", "category": "shoes", "color_main": "black"},
+        {"id": "removable-layer", "title": "Navy light cardigan", "category": "outerwear", "color_main": "navy"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": [
+          {"reported_at": "2026-08-01T03:00:00Z", "reason": "too_cold", "signal_strength": "strong"},
+          {"reported_at": "2026-08-03T03:00:00Z", "reason": "too_cold", "signal_strength": "strong"}
+        ]
+      },
+      "learned_signals": {
+        "style_profile": {
+          "color_weights": {"white": 1.0, "black": 1.0, "navy": 1.0},
+          "category_weights": {"top": 1.0, "bottom": 1.0, "shoes": 1.0, "outerwear": 1.0}
+        },
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {
+        "current": {"temperature_c": 30, "feels_like_c": 34, "rain_probability": 0.2, "condition": "hot"},
+        "forecast_by_date": {}
+      },
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "indoor_main_day",
+        "active_constraints": ["removable_layer"],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "weather_suitable", "reason_grounded", "outcome_constraints", "indoor_climate_applied"],
+        "acceptable_slot_sets": [["top", "bottom", "shoes"]],
+        "selected_outfit": {"required_item_ids": ["removable-layer"]},
+        "expected_reason_sources": ["weather_rule", "indoor_climate_inference"]
+      }
+    }
+  ]
+}

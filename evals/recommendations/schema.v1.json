@@ -1,0 +1,696 @@
+{
+  "$defs": {
+    "LearnedSignalsFixture": {
+      "additionalProperties": false,
+      "properties": {
+        "avoid_exact_repeats": {
+          "default": false,
+          "title": "Avoid Exact Repeats",
+          "type": "boolean"
+        },
+        "disliked_colors": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Disliked Colors",
+          "type": "array"
+        },
+        "fit_profile": {
+          "additionalProperties": true,
+          "title": "Fit Profile",
+          "type": "object"
+        },
+        "relationship_edges": {
+          "items": {
+            "$ref": "#/$defs/RelationshipEdgeFixture"
+          },
+          "title": "Relationship Edges",
+          "type": "array"
+        },
+        "style_profile": {
+          "additionalProperties": true,
+          "title": "Style Profile",
+          "type": "object"
+        },
+        "suppressed_outfits": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Suppressed Outfits",
+          "type": "array"
+        }
+      },
+      "title": "LearnedSignalsFixture",
+      "type": "object"
+    },
+    "RecentOutfitFixture": {
+      "additionalProperties": false,
+      "properties": {
+        "item_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Item Ids",
+          "type": "array"
+        },
+        "worn_at": {
+          "format": "date-time",
+          "title": "Worn At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worn_at",
+        "item_ids"
+      ],
+      "title": "RecentOutfitFixture",
+      "type": "object"
+    },
+    "RecommendationRequestFixture": {
+      "additionalProperties": false,
+      "properties": {
+        "active_constraints": {
+          "items": {
+            "enum": [
+              "exclude_dress",
+              "formal",
+              "comfort",
+              "removable_layer",
+              "low_key",
+              "reduce_weather"
+            ],
+            "type": "string"
+          },
+          "title": "Active Constraints",
+          "type": "array"
+        },
+        "focused_item_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Focused Item Id"
+        },
+        "scene": {
+          "minLength": 1,
+          "title": "Scene",
+          "type": "string"
+        },
+        "target_date": {
+          "format": "date",
+          "title": "Target Date",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_date",
+        "scene"
+      ],
+      "title": "RecommendationRequestFixture",
+      "type": "object"
+    },
+    "RecommendationScenario": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "expected": {
+          "$ref": "#/$defs/ScenarioExpectation"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "learned_signals": {
+          "$ref": "#/$defs/LearnedSignalsFixture"
+        },
+        "request": {
+          "$ref": "#/$defs/RecommendationRequestFixture"
+        },
+        "user_settings": {
+          "$ref": "#/$defs/UserSettingsFixture"
+        },
+        "wardrobe": {
+          "items": {
+            "$ref": "#/$defs/WardrobeItemFixture"
+          },
+          "minItems": 1,
+          "title": "Wardrobe",
+          "type": "array"
+        },
+        "wear_history": {
+          "$ref": "#/$defs/WearHistoryFixture"
+        },
+        "weather": {
+          "$ref": "#/$defs/WeatherFixture"
+        }
+      },
+      "required": [
+        "id",
+        "description",
+        "user_settings",
+        "wardrobe",
+        "wear_history",
+        "learned_signals",
+        "weather",
+        "request",
+        "expected"
+      ],
+      "title": "RecommendationScenario",
+      "type": "object"
+    },
+    "RelationshipEdgeFixture": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "relationship_type": {
+          "title": "Relationship Type",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        },
+        "source_item_id": {
+          "title": "Source Item Id",
+          "type": "string"
+        },
+        "target_item_id": {
+          "title": "Target Item Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_item_id",
+        "target_item_id",
+        "relationship_type",
+        "score",
+        "confidence"
+      ],
+      "title": "RelationshipEdgeFixture",
+      "type": "object"
+    },
+    "ScenarioExpectation": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptable_slot_sets": {
+          "items": {
+            "items": {
+              "enum": [
+                "top",
+                "bottom",
+                "outerwear",
+                "dress",
+                "shoes"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "minItems": 1,
+          "title": "Acceptable Slot Sets",
+          "type": "array"
+        },
+        "expected_reason_sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Expected Reason Sources",
+          "type": "array"
+        },
+        "hard_invariants": {
+          "items": {
+            "enum": [
+              "status_ready",
+              "slot_completeness",
+              "available_items_only",
+              "weather_suitable",
+              "focused_item_included",
+              "no_exact_recent_repeat",
+              "reason_grounded",
+              "outcome_constraints",
+              "forecast_unavailable_honest",
+              "indoor_climate_applied"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Hard Invariants",
+          "type": "array"
+        },
+        "selected_outfit": {
+          "$ref": "#/$defs/SelectedOutfitExpectation"
+        }
+      },
+      "required": [
+        "hard_invariants",
+        "acceptable_slot_sets"
+      ],
+      "title": "ScenarioExpectation",
+      "type": "object"
+    },
+    "SelectedOutfitExpectation": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_categories": {
+          "items": {
+            "enum": [
+              "top",
+              "bottom",
+              "outerwear",
+              "dress",
+              "shoes"
+            ],
+            "type": "string"
+          },
+          "title": "Allowed Categories",
+          "type": "array"
+        },
+        "allowed_item_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Item Ids",
+          "type": "array"
+        },
+        "forbidden_categories": {
+          "items": {
+            "enum": [
+              "top",
+              "bottom",
+              "outerwear",
+              "dress",
+              "shoes"
+            ],
+            "type": "string"
+          },
+          "title": "Forbidden Categories",
+          "type": "array"
+        },
+        "forbidden_item_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Item Ids",
+          "type": "array"
+        },
+        "required_item_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Item Ids",
+          "type": "array"
+        }
+      },
+      "title": "SelectedOutfitExpectation",
+      "type": "object"
+    },
+    "TemperatureMismatchFixture": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "enum": [
+            "too_cold",
+            "too_warm"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "reported_at": {
+          "format": "date-time",
+          "title": "Reported At",
+          "type": "string"
+        },
+        "signal_strength": {
+          "default": "strong",
+          "enum": [
+            "weak",
+            "medium",
+            "strong"
+          ],
+          "title": "Signal Strength",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reported_at",
+        "reason"
+      ],
+      "title": "TemperatureMismatchFixture",
+      "type": "object"
+    },
+    "UserSettingsFixture": {
+      "additionalProperties": false,
+      "properties": {
+        "commute_exposure": {
+          "anyOf": [
+            {
+              "enum": [
+                "less_outdoor",
+                "more_outdoor",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Commute Exposure"
+        },
+        "location": {
+          "title": "Location",
+          "type": "string"
+        },
+        "preferences": {
+          "additionalProperties": true,
+          "title": "Preferences",
+          "type": "object"
+        },
+        "timezone": {
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "timezone",
+        "location"
+      ],
+      "title": "UserSettingsFixture",
+      "type": "object"
+    },
+    "WardrobeItemFixture": {
+      "additionalProperties": false,
+      "properties": {
+        "availability": {
+          "default": "available",
+          "enum": [
+            "available",
+            "laundry",
+            "unavailable"
+          ],
+          "title": "Availability",
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "top",
+            "bottom",
+            "outerwear",
+            "dress",
+            "shoes"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "color_main": {
+          "minLength": 1,
+          "title": "Color Main",
+          "type": "string"
+        },
+        "fit_intent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fit Intent"
+        },
+        "fit_status": {
+          "default": "unknown",
+          "title": "Fit Status",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Location"
+        },
+        "sub_category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sub Category"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "category",
+        "color_main"
+      ],
+      "title": "WardrobeItemFixture",
+      "type": "object"
+    },
+    "WearHistoryFixture": {
+      "additionalProperties": false,
+      "properties": {
+        "recent_main_item_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Recent Main Item Ids",
+          "type": "array"
+        },
+        "recent_outfits": {
+          "items": {
+            "$ref": "#/$defs/RecentOutfitFixture"
+          },
+          "title": "Recent Outfits",
+          "type": "array"
+        },
+        "temperature_mismatch_events": {
+          "items": {
+            "$ref": "#/$defs/TemperatureMismatchFixture"
+          },
+          "title": "Temperature Mismatch Events",
+          "type": "array"
+        }
+      },
+      "title": "WearHistoryFixture",
+      "type": "object"
+    },
+    "WeatherFixture": {
+      "additionalProperties": false,
+      "properties": {
+        "current": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WeatherSnapshotFixture"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "forecast_by_date": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/WeatherSnapshotFixture"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "propertyNames": {
+            "format": "date"
+          },
+          "title": "Forecast By Date",
+          "type": "object"
+        }
+      },
+      "title": "WeatherFixture",
+      "type": "object"
+    },
+    "WeatherSnapshotFixture": {
+      "additionalProperties": false,
+      "properties": {
+        "condition": {
+          "minLength": 1,
+          "title": "Condition",
+          "type": "string"
+        },
+        "feels_like_c": {
+          "title": "Feels Like C",
+          "type": "number"
+        },
+        "humidity": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Humidity"
+        },
+        "icon": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Icon"
+        },
+        "location_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Location Name"
+        },
+        "rain_probability": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Rain Probability",
+          "type": "number"
+        },
+        "temperature_c": {
+          "title": "Temperature C",
+          "type": "number"
+        },
+        "wind_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wind Dir"
+        },
+        "wind_scale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wind Scale"
+        },
+        "wind_speed": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wind Speed"
+        }
+      },
+      "required": [
+        "temperature_c",
+        "feels_like_c",
+        "rain_probability",
+        "condition"
+      ],
+      "title": "WeatherSnapshotFixture",
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/U2SG/aidrobe-BE/evals/recommendations/schema.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "fixed_clock": {
+      "format": "date-time",
+      "title": "Fixed Clock",
+      "type": "string"
+    },
+    "random_seed": {
+      "title": "Random Seed",
+      "type": "integer"
+    },
+    "scenarios": {
+      "items": {
+        "$ref": "#/$defs/RecommendationScenario"
+      },
+      "minItems": 12,
+      "title": "Scenarios",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "fixed_clock",
+    "random_seed",
+    "scenarios"
+  ],
+  "title": "RecommendationCorpus",
+  "type": "object"
+}

@@ -47,6 +47,27 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: uv run pytest -q
 
+  recommendation-eval:
+    name: Recommendation eval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install deps
+        run: uv sync --group dev --frozen
+      - name: Run deterministic recommendation eval
+        run: make recommendation-eval
+      - name: Upload recommendation eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recommendation-eval-report
+          path: evals/reports/
+          if-no-files-found: error
+
   migration:
     name: Alembic round-trip
     runs-on: ubuntu-latest
