@@ -12,6 +12,7 @@ from app.application.recommendations.background import (
     RECOMMENDATION_RECOMPUTE_JOB_TYPE,
     RecommendationBackgroundService,
 )
+from app.common.enums import RecommendationGenerationSource
 from app.infrastructure.cache.client import (
     get_redis_client,
     invalidate_daily_recommendation_cache,
@@ -51,6 +52,14 @@ async def _process_one(job: AsyncJob) -> None:
     try:
         user_id = uuid.UUID(str(user_id_raw))
         requested_at = datetime.fromisoformat(str(payload.get("requested_at")))
+        generation_source = RecommendationGenerationSource(
+            str(
+                payload.get(
+                    "generation_source",
+                    RecommendationGenerationSource.READ_TIME.value,
+                )
+            )
+        )
         if requested_at.tzinfo is None:
             raise ValueError("requested_at must be timezone-aware")
     except (TypeError, ValueError):
@@ -73,6 +82,7 @@ async def _process_one(job: AsyncJob) -> None:
                     user_id,
                     force=True,
                     requested_at=requested_at,
+                    generation_source=generation_source,
                 )
             ok = await mark_succeeded(
                 session,

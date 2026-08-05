@@ -301,6 +301,8 @@ async def test_midday_regenerate_schedules_for_unopened_users(db_session: AsyncS
     assert count == 1
     jobs = await _recompute_jobs(db_session)
     assert len(jobs) == 1 and jobs[0].user_id == user.id
+    assert jobs[0].payload is not None
+    assert jobs[0].payload["generation_source"] == "midday_checkpoint"
 
 
 async def test_midday_regenerate_skips_users_who_opened_today(db_session: AsyncSession) -> None:

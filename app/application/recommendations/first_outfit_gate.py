@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from app.application.recommendations.feasibility import missing_first_outfit_slots
 from app.common.enums import RecommendationStatus
-from app.infrastructure.persistence.models.recommendation import Outfit
+from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
@@ -53,6 +53,7 @@ class FirstOutfitGateResult:
     # invalidate any cached /today payload (a stale insufficient_items entry
     # would otherwise contradict the gate until end of day).
     generated: bool = False
+    daily: DailyRecommendation | None = None
 
 
 class FirstOutfitGate:
@@ -100,6 +101,7 @@ class FirstOutfitGate:
                 first_outfit=None,
                 gate_failures=["engine_insufficient"],
                 generated=generated,
+                daily=daily,
             )
 
         generated_outfits = list(daily.outfits)
@@ -137,6 +139,7 @@ class FirstOutfitGate:
                     "image_unavailable" if generated_outfits else "engine_insufficient"
                 ],
                 generated=generated,
+                daily=daily,
             )
 
         state: GateState = "single_outfit" if n == 1 else "ready"
@@ -156,4 +159,5 @@ class FirstOutfitGate:
             first_outfit=first_outfit,
             gate_failures=[],
             generated=generated,
+            daily=daily,
         )

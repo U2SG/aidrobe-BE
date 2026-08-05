@@ -8003,6 +8003,63 @@
       },
       "FirstOutfitGateResponse": {
         "properties": {
+          "recommendation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommendation Id"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "generation_source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RecommendationGenerationSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
+          },
           "state": {
             "type": "string",
             "enum": [
@@ -9839,6 +9896,19 @@
           "event_id"
         ],
         "title": "RecommendationEventResponse"
+      },
+      "RecommendationGenerationSource": {
+        "type": "string",
+        "enum": [
+          "nightly",
+          "departure",
+          "read_time",
+          "refresh",
+          "context_override",
+          "tomorrow_preview",
+          "midday_checkpoint"
+        ],
+        "title": "RecommendationGenerationSource"
       },
       "RecommendationItemResponse": {
         "properties": {
@@ -11689,6 +11759,40 @@
               }
             ],
             "title": "Revision"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "generation_source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RecommendationGenerationSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
           },
           "recommendation_date": {
             "type": "string",

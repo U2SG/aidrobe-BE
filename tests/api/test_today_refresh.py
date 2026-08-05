@@ -86,7 +86,7 @@ async def _seed_user_with_wardrobe(session: AsyncSession) -> uuid.UUID:
 
 async def _generate_initial_revision(session: AsyncSession, user_id: uuid.UUID) -> None:
     await RecommendationGenerator(SqlAlchemyRecommendationRepository(session)).generate_for_user(
-        user_id, _local_today(), "manual"
+        user_id, _local_today(), "nightly_fallback"
     )
 
 
@@ -142,6 +142,38 @@ async def test_refresh_writes_new_revision_and_archives_old(
     assert archived is not None
     assert archived.is_current is False
     assert archived.revision == 1
+
+
+async def test_refresh_response_carries_new_active_identity_and_revision(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await _seed_user_with_wardrobe(db_session)
+    await _generate_initial_revision(db_session, user_id)
+    repository = SqlAlchemyRecommendationRepository(db_session)
+    previous = await repository.get_daily(user_id, _local_today())
+    assert previous is not None
+
+    app = _build_app(
+        db_session, Settings(APP_ENV="dev", ENABLE_TODAY_REFRESH=True), monkeypatch
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.post(
+            "/v1/recommendations/today/refresh", headers={"X-User-Id": str(user_id)}
+        )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    active = await repository.get_daily(user_id, _local_today())
+    assert active is not None
+    assert data["recommendation_id"] == str(active.id)
+    assert data["recommendation_id"] != str(previous.id)
+    assert data["revision"] == active.revision == 2
+    assert data["generated_at"]
+    assert data["generation_source"] == "refresh"
+    assert data["trace_id"] is None
 
 
 async def test_refresh_rate_limit_returns_429_after_exhaustion(
@@ -262,6 +294,7 @@ async def test_known_context_override_is_persisted_and_attributed(
     data = response.json()["data"]
     assert data["recommendation_id"]
     assert data["revision"] == 2
+    assert data["generation_source"] == "context_override"
     assert data["applied_context"]["constraints"] == ["exclude_dress"]
     assert data["context"]["constraints"] == ["exclude_dress"]
 

@@ -7,6 +7,7 @@ from sqlalchemy import select, text
 
 from app.application.recommendations.generator import RecommendationGenerator
 from app.bootstrap.container import llm_service, weather_service
+from app.common.enums import RecommendationGenerationSource
 from app.common.local_time import local_datetime, utc_now
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
@@ -25,6 +26,8 @@ async def schedule_today_recompute(
     user_id: uuid.UUID,
     repository: SqlAlchemyRecommendationRepository | None = None,
     style_repository: SqlAlchemyStyleRepository | None = None,
+    *,
+    generation_source: RecommendationGenerationSource = RecommendationGenerationSource.READ_TIME,
 ) -> bool:
     if repository is None:
         logger.warning(
@@ -64,6 +67,7 @@ async def schedule_today_recompute(
             **(active.payload or {}),
             "target_date": target_date.isoformat(),
             "requested_at": now.isoformat(),
+            "generation_source": generation_source.value,
         }
         await repository.session.flush()
         _log_recompute_schedule(active, False)
@@ -77,6 +81,7 @@ async def schedule_today_recompute(
             "user_id": str(user_id),
             "target_date": target_date.isoformat(),
             "requested_at": now.isoformat(),
+            "generation_source": generation_source.value,
         },
         user_id=user_id,
     )
@@ -107,6 +112,7 @@ class RecommendationBackgroundService:
         user_id: uuid.UUID,
         force: bool = False,
         requested_at: datetime | None = None,
+        generation_source: RecommendationGenerationSource = RecommendationGenerationSource.READ_TIME,
     ) -> bool:
         now = utc_now()
         timezone = await self.repository.get_user_timezone(user_id)
@@ -126,6 +132,8 @@ class RecommendationBackgroundService:
                     "recommendation_recompute_skipped",
                     reason="superseded_by_newer_daily",
                     user_id=str(user_id),
+                    recommendation_id=str(existing.id),
+                    revision=existing.revision,
                 )
                 return False
         if existing and await self.repository.daily_has_engagement(existing.id):
@@ -133,6 +141,8 @@ class RecommendationBackgroundService:
                 "recommendation_recompute_skipped",
                 reason="daily_has_engagement",
                 user_id=str(user_id),
+                recommendation_id=str(existing.id),
+                revision=existing.revision,
             )
             return False
         if not force and existing and existing.updated_at:
@@ -149,7 +159,7 @@ class RecommendationBackgroundService:
         ).generate_for_user(
             user_id,
             today,
-            "mutation",
+            generation_source.value,
             preserve_refresh_after=requested_at,
         )
         return True

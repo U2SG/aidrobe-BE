@@ -104,6 +104,7 @@ async def test_worker_recomputes_today_and_finalizes_job(
         assert finalized.result == {"recomputed": True}
         assert daily is not None
         assert daily.status == "ready"
+        assert daily.generation_source == "read_time"
     assert invalidated == [user_id]
 
     # Terminal jobs do not suppress later wardrobe mutations.

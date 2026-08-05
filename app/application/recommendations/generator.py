@@ -88,6 +88,8 @@ class RecommendationGenerator:
                     user_id=str(user_id),
                     target_date=str(target_date),
                     reason="daily_has_engagement",
+                    recommendation_id=str(existing.id),
+                    revision=existing.revision,
                 )
                 return existing
 
@@ -196,6 +198,14 @@ class RecommendationGenerator:
             )
 
         if not should_write_outfits:
+            logger.info(
+                "recommendation_generation_skipped",
+                user_id=str(user_id),
+                target_date=str(target_date),
+                reason="superseded_by_newer_daily",
+                recommendation_id=str(daily.id),
+                revision=daily.revision,
+            )
             return daily
 
         if result.status == RecommendationStatus.READY.value:
@@ -226,6 +236,8 @@ class RecommendationGenerator:
                         user_id=str(user_id),
                         outfit_type=engine_outfit.outfit_type,
                         rank=rank,
+                        recommendation_id=str(daily.id),
+                        revision=daily.revision,
                     )
                     static_breakdown = None
                     persisted_rules_version = None
@@ -265,6 +277,8 @@ class RecommendationGenerator:
             target_date=str(target_date),
             status=result.status,
             has_style_profile=bool(style_profile),
+            recommendation_id=str(daily.id),
+            revision=daily.revision,
         )
         return daily
 
