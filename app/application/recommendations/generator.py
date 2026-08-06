@@ -6,6 +6,7 @@ from typing import Any
 
 import structlog
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.application.outfits.scoring.static import compute_static_breakdown, get_rules_version
 from app.application.ports.llm import LlmPort
@@ -341,13 +342,19 @@ class RecommendationGenerator:
         )
         trace = existing_trace or RecommendationTrace(
             id=trace_id,
-            daily_recommendation=daily,
+            daily_recommendation_id=daily.id,
             schema_version=TRACE_SCHEMA_VERSION,
             payload=trace_payload,
         )
         trace.schema_version = TRACE_SCHEMA_VERSION
         trace.payload = trace_payload
         await self.repository.save_trace(trace)
+        # `daily` is already flushed here, so its one-to-one `trace` is
+        # persistent-but-unloaded: assigning the relationship above (or reading
+        # it later in the router) emits a lazy load, which raises
+        # MissingGreenlet under asyncio. Set the FK instead and publish the
+        # loaded value so in-session readers stay IO-free.
+        set_committed_value(daily, "trace", trace)
 
         logger.info(
             "recommendation_generated",
