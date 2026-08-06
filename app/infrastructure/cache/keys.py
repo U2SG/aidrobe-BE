@@ -5,8 +5,9 @@ from datetime import date, time
 # TodayRecommendationResponse gains fields that the cache-hit path must
 # populate — otherwise entries written by the previous deploy validate
 # successfully with null defaults and serve incomplete payloads until the
-# day-end TTL. "p2" = recommendation identity metadata (BE#131).
-_PAYLOAD_VERSION = "p2"
+# day-end TTL. "p2" = recommendation identity metadata (BE#131); "p3" = trace_id
+# actually populated now that decision traces are persisted.
+_PAYLOAD_VERSION = "p3"
 
 
 def build_daily_recommendation_cache_key(

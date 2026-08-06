@@ -118,6 +118,7 @@ class EngineOutfit:
     # BE#38/#85 — grounded {type, text, source, referenced_item_ids, confidence}
     # reasons; populated for the selected outfits.
     reasoning: list[dict[str, Any]] = field(default_factory=list)
+    llm_boundary_used: bool = False
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,8 @@ class EngineResult:
     status: str
     outfits: list[EngineOutfit]
     guidance_text: str | None = None
+    candidates: list[EngineOutfit] = field(default_factory=list)
+    llm_boundary_used: bool = False
 
 
 class RecommendationEngine:
@@ -283,7 +286,12 @@ class RecommendationEngine:
             for outfit in selected
         ]
 
-        return EngineResult(status="ready", outfits=selected)
+        return EngineResult(
+            status="ready",
+            outfits=selected,
+            candidates=candidates,
+            llm_boundary_used=any(candidate.llm_boundary_used for candidate in candidates),
+        )
 
     async def _build_candidates(
         self,
@@ -445,7 +453,9 @@ class RecommendationEngine:
         reason = template.format(title=combo[0].title)
 
         # Polish reason with LLM if available
+        llm_boundary_used = False
         if self.llm is not None:
+            llm_boundary_used = True
             try:
                 prompt = self._build_reason_prompt(
                     outfit_type,
@@ -489,6 +499,7 @@ class RecommendationEngine:
             item_ids=[item.item_id for item in combo],
             score_total=round(max(0.0, total), 4),
             score_breakdown=score_breakdown,
+            llm_boundary_used=llm_boundary_used,
         )
 
     def _build_reason_prompt(

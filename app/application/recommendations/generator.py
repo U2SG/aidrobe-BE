@@ -6,11 +6,16 @@ from typing import Any
 
 import structlog
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.application.outfits.scoring.static import compute_static_breakdown, get_rules_version
 from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo, WeatherPort
 from app.application.preferences.memory import live_negative_values_by_type
+from app.application.recommendations.decision_trace import (
+    TRACE_SCHEMA_VERSION,
+    build_decision_trace_payload,
+)
 from app.application.recommendations.engine import EngineItem, RecommendationEngine, RelationshipEdge
 from app.application.recommendations.feedback_learning import (
     DEFAULT_SUPPRESSION_DAYS,
@@ -31,10 +36,12 @@ from app.common.enums import (
 from app.common.local_time import local_datetime, utc_now
 from app.common.season import current_season
 from app.config.settings import get_settings
+from app.infrastructure.persistence.models.preference_memory import UserPreferenceMemory
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
     OutfitItem,
+    RecommendationTrace,
 )
 from app.infrastructure.persistence.models.user import UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -90,12 +97,16 @@ class RecommendationGenerator:
                     reason="daily_has_engagement",
                     recommendation_id=str(existing.id),
                     revision=existing.revision,
+                    trace_id=_trace_id(existing),
                 )
                 return existing
 
         items = await self.repository.get_wearable_items(user_id)
         recent = await self.repository.recent_worn_main_item_ids(user_id, target_date)
         settings = get_settings()
+        user_settings = await self.repository.session.scalar(
+            select(UserSettings).where(UserSettings.user_id == user_id)
+        )
         relationship_repository = SqlAlchemyWardrobeRelationshipRepository(self.repository.session)
         if settings.ENABLE_WARDROBE_GRAPH:
             # Rule-based edges are 100% derived from current item metadata (no
@@ -130,10 +141,16 @@ class RecommendationGenerator:
             )
         style_profile = await self._load_style_profile(user_id, target_date)
         weather = await self._load_weather(user_id, target_date)
+        # WeatherInfo has no source observation time, so persist when the
+        # provider/cache boundary returned the facts used by this generation.
+        weather_resolved_at = datetime.now(UTC) if weather is not None else None
         fit_profile = await self._load_fit_profile(user_id)
         # BE#82 — infer indoor-climate tendency (flag-gated; None → legacy ranking).
         indoor_climate = (
-            await self._load_indoor_climate(user_id)
+            await self._load_indoor_climate(
+                user_id,
+                user_settings.commute_exposure if user_settings is not None else None,
+            )
             if settings.ENABLE_INDOOR_CLIMATE_INFERENCE
             else None
         )
@@ -141,6 +158,7 @@ class RecommendationGenerator:
         # outfits. Read only when the flag is on (rows persist regardless), so a
         # flag-off generation is byte-identical to the legacy one.
         disliked_colors = await self._load_disliked_colors(user_id, settings)
+        memory_items = await self._load_memory_items(user_id)
         # BE#67 — down-rank looks the user recently dismissed/disliked. Derived at
         # read time from the event stream (no persistence), gated by the flag so a
         # flag-off generation is byte-identical to the legacy one.
@@ -174,6 +192,13 @@ class RecommendationGenerator:
             context_constraints=context_constraints or [],
         )
 
+        captured_at = datetime.now(UTC)
+        context_snapshot = _build_context_snapshot(
+            weather,
+            scene,
+            context_constraints or [],
+            captured_at=weather_resolved_at or captured_at,
+        )
         daily = DailyRecommendation(
             user_id=user_id,
             recommendation_date=target_date,
@@ -184,10 +209,9 @@ class RecommendationGenerator:
             }
             if result.outfits
             else None,
-            context_json=_build_context_snapshot(
-                weather, scene, context_constraints or []
-            ),
+            context_json=context_snapshot,
         )
+        pending_daily = daily
         should_write_outfits = True
         if refresh:
             daily = await self.repository.archive_current_and_revise(daily)
@@ -205,8 +229,13 @@ class RecommendationGenerator:
                 reason="superseded_by_newer_daily",
                 recommendation_id=str(daily.id),
                 revision=daily.revision,
+                trace_id=_trace_id(daily),
             )
             return daily
+
+        existing_trace = None if daily is pending_daily else daily.trace
+        trace_id = existing_trace.id if existing_trace is not None else uuid.uuid4()
+        persisted_rules_version: str | None = None
 
         if result.status == RecommendationStatus.READY.value:
             now = datetime.now(UTC)
@@ -229,6 +258,7 @@ class RecommendationGenerator:
                         outfit_type=engine_outfit.outfit_type,
                         current_season=season,
                     )
+                    outfit_rules_version = rules_version
                     persisted_rules_version = rules_version
                 except Exception:
                     logger.exception(
@@ -238,9 +268,10 @@ class RecommendationGenerator:
                         rank=rank,
                         recommendation_id=str(daily.id),
                         revision=daily.revision,
+                        trace_id=str(trace_id),
                     )
                     static_breakdown = None
-                    persisted_rules_version = None
+                    outfit_rules_version = None
                 outfit = await self.repository.add_outfit(
                     Outfit(
                         daily_recommendation_id=daily.id,
@@ -254,7 +285,7 @@ class RecommendationGenerator:
                             engine_outfit.outfit_type
                         ),
                         score_breakdown_json=static_breakdown,
-                        score_rules_version=persisted_rules_version,
+                        score_rules_version=outfit_rules_version,
                         reasoning_json=engine_outfit.reasoning or None,
                         created_at=now,
                     )
@@ -271,6 +302,60 @@ class RecommendationGenerator:
                         )
                     )
 
+        llm_provider, llm_model = _llm_identity(
+            self.engine.llm if result.llm_boundary_used else None
+        )
+        trace_payload = build_decision_trace_payload(
+            target_date=target_date,
+            captured_at=captured_at,
+            timezone_bucket=(
+                user_settings.timezone
+                if user_settings is not None and user_settings.timezone
+                else settings.DEFAULT_TIMEZONE
+            ),
+            weather=weather,
+            weather_resolved_at=(
+                weather_resolved_at.isoformat()
+                if weather_resolved_at is not None
+                else None
+            ),
+            commute_exposure=(
+                user_settings.commute_exposure if user_settings is not None else None
+            ),
+            indoor_climate=indoor_climate,
+            normalized_constraints=context_constraints or [],
+            wardrobe_items=items,
+            memory_items=memory_items,
+            engine_result=result,
+            recent_worn_main_item_ids=recent,
+            recent_outfit_item_ids=recent_outfits,
+            style_profile=style_profile,
+            fit_profile=fit_profile,
+            disliked_colors=disliked_colors,
+            relationship_edges=relationship_edges,
+            suppressed_outfit_item_ids=suppressed_outfit_item_ids,
+            avoid_exact_repeats=avoid_exact_repeats,
+            persisted_rules_version=persisted_rules_version,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            deterministic_seed=None,
+        )
+        trace = existing_trace or RecommendationTrace(
+            id=trace_id,
+            daily_recommendation_id=daily.id,
+            schema_version=TRACE_SCHEMA_VERSION,
+            payload=trace_payload,
+        )
+        trace.schema_version = TRACE_SCHEMA_VERSION
+        trace.payload = trace_payload
+        await self.repository.save_trace(trace)
+        # `daily` is already flushed here, so its one-to-one `trace` is
+        # persistent-but-unloaded: assigning the relationship above (or reading
+        # it later in the router) emits a lazy load, which raises
+        # MissingGreenlet under asyncio. Set the FK instead and publish the
+        # loaded value so in-session readers stay IO-free.
+        set_committed_value(daily, "trace", trace)
+
         logger.info(
             "recommendation_generated",
             user_id=str(user_id),
@@ -279,6 +364,7 @@ class RecommendationGenerator:
             has_style_profile=bool(style_profile),
             recommendation_id=str(daily.id),
             revision=daily.revision,
+            trace_id=str(trace.id),
         )
         return daily
 
@@ -445,24 +531,23 @@ class RecommendationGenerator:
             logger.warning("fit_profile_load_failed", user_id=str(user_id), error=str(exc))
             return {}
 
-    async def _load_indoor_climate(self, user_id: uuid.UUID) -> IndoorClimateSignal | None:
+    async def _load_indoor_climate(
+        self, user_id: uuid.UUID, commute_exposure: str | None
+    ) -> IndoorClimateSignal | None:
         """BE#82 — infer indoor-climate tendency from recent temperature-mismatch
         events + commute exposure. Uses the injected session (not AsyncSessionLocal)
         so it works in-transaction and under tests."""
-        session = self.repository.session
         events = await self.repository.list_recommendation_events(
             user_id,
             event_type=RecommendationEventType.TEMPERATURE_MISMATCH_REPORTED.value,
             limit=100,
         )
-        settings_row = await session.scalar(
-            select(UserSettings).where(UserSettings.user_id == user_id)
-        )
-        commute = settings_row.commute_exposure if settings_row else None
-        return infer_indoor_climate(events, commute, now=datetime.now(UTC))
+        return infer_indoor_climate(events, commute_exposure, now=datetime.now(UTC))
 
     async def _load_weather(
-        self, user_id: uuid.UUID, target_date: date | None = None
+        self,
+        user_id: uuid.UUID,
+        target_date: date | None = None,
     ) -> WeatherInfo | None:
         if self.weather_service is None:
             return None
@@ -492,11 +577,32 @@ class RecommendationGenerator:
             logger.warning("weather_load_failed", user_id=str(user_id), error=str(exc))
             return None
 
+    async def _load_memory_items(
+        self, user_id: uuid.UUID
+    ) -> list[UserPreferenceMemory]:
+        try:
+            from app.infrastructure.persistence.repositories.preference_memory_repo import (
+                SqlAlchemyPreferenceMemoryRepository,
+            )
+
+            return await SqlAlchemyPreferenceMemoryRepository(
+                self.repository.session
+            ).list_live(user_id)
+        except Exception as exc:
+            logger.warning(
+                "preference_memory_trace_load_failed",
+                user_id=str(user_id),
+                error=str(exc),
+            )
+            return []
+
 
 def _build_context_snapshot(
     weather: WeatherInfo | None,
     scene: str | None,
     constraints: list[str],
+    *,
+    captured_at: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Snapshot the inputs that drove this generation. Stored on the daily
     row so future explainability ("why did we suggest this?") can ground in
@@ -505,7 +611,9 @@ def _build_context_snapshot(
     normalized_constraints = sorted(set(constraints))
     if weather is None and scene is None and not normalized_constraints:
         return None
-    snapshot: dict[str, Any] = {"fetched_at": datetime.now(UTC).isoformat()}
+    snapshot: dict[str, Any] = {
+        "fetched_at": (captured_at or datetime.now(UTC)).isoformat()
+    }
     if weather is not None:
         snapshot["weather"] = dataclasses.asdict(weather)
     if scene is not None:
@@ -521,3 +629,18 @@ def _time_sensitivity_for_outfit_type(outfit_type: str) -> str:
     if outfit_type == OutfitType.STYLISH.value:
         return TimeSensitivity.RELAXED.value
     return TimeSensitivity.STANDARD.value
+
+
+def _trace_id(daily: DailyRecommendation) -> str | None:
+    return str(daily.trace.id) if daily.trace is not None else None
+
+
+def _llm_identity(llm: LlmPort | None) -> tuple[str | None, str | None]:
+    if llm is None:
+        return None, None
+    provider = type(llm).__name__.lower()
+    model = getattr(llm, "model", None)
+    provider_settings = getattr(llm, "settings", None)
+    if not isinstance(model, str) and provider_settings is not None:
+        model = getattr(provider_settings, "QWEN_LLM_MODEL", None)
+    return provider, model if isinstance(model, str) else None

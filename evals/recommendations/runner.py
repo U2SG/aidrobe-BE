@@ -17,6 +17,7 @@ from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.engine import (
     EngineItem,
     EngineOutfit,
+    EngineResult,
     RecommendationEngine,
     RelationshipEdge,
 )
@@ -68,6 +69,33 @@ class EvaluationError(RuntimeError):
 @dataclass(frozen=True)
 class FixedClock:
     now: datetime
+
+
+@dataclass(frozen=True)
+class RecommendationEngineParameters:
+    """Deterministic engine parameters shared by corpus and trace replays."""
+
+    recent_worn_main_item_ids: frozenset[str]
+    style_profile: dict[str, Any]
+    weather: WeatherInfo | None
+    recent_worn_outfit_item_ids: tuple[frozenset[str], ...]
+    fit_profile: dict[str, Any]
+    avoid_exact_repeats: bool
+    disliked_colors: frozenset[str]
+    relationship_edges: tuple[RelationshipEdge, ...]
+    suppressed_outfit_item_ids: tuple[frozenset[str], ...]
+    indoor_climate: IndoorClimateSignal | None
+    context_constraints: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RecommendationRunnerInput:
+    """Fully resolved input accepted by the deterministic eval runner."""
+
+    target_date: date
+    items: tuple[EngineItem, ...]
+    parameters: RecommendationEngineParameters
+    deterministic_seed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +185,40 @@ class EvaluationRecommendationEngine(RecommendationEngine):
         return ranked
 
 
+async def run_recommendation_input(
+    runner_input: RecommendationRunnerInput,
+    *,
+    engine: RecommendationEngine | None = None,
+    parameters: RecommendationEngineParameters | None = None,
+) -> EngineResult:
+    """Run a fully resolved input through the real engine with LLM disabled."""
+    active_engine = engine or RecommendationEngine(llm=None)
+    if active_engine.llm is not None:
+        raise EvaluationError("recommendation eval engines must set llm=None")
+    active_parameters = parameters or runner_input.parameters
+    if runner_input.deterministic_seed is not None:
+        random.seed(runner_input.deterministic_seed)
+    return await active_engine.generate(
+        list(runner_input.items),
+        recent_worn_main_item_ids=set(active_parameters.recent_worn_main_item_ids),
+        target_date=runner_input.target_date,
+        style_profile=active_parameters.style_profile,
+        weather=active_parameters.weather,
+        recent_worn_outfit_item_ids=[
+            set(item_ids) for item_ids in active_parameters.recent_worn_outfit_item_ids
+        ],
+        fit_profile=active_parameters.fit_profile,
+        avoid_exact_repeats=active_parameters.avoid_exact_repeats,
+        disliked_colors=set(active_parameters.disliked_colors),
+        relationship_edges=list(active_parameters.relationship_edges),
+        suppressed_outfit_item_ids=[
+            set(item_ids) for item_ids in active_parameters.suppressed_outfit_item_ids
+        ],
+        indoor_climate=active_parameters.indoor_climate,
+        context_constraints=list(active_parameters.context_constraints),
+    )
+
+
 def _to_weather_info(snapshot: WeatherSnapshotFixture) -> WeatherInfo:
     return WeatherInfo(**snapshot.model_dump())
 
@@ -212,30 +274,37 @@ async def evaluate_scenario(
     indoor_climate = _derive_indoor_climate(repository, clock)
     learned = scenario.learned_signals
     engine = EvaluationRecommendationEngine()
-    result = await engine.generate(
-        repository.wearable_items(),
-        recent_worn_main_item_ids=repository.recent_main_item_ids(),
+    runner_input = RecommendationRunnerInput(
         target_date=scenario.request.target_date,
-        style_profile=learned.style_profile,
-        weather=weather,
-        recent_worn_outfit_item_ids=repository.recent_outfit_item_ids(),
-        fit_profile=learned.fit_profile,
-        avoid_exact_repeats=learned.avoid_exact_repeats,
-        disliked_colors={color.lower() for color in learned.disliked_colors},
-        relationship_edges=[
-            RelationshipEdge(
-                source_item_id=edge.source_item_id,
-                target_item_id=edge.target_item_id,
-                relationship_type=edge.relationship_type,
-                score=edge.score,
-                confidence=edge.confidence,
-            )
-            for edge in learned.relationship_edges
-        ],
-        suppressed_outfit_item_ids=[set(item_ids) for item_ids in learned.suppressed_outfits],
-        indoor_climate=indoor_climate,
-        context_constraints=list(scenario.request.active_constraints),
+        items=tuple(repository.wearable_items()),
+        parameters=RecommendationEngineParameters(
+            recent_worn_main_item_ids=frozenset(repository.recent_main_item_ids()),
+            style_profile=learned.style_profile,
+            weather=weather,
+            recent_worn_outfit_item_ids=tuple(
+                frozenset(item_ids) for item_ids in repository.recent_outfit_item_ids()
+            ),
+            fit_profile=learned.fit_profile,
+            avoid_exact_repeats=learned.avoid_exact_repeats,
+            disliked_colors=frozenset(color.lower() for color in learned.disliked_colors),
+            relationship_edges=tuple(
+                RelationshipEdge(
+                    source_item_id=edge.source_item_id,
+                    target_item_id=edge.target_item_id,
+                    relationship_type=edge.relationship_type,
+                    score=edge.score,
+                    confidence=edge.confidence,
+                )
+                for edge in learned.relationship_edges
+            ),
+            suppressed_outfit_item_ids=tuple(
+                frozenset(item_ids) for item_ids in learned.suppressed_outfits
+            ),
+            indoor_climate=indoor_climate,
+            context_constraints=tuple(scenario.request.active_constraints),
+        ),
     )
+    result = await run_recommendation_input(runner_input, engine=engine)
 
     primary = result.outfits[0] if result.outfits else None
     item_by_id = {item.id: item for item in scenario.wardrobe}

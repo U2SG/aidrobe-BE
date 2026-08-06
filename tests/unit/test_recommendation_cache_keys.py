@@ -29,4 +29,4 @@ def test_daily_recommendation_cache_key_carries_payload_version() -> None:
     # the trailing version segment is what guarantees that.
     key = build_daily_recommendation_cache_key(uuid.uuid4(), date(2026, 7, 15))
 
-    assert key.endswith(":p2")
+    assert key.endswith(":p3")

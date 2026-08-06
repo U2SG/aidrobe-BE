@@ -1,6 +1,7 @@
 """BE#83 — profile data-trust: memory review/correct/clear + clear-all-data."""
 
 import uuid
+from datetime import date
 
 import pytest
 from fastapi import FastAPI
@@ -13,6 +14,10 @@ from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.audit_log import AuditLog
 from app.infrastructure.persistence.models.preference_memory import UserPreferenceMemory
+from app.infrastructure.persistence.models.recommendation import (
+    DailyRecommendation,
+    RecommendationTrace,
+)
 from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.preference_memory_repo import (
@@ -186,6 +191,22 @@ async def test_clear_all_data_keeps_account_and_audit(
     await db_session.flush()
     await _seed_pref(db_session, user_id, "不喜欢亮色")
 
+    daily = DailyRecommendation(
+        user_id=user_id,
+        recommendation_date=date(2026, 8, 5),
+        status="insufficient_items",
+        generation_source="manual",
+    )
+    db_session.add(daily)
+    await db_session.flush()
+    trace = RecommendationTrace(
+        daily_recommendation_id=daily.id,
+        schema_version=1,
+        payload={"schema_version": 1},
+    )
+    db_session.add(trace)
+    await db_session.flush()
+
     async with _client(db_session) as client:
         resp = await client.delete("/v1/profile/data", headers={"X-User-Id": str(user_id)})
     assert resp.status_code == 200
@@ -199,6 +220,10 @@ async def test_clear_all_data_keeps_account_and_audit(
     assert await _count(WardrobeItem, WardrobeItem.user_id) == 0
     assert await _count(UserSettings, UserSettings.user_id) == 0
     assert await _count(UserPreferenceMemory, UserPreferenceMemory.user_id) == 0
+    trace_count = await db_session.scalar(
+        select(func.count()).select_from(RecommendationTrace)
+    )
+    assert trace_count == 0
     # Pre-existing jobs (the stale export above) are wiped; the ONLY survivor
     # is the storage_purge job clear-data itself enqueues to delete the
     # user's objects from storage.

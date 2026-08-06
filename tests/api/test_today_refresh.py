@@ -173,7 +173,9 @@ async def test_refresh_response_carries_new_active_identity_and_revision(
     assert data["revision"] == active.revision == 2
     assert data["generated_at"]
     assert data["generation_source"] == "refresh"
-    assert data["trace_id"] is None
+    assert data["trace_id"]
+    assert previous.trace is not None
+    assert data["trace_id"] != str(previous.trace.id)
 
 
 async def test_refresh_rate_limit_returns_429_after_exhaustion(
@@ -304,6 +306,11 @@ async def test_known_context_override_is_persisted_and_attributed(
     assert daily is not None
     assert daily.context_json is not None
     assert daily.context_json["constraints"] == ["exclude_dress"]
+    assert daily.trace is not None
+    assert data["trace_id"] == str(daily.trace.id)
+    assert daily.trace.payload["context"]["normalized_constraints"] == [
+        "exclude_dress"
+    ]
     event = await db_session.scalar(
         select(RecommendationEvent).where(
             RecommendationEvent.user_id == user_id,
