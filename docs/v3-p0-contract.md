@@ -28,8 +28,9 @@ P0 delivers three bounded capabilities (V3_SPEC §16):
 - `POST /v1/shopping/sense-check` and `GET /v1/shopping/history` (M17) stay
   untouched in P0. All V3 endpoints are new surfaces; nothing existing is
   removed, renamed or re-shaped.
-- `outfit_visual_assets` is **extended with additive, nullable columns** (§5.4);
-  no existing column changes meaning. Migrations are additive and reversible.
+- `outfit_visual_assets` is **extended with additive, nullable columns**
+  (V3_SPEC §11.3); no existing column changes meaning. Migrations are additive
+  and reversible.
 - No new navigation tab. V3 entries appear only inside existing surfaces
   (Outfit Detail, Ask answer actions, Should I Buy result, Profile data
   controls) per V3_SPEC §3.3 / §4.
@@ -62,7 +63,9 @@ Convention: pydantic-settings `ENABLE_*` booleans in
    finish or fail normally, no new jobs enqueue, cached assets remain readable
    by ID only if the read endpoint is re-enabled later.
 5. `ENABLE_V3_STATIC_TRYON=true` with `ENABLE_V3_AVATAR=false` is an invalid
-   configuration; BE must treat static try-on as disabled in that case.
+   configuration: BE fails at startup via the settings `model_validator`
+   (`"ENABLE_V3_STATIC_TRYON requires ENABLE_V3_AVATAR"`), matching the
+   existing `ENABLE_PACKING_PLANNER requires ENABLE_PACKING_LIST` precedent.
 
 ## 3. Wire conventions
 
@@ -212,7 +215,7 @@ simply always return the first decision.
 {
   "id": "uuid",
   "candidate_id": "uuid",
-  "decision": "add|consider_color_swap|wait|skip_duplicate|insufficient_info",
+  "decision": "worth_adding|consider_alternate|wait|avoid_duplicate|insufficient_information",
   "decision_text": "string",           // display copy; FE never synthesizes it
   "reasons": [                          // 2–3, ordered by importance
     {
@@ -236,6 +239,11 @@ simply always return the first decision.
 
 Frozen rules:
 
+- Enum literals in this document are adopted **verbatim from the immutable
+  acceptance criteria in `feature_list.json`** (V3-007 decision states,
+  V3-020 feedback verdicts), which outrank this contract in the workspace
+  authority order. `visual_need: "none"` is the "visual need is false" state
+  V3-007 requires; `helpful|recommended` only grade the entry weight.
 - `decision` has exactly these five states — **no numeric suitability score**
   (V3_SPEC §5.4).
 - `context_snapshot` and `evidence_snapshot` are persisted server-side at
@@ -297,7 +305,7 @@ the same user-facing copy and layout as `failed` — the technical distinction i
 never exposed. Both keep the decision result fully intact (V3_SPEC §3.6, §9.5).
 Low-quality results are hidden, never shown.
 
-Feedback body: `{"verdict": "like_me|not_like_me|garment_wrong",
+Feedback body: `{"verdict": "looks_like_me|not_like_me|garment_wrong",
 "aspects": ["face","body_ratio","garment_fit","color","other"]}` (aspects
 optional).
 
