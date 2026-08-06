@@ -1,0 +1,536 @@
+{
+  "contract": "aidrobe-v3-analytics-events",
+  "schema_version": 1,
+  "flow_id_header": "X-Correlation-Id",
+  "envelope": {
+    "fields": {
+      "schema_version": {
+        "type": "integer",
+        "required": true,
+        "min": 1,
+        "max": null
+      },
+      "occurred_at": {
+        "type": "timestamp",
+        "required": true
+      },
+      "platform": {
+        "type": "enum",
+        "required": true,
+        "values": [
+          "ios",
+          "android",
+          "backend"
+        ]
+      },
+      "user_id": {
+        "type": "uuid",
+        "required": true
+      },
+      "flow_id": {
+        "type": "uuid",
+        "required": false
+      }
+    }
+  },
+  "allowed_field_types": [
+    "boolean",
+    "enum",
+    "enum_array",
+    "integer",
+    "timestamp",
+    "uuid"
+  ],
+  "forbidden_field_names": [
+    "age_estimate",
+    "attractiveness_score",
+    "body_measurements",
+    "body_shape_estimate",
+    "canonical_front_url",
+    "comment",
+    "device_id",
+    "email",
+    "free_text",
+    "height",
+    "image_base64",
+    "image_bytes",
+    "image_url",
+    "ip_address",
+    "metadata",
+    "model_version",
+    "note",
+    "phone",
+    "photo_url",
+    "preview_url",
+    "prompt",
+    "prompt_text",
+    "prompt_version",
+    "provider",
+    "quality_signals",
+    "signed_url",
+    "source_url",
+    "url",
+    "weight"
+  ],
+  "events": {
+    "v3_decision_started": {
+      "owner": "fe",
+      "group": "decision",
+      "flow_id": "required",
+      "fields": {
+        "source_type": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "share_link",
+            "screenshot",
+            "order_image",
+            "ask_link"
+          ]
+        }
+      }
+    },
+    "v3_decision_completed": {
+      "owner": "be",
+      "group": "decision",
+      "flow_id": "required",
+      "fields": {
+        "decision": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "worth_adding",
+            "consider_alternate",
+            "wait",
+            "avoid_duplicate",
+            "insufficient_information"
+          ]
+        },
+        "uncertainty": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "visual_need": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "none",
+            "helpful",
+            "recommended"
+          ]
+        },
+        "parse_status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "parsed",
+            "parse_failed"
+          ]
+        }
+      }
+    },
+    "v3_decision_viewed": {
+      "owner": "fe",
+      "group": "decision",
+      "flow_id": "required",
+      "fields": {
+        "decision": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "worth_adding",
+            "consider_alternate",
+            "wait",
+            "avoid_duplicate",
+            "insufficient_information"
+          ]
+        }
+      }
+    },
+    "v3_decision_action": {
+      "owner": "fe",
+      "group": "decision",
+      "flow_id": "required",
+      "fields": {
+        "action": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "add_to_candidates",
+            "skip",
+            "recheck_color",
+            "style_with_existing"
+          ]
+        }
+      }
+    },
+    "v3_avatar_prompt_shown": {
+      "owner": "fe",
+      "group": "avatar",
+      "flow_id": "when_in_flow",
+      "fields": {
+        "source_type": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "ootd_photo",
+            "outfit_import",
+            "user_upload",
+            "camera_capture"
+          ]
+        },
+        "context": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "post_flow_sheet",
+            "preview_request"
+          ]
+        }
+      }
+    },
+    "v3_avatar_consent": {
+      "owner": "be",
+      "group": "avatar",
+      "flow_id": "when_in_flow",
+      "fields": {
+        "accepted": {
+          "type": "boolean",
+          "required": true
+        },
+        "source_type": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "ootd_photo",
+            "outfit_import",
+            "user_upload",
+            "camera_capture"
+          ]
+        }
+      }
+    },
+    "v3_avatar_deleted": {
+      "owner": "be",
+      "group": "avatar",
+      "flow_id": "not_applicable",
+      "fields": {
+        "purge_derived": {
+          "type": "boolean",
+          "required": true
+        }
+      }
+    },
+    "v3_preview_requested": {
+      "owner": "fe",
+      "group": "preview",
+      "flow_id": "required",
+      "fields": {
+        "concern": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "volume",
+            "color",
+            "length",
+            "overall"
+          ]
+        },
+        "avatar_status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "none",
+            "candidate",
+            "preparing",
+            "ready",
+            "refresh_recommended",
+            "disabled"
+          ]
+        }
+      }
+    },
+    "v3_preview_outcome": {
+      "owner": "be",
+      "group": "preview",
+      "flow_id": "required",
+      "fields": {
+        "generation_status": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "ready",
+            "failed",
+            "rejected_by_quality_gate"
+          ]
+        },
+        "cache_hit": {
+          "type": "boolean",
+          "required": true
+        },
+        "retry_count": {
+          "type": "integer",
+          "required": true,
+          "min": 0,
+          "max": 1
+        }
+      }
+    },
+    "v3_preview_viewed": {
+      "owner": "fe",
+      "group": "preview",
+      "flow_id": "required",
+      "fields": {
+        "result": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "shown",
+            "fallback"
+          ]
+        }
+      }
+    },
+    "v3_preview_feedback": {
+      "owner": "fe",
+      "group": "preview",
+      "flow_id": "required",
+      "fields": {
+        "verdict": {
+          "type": "enum",
+          "required": true,
+          "values": [
+            "looks_like_me",
+            "not_like_me",
+            "garment_wrong"
+          ]
+        },
+        "aspects": {
+          "type": "enum_array",
+          "required": false,
+          "values": [
+            "face",
+            "body_ratio",
+            "garment_fit",
+            "color",
+            "other"
+          ]
+        }
+      }
+    }
+  },
+  "metrics": {
+    "decision_completion_rate": {
+      "definition": "flows with v3_decision_completed / flows with v3_decision_started. The headline usefulness number; computable with every visual flag off.",
+      "events": [
+        "v3_decision_started",
+        "v3_decision_completed"
+      ],
+      "fields": [
+        "flow_id"
+      ],
+      "kill_criteria": [
+        5
+      ]
+    },
+    "time_to_decision_seconds": {
+      "definition": "occurred_at(v3_decision_completed) - occurred_at(v3_decision_started) per flow_id; report the median, segmented by whether the flow also emitted v3_preview_requested.",
+      "events": [
+        "v3_decision_started",
+        "v3_decision_completed",
+        "v3_preview_requested"
+      ],
+      "fields": [
+        "occurred_at",
+        "flow_id"
+      ],
+      "kill_criteria": [
+        5
+      ]
+    },
+    "decision_action_rate": {
+      "definition": "flows with v3_decision_action / flows with v3_decision_viewed. Separates a decision that changed behavior from one that was merely read.",
+      "events": [
+        "v3_decision_viewed",
+        "v3_decision_action"
+      ],
+      "fields": [
+        "flow_id"
+      ],
+      "kill_criteria": [
+        3
+      ]
+    },
+    "existing_item_alternative_rate": {
+      "definition": "v3_decision_action[action=style_with_existing] / all v3_decision_action. Reuse over purchase conversion (V3_SPEC \u00a718).",
+      "events": [
+        "v3_decision_action"
+      ],
+      "fields": [
+        "action"
+      ],
+      "kill_criteria": [
+        3
+      ]
+    },
+    "repeat_use_rate": {
+      "definition": "distinct user_id with v3_decision_started on >= 2 distinct occurred_at dates / distinct user_id with >= 1.",
+      "events": [
+        "v3_decision_started"
+      ],
+      "fields": [
+        "user_id",
+        "occurred_at"
+      ],
+      "kill_criteria": [
+        3
+      ]
+    },
+    "consent_prompt_completion_delta": {
+      "definition": "decision_completion_rate over flows that emitted v3_avatar_prompt_shown[context=preview_request] minus the rate over flows that did not. A materially negative delta means photo/consent asking is costing decisions.",
+      "events": [
+        "v3_avatar_prompt_shown",
+        "v3_decision_started",
+        "v3_decision_completed"
+      ],
+      "fields": [
+        "context",
+        "flow_id"
+      ],
+      "kill_criteria": [
+        4
+      ]
+    },
+    "consent_acceptance_rate": {
+      "definition": "v3_avatar_consent[accepted=true] / all v3_avatar_consent, segmented by source_type.",
+      "events": [
+        "v3_avatar_consent"
+      ],
+      "fields": [
+        "accepted",
+        "source_type"
+      ],
+      "kill_criteria": [
+        4
+      ]
+    },
+    "preview_request_rate": {
+      "definition": "flows with v3_preview_requested / flows with v3_decision_viewed.",
+      "events": [
+        "v3_decision_viewed",
+        "v3_preview_requested"
+      ],
+      "fields": [
+        "flow_id"
+      ],
+      "kill_criteria": [
+        5
+      ]
+    },
+    "preview_hidden_rate": {
+      "definition": "v3_preview_outcome[generation_status in (failed, rejected_by_quality_gate)] / all v3_preview_outcome. Report the two statuses separately as well: a rising rejected share is the quality gate doing its job, a rising failed share is an outage.",
+      "events": [
+        "v3_preview_outcome"
+      ],
+      "fields": [
+        "generation_status"
+      ],
+      "kill_criteria": [
+        2,
+        9
+      ]
+    },
+    "identity_fidelity_rate": {
+      "definition": "v3_preview_feedback[verdict=looks_like_me] / all v3_preview_feedback.",
+      "events": [
+        "v3_preview_feedback"
+      ],
+      "fields": [
+        "verdict"
+      ],
+      "kill_criteria": [
+        1
+      ]
+    },
+    "garment_fidelity_complaint_rate": {
+      "definition": "v3_preview_feedback[verdict=garment_wrong or aspects contains garment_fit] / all v3_preview_feedback. A proxy for silhouette distortion, not a measurement of it.",
+      "events": [
+        "v3_preview_feedback"
+      ],
+      "fields": [
+        "verdict",
+        "aspects"
+      ],
+      "kill_criteria": [
+        2
+      ]
+    },
+    "post_preview_decision_action_rate": {
+      "definition": "flows with v3_decision_action after v3_preview_viewed[result=shown] / flows with v3_preview_viewed[result=shown]. Preview usefulness, not preview volume.",
+      "events": [
+        "v3_preview_viewed",
+        "v3_decision_action"
+      ],
+      "fields": [
+        "result",
+        "flow_id",
+        "occurred_at"
+      ],
+      "kill_criteria": [
+        3
+      ]
+    },
+    "fallback_decision_retention_rate": {
+      "definition": "flows with v3_decision_action among flows with v3_preview_viewed[result=fallback]. Verifies a failed or hidden preview never erases the decision.",
+      "events": [
+        "v3_preview_viewed",
+        "v3_decision_action"
+      ],
+      "fields": [
+        "result",
+        "flow_id"
+      ],
+      "kill_criteria": [
+        5
+      ]
+    },
+    "preview_cache_hit_rate": {
+      "definition": "v3_preview_outcome[cache_hit=true] / all v3_preview_outcome.",
+      "events": [
+        "v3_preview_outcome"
+      ],
+      "fields": [
+        "cache_hit"
+      ],
+      "kill_criteria": [
+        7
+      ]
+    },
+    "generations_per_useful_decision": {
+      "definition": "count(v3_preview_outcome[cache_hit=false]) + sum(retry_count), divided by count(flows with both v3_decision_completed and v3_decision_action). Paid generations per decision that actually changed behavior \u2014 the cost ratio that matters, deliberately not generations per user.",
+      "events": [
+        "v3_preview_outcome",
+        "v3_decision_completed",
+        "v3_decision_action"
+      ],
+      "fields": [
+        "cache_hit",
+        "retry_count",
+        "flow_id"
+      ],
+      "kill_criteria": [
+        7
+      ]
+    }
+  },
+  "qualitative_only_kill_criteria": {
+    "6": "Users mistaking the preview for a size guarantee is a comprehension failure; only moderated sessions and support/review reports can detect it.",
+    "8": "Being clearly worse than comparable products a user has already seen is a relative judgment with no in-app referent; requires benchmark review.",
+    "10": "Sacrificing Today and import-to-first-outfit is a program-allocation judgment, not a user-behavior signal in this contract."
+  }
+}
