@@ -289,6 +289,13 @@ class Settings(BaseSettings):
     # rollback. Requires ENABLE_SENSE_CHECK for the endpoint to be reachable.
     ENABLE_PURCHASE_EVALUATOR: bool = False
 
+    # V3 P0 purchase decision (docs/v3-p0-contract.md §2). Gates the
+    # /v1/purchase-candidates* and /v1/wardrobe-decisions/{id} surfaces — none
+    # of which exist yet (V3-003 is persistence only; V3-004/V3-007/V3-008 add
+    # them). Candidates and decision snapshots persist regardless of the flag,
+    # so flipping it back is a clean rollback.
+    ENABLE_V3_PURCHASE_DECISION: bool = False
+
     # V4 M19 — PDF / magazine multi-page style ingest. When False, POST
     # /v1/style/sources returns 503 (kill switch). The parent row is still
     # persisted regardless; only the async rasterize/ingest is gated so a bad
