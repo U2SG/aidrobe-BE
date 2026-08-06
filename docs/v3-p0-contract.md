@@ -26,8 +26,10 @@ P0 delivers three bounded capabilities (V3_SPEC §16):
 **Additive-only rules (frozen):**
 
 - `POST /v1/shopping/sense-check` and `GET /v1/shopping/history` (M17) stay
-  untouched in P0. All V3 endpoints are new surfaces; nothing existing is
-  removed, renamed or re-shaped.
+  untouched in P0. All V3 endpoints are new surfaces — with one deliberate
+  exception: `GET /v1/outfit-visual-assets/{asset_id}` is the **existing M10
+  outfit-board polling endpoint**, extended additively (§6.2); it is never
+  re-gated or re-shaped. Nothing existing is removed, renamed or re-shaped.
 - `outfit_visual_assets` is **extended with additive, nullable columns**
   (V3_SPEC §11.3); no existing column changes meaning. Migrations are additive
   and reversible.
@@ -46,7 +48,7 @@ Convention: pydantic-settings `ENABLE_*` booleans in
 |---|---|---|
 | `ENABLE_V3_PURCHASE_DECISION` | `/v1/purchase-candidates*`, `/v1/wardrobe-decisions/{id}` | — |
 | `ENABLE_V3_AVATAR` | `/v1/avatar-profile*`, `/v1/avatar-candidates/*/consent` | — |
-| `ENABLE_V3_STATIC_TRYON` | `/v1/wardrobe-decisions/{id}/visual-preview`, `/v1/outfit-visual-assets/{asset_id}*` | `ENABLE_V3_AVATAR` |
+| `ENABLE_V3_STATIC_TRYON` | `POST /v1/wardrobe-decisions/{id}/visual-preview`, `POST /v1/outfit-visual-assets/{asset_id}/feedback` — **new surfaces only**; the existing `GET /v1/outfit-visual-assets/{asset_id}` (M10) stays ungated | `ENABLE_V3_AVATAR` |
 
 **Rollback semantics (frozen):**
 
@@ -60,8 +62,10 @@ Convention: pydantic-settings `ENABLE_*` booleans in
    (`ShoppingSenseCheck` M17 precedent: the flag gates exposure only). Turning
    a flag back on restores function with no migration.
 4. If `ENABLE_V3_STATIC_TRYON` flips off with jobs in flight: running jobs
-   finish or fail normally, no new jobs enqueue, cached assets remain readable
-   by ID only if the read endpoint is re-enabled later.
+   finish or fail normally, no new jobs enqueue, and cached assets remain
+   readable via the existing ungated `GET /v1/outfit-visual-assets/{asset_id}`.
+   Flag state must never affect that GET — V2 outfit-board polling depends
+   on it (§1 additive-only rules).
 5. `ENABLE_V3_STATIC_TRYON=true` with `ENABLE_V3_AVATAR=false` is an invalid
    configuration: BE fails at startup via the settings `model_validator`
    (`"ENABLE_V3_STATIC_TRYON requires ENABLE_V3_AVATAR"`), matching the
@@ -186,7 +190,7 @@ there is never a gap where a ready avatar silently disappears.
 Response / `GET` shape: `{"id", "status", "parsed_item"}` with
 `status: "submitted|parsed|parse_failed"` (frozen enum). Parsing may complete
 synchronously or async; FE polls `GET` until terminal. `parse_failed` still
-allows a decision request — the decision then returns `insufficient_info`
+allows a decision request — the decision then returns `insufficient_information`
 with a clarifying reason instead of a hard error (graceful degradation).
 
 `parsed_item` (frozen minimal shape, all fields nullable):
@@ -259,9 +263,9 @@ Frozen rules:
 
 | Method + path | Purpose |
 |---|---|
-| `POST /v1/wardrobe-decisions/{id}/visual-preview` | Request (or fetch cached) static try-on for this decision. |
-| `GET /v1/outfit-visual-assets/{asset_id}` | Poll generation lifecycle. |
-| `POST /v1/outfit-visual-assets/{asset_id}/feedback` | Record user fidelity feedback. |
+| `POST /v1/wardrobe-decisions/{id}/visual-preview` | New. Request (or fetch cached) static try-on for this decision. |
+| `GET /v1/outfit-visual-assets/{asset_id}` | **Existing M10 endpoint** (outfit-board polling), extended additively — never gated or re-shaped. |
+| `POST /v1/outfit-visual-assets/{asset_id}/feedback` | New. Record user fidelity feedback. |
 
 `POST …/visual-preview` body (frozen):
 
@@ -286,19 +290,25 @@ queued → processing → quality_check → ready
                           └→ rejected_by_quality_gate    (gate says: do not show)
 ```
 
-`GET /v1/outfit-visual-assets/{asset_id}` (frozen shape):
+`GET /v1/outfit-visual-assets/{asset_id}` — the live M10 shape is kept
+verbatim and only extended additively (frozen):
 
 ```jsonc
 {
-  "id": "uuid",
-  "visual_type": "static_tryon",
+  "asset_id": "uuid",            // existing field name — NOT "id" (ios-api-alignment convention)
   "generation_status": "queued|processing|quality_check|ready|failed|rejected_by_quality_gate",
-  "image_url": "signed-url",     // null unless ready
-  "error_code": "string",        // null unless failed
-  "created_at": "ts",
-  "expires_at": "ts"
+  "image_url": "signed-url",     // existing; null unless ready
+  "visual_type": "static_tryon", // existing; new enum value for V3 assets
+  "error_code": "string",        // existing; null unless failed
+  "error_message": "string",     // existing; kept, null unless failed
+  "created_at": "ts",            // ADDITIVE, nullable
+  "expires_at": "ts"             // ADDITIVE, nullable
 }
 ```
+
+`quality_check` and `rejected_by_quality_gate` are **additive enum values** on
+the existing `generation_status` field; FE versions that predate them degrade
+per the §3 version-skew rule (unknown status → `failed`-equivalent display).
 
 **Frozen degradation rule:** FE renders `rejected_by_quality_gate` with exactly
 the same user-facing copy and layout as `failed` — the technical distinction is
