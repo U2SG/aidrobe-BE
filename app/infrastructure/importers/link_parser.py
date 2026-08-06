@@ -1,6 +1,7 @@
 import ipaddress
 import re
 import socket
+from dataclasses import dataclass
 from typing import cast
 from urllib.parse import urljoin, urlparse
 
@@ -13,6 +14,31 @@ META_IMAGE_RE = re.compile(
     re.IGNORECASE,
 )
 IMG_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
+
+# V3-004 — product text, for the attribute hints a product image alone cannot
+# carry (material, price, occasion). Title + og/twitter description + og:title
+# are the fields shopping sites reliably fill.
+TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+META_TEXT_RE = re.compile(
+    r'<meta[^>]+(?:property|name)=["\']'
+    r'(?:og:title|og:description|twitter:title|twitter:description|description|keywords)'
+    r'["\'][^>]+content=["\']([^"\']*)["\']',
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class ProductPage:
+    """What one fetch of a product page yields.
+
+    `text` is RAW UNTRUSTED page content — it must be bounded/sanitized before
+    it is read for attributes or ever reaches a prompt (V3-004 acceptance 3).
+    Callers get it unsanitized on purpose: sanitizing here would hide the
+    boundary that the ingest path is responsible for enforcing.
+    """
+
+    image_url: str | None = None
+    text: str = ""
 
 # A default httpx user-agent gets 403'd or served a bot page by most sites
 # (Wikipedia, Taobao, etc.). Present as a normal browser; zh Accept-Language
@@ -51,13 +77,40 @@ def is_safe_url(url: str) -> bool:
 _is_safe_url = is_safe_url
 
 
+def _image_from_html(html: str, base_url: str) -> str | None:
+    for pattern in (META_IMAGE_RE, IMG_RE):
+        match = pattern.search(html)
+        if match:
+            return cast(str, urljoin(base_url, match.group(1)))
+    return None
+
+
+def _text_from_html(html: str) -> str:
+    """Title + description/keywords meta values, joined. Still raw and untrusted."""
+    parts: list[str] = []
+    title = TITLE_RE.search(html)
+    if title:
+        parts.append(title.group(1))
+    parts.extend(META_TEXT_RE.findall(html))
+    return " ".join(part for part in parts if part)
+
+
 class HtmlLinkParser:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
     async def extract_image_url(self, source_url: str) -> str | None:
+        return (await self.extract_product_page(source_url)).image_url
+
+    async def extract_product_page(self, source_url: str) -> ProductPage:
+        """Fetch once, return both the product image and the page text.
+
+        `extract_image_url` delegates here so there is a single fetch
+        implementation and a single redirect-revalidation path — a second fetch
+        for the text would double the SSRF surface for no gain.
+        """
         if not is_safe_url(source_url):
-            return None
+            return ProductPage()
         async with httpx.AsyncClient(
             timeout=self.settings.LINK_PARSE_TIMEOUT_SECONDS,
             follow_redirects=False,
@@ -69,13 +122,12 @@ class HtmlLinkParser:
             while response.is_redirect and hops < 5:
                 redirect_url = response.headers.get("location", "")
                 if not is_safe_url(redirect_url):
-                    return None
+                    return ProductPage()
                 response = await client.get(redirect_url)
                 hops += 1
             response.raise_for_status()
         html = response.text
-        for pattern in (META_IMAGE_RE, IMG_RE):
-            match = pattern.search(html)
-            if match:
-                return cast(str, urljoin(str(response.url), match.group(1)))
-        return None
+        return ProductPage(
+            image_url=_image_from_html(html, str(response.url)),
+            text=_text_from_html(html),
+        )

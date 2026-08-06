@@ -2963,6 +2963,103 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/purchase-candidates:
+    post:
+      tags:
+      - purchase-candidates
+      summary: Create Purchase Candidate
+      operationId: create_purchase_candidate_v1_purchase_candidates_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePurchaseCandidateRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseCandidateResponse'
+        '400':
+          description: '`source_url` failed the SSRF safety check.'
+        '404':
+          description: '`source_asset_id` is not an object key under the caller''s
+            own prefix.'
+        '503':
+          description: '`ENABLE_V3_PURCHASE_DECISION` is off.'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/purchase-candidates/{candidate_id}:
+    get:
+      tags:
+      - purchase-candidates
+      summary: Get Purchase Candidate
+      operationId: get_purchase_candidate_v1_purchase_candidates__candidate_id__get
+      parameters:
+      - name: candidate_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Candidate Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseCandidateResponse'
+        '404':
+          description: No such candidate for this user (a foreign candidate answers
+            404, not 403).
+        '503':
+          description: '`ENABLE_V3_PURCHASE_DECISION` is off.'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/admin/jobs:
     get:
       tags:
@@ -4631,6 +4728,40 @@ components:
       - days
       - scenes
       title: CreatePackingListRequest
+    CreatePurchaseCandidateRequest:
+      properties:
+        source_type:
+          type: string
+          enum:
+          - share_link
+          - screenshot
+          - order_image
+          - ask_link
+          title: Source Type
+          description: Where the candidate came from. `share_link`/`ask_link` require
+            `source_url`; `screenshot`/`order_image` require `source_asset_id`.
+        source_url:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Source Url
+          description: Durable product link, for `share_link` / `ask_link`.
+        source_asset_id:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Source Asset Id
+          description: 'For `screenshot` / `order_image`: the stable `object_key`
+            returned by `POST /v1/uploads/presign` (e.g. `users/<user_id>/<uuid>.jpg`),
+            NOT a UUID and NOT the TTL-bound `file_url`. This service has no generic
+            asset table, so the object key IS the asset reference; it must be under
+            the caller''s own `users/<user_id>/` prefix.'
+      type: object
+      required:
+      - source_type
+      title: CreatePurchaseCandidateRequest
     DataExportResponse:
       properties:
         job_id:
@@ -5846,6 +5977,56 @@ components:
       - role
       - reason
       title: PackingPlanItem
+    ParsedItemModel:
+      properties:
+        category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Category
+        colors:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Colors
+        silhouette:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Silhouette
+        material_hints:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Material Hints
+        price:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Price
+        scene_tags:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Scene Tags
+      type: object
+      title: ParsedItemModel
+      description: 'Frozen minimal shape (contract §5.2) — every field nullable.
+
+
+        `null` means "not determined", which is distinct from an empty list. Values
+
+        come from our own bounded vocabulary (see
+
+        `app/application/purchase/candidate_normalizer.py`), never verbatim from the
+
+        product page, so this object is safe to put in an LLM prompt.'
     PdfStyleSourceRequest:
       properties:
         file_url:
@@ -5935,6 +6116,38 @@ components:
       - file_url
       - object_key
       title: PresignUploadResponse
+    PurchaseCandidateResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        status:
+          type: string
+          enum:
+          - submitted
+          - parsed
+          - parse_failed
+          title: Status
+        parsed_item:
+          anyOf:
+          - $ref: '#/components/schemas/ParsedItemModel'
+          - type: 'null'
+      type: object
+      required:
+      - id
+      - status
+      title: PurchaseCandidateResponse
+      description: '`{id, status, parsed_item}` — contract §5.2.
+
+
+        `parse_failed` is terminal but still decidable: the decision endpoint
+
+        (V3-007) then answers `insufficient_information` rather than erroring, and
+
+        `parsed_item` still carries whatever partial attributes were recovered so
+
+        the client can display and edit them.'
     PurchaseEvaluation:
       properties:
         confidence:
