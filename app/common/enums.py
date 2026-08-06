@@ -182,3 +182,60 @@ class Category(StrEnum):
     OUTERWEAR = "outerwear"
     DRESS = "dress"
     SHOES = "shoes"
+
+
+# --- V3 P0 purchase decision (docs/v3-p0-contract.md §5) ------------------
+# Literals are frozen by the contract; the persistence CHECK constraints in
+# `models/purchase_decision.py` and migration 0046 must stay in sync with them
+# (asserted by tests/services/test_v3_decision_migration.py).
+
+
+class PurchaseCandidateSource(StrEnum):
+    """How the user handed us the thing they are considering buying."""
+
+    SHARE_LINK = "share_link"
+    SCREENSHOT = "screenshot"
+    ORDER_IMAGE = "order_image"
+    ASK_LINK = "ask_link"
+
+
+class PurchaseCandidateStatus(StrEnum):
+    """Parsing lifecycle. `parse_failed` is terminal but still decidable —
+    the decision then degrades to `insufficient_information` (contract §5.2)."""
+
+    SUBMITTED = "submitted"
+    PARSED = "parsed"
+    PARSE_FAILED = "parse_failed"
+
+
+class WardrobeDecisionType(StrEnum):
+    """Which question a snapshot answers. P0 only asks the purchase one;
+    the column exists because `candidate_id` and `outfit_id` are both
+    nullable (V3_SPEC §11.2) and future decision kinds reuse the table."""
+
+    PURCHASE = "purchase"
+
+
+class PurchaseDecision(StrEnum):
+    """The five bounded states — no numeric suitability score (V3_SPEC §5.4)."""
+
+    WORTH_ADDING = "worth_adding"
+    CONSIDER_ALTERNATE = "consider_alternate"
+    WAIT = "wait"
+    AVOID_DUPLICATE = "avoid_duplicate"
+    INSUFFICIENT_INFORMATION = "insufficient_information"
+
+
+class DecisionUncertainty(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class DecisionVisualNeed(StrEnum):
+    """`none` is the "visual need is false" state; the other two only grade
+    how prominent the preview entry should be (contract §5.3)."""
+
+    NONE = "none"
+    HELPFUL = "helpful"
+    RECOMMENDED = "recommended"

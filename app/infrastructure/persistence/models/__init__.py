@@ -15,6 +15,10 @@ from app.infrastructure.persistence.models.operation_log import OperationLog
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
 from app.infrastructure.persistence.models.packing_list import PackingList
 from app.infrastructure.persistence.models.preference_memory import UserPreferenceMemory
+from app.infrastructure.persistence.models.purchase_decision import (
+    PurchaseCandidate,
+    WardrobeDecision,
+)
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
     Outfit,
@@ -51,6 +55,7 @@ __all__ = [
     "OutfitFeedback",
     "OutfitItem",
     "PackingList",
+    "PurchaseCandidate",
     "RecommendationEvent",
     "RecommendationTrace",
     "ShoppingSenseCheck",
@@ -59,6 +64,7 @@ __all__ = [
     "UserSession",
     "UserSettings",
     "UserStyleProfile",
+    "WardrobeDecision",
     "WardrobeItem",
     "WardrobeItemImage",
     "WardrobeItemRelationship",
