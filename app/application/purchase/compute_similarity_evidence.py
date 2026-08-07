@@ -145,7 +145,7 @@ async def compute_similarity_evidence(
         sum(1 for item in items if item.category == category) >= MAX_ITEMS_PER_CATEGORY_GROUP
     )
 
-    scenes = await _wear_scenes(session, [item.id for item in items])
+    scenes = await load_wear_scenes(session, [item.id for item in items])
     facts = [
         OwnedItemFacts(
             item_id=item.id,
@@ -217,7 +217,7 @@ async def _load_items(
     return list(rows)
 
 
-async def _wear_scenes(
+async def load_wear_scenes(
     session: AsyncSession,
     item_ids: list[uuid.UUID],
 ) -> dict[uuid.UUID, set[str]]:
@@ -226,6 +226,10 @@ async def _wear_scenes(
     `fit_feedback` is the only per-item scene signal that exists in this
     service, and it is sparse: most items have no row, which is precisely why
     `wardrobe_similarity` carries a labelled fallback below it.
+
+    Public because V3-006 needs the same signal over its own (narrower) item
+    set, and a second copy of this query would be a second chance to reintroduce
+    the per-item N+1 this one exists to prevent.
     """
     if not item_ids:
         return {}
