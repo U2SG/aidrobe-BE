@@ -51,7 +51,6 @@ from app.application.purchase.wardrobe_similarity import (
     REASON_SHARED_MATERIAL,
     REASON_SHARED_SCENE,
     REDUNDANCY_HIGH,
-    REDUNDANCY_LOW,
     REDUNDANCY_MEDIUM,
     REDUNDANCY_NONE,
     REDUNDANCY_UNKNOWN,
@@ -543,7 +542,12 @@ def _next_actions(decision: str, closet: ClosetEvidence, outfit: OutfitEvidence)
         actions.extend((ACTION_ADD_TO_CANDIDATES, ACTION_SKIP))
     else:  # worth_adding
         actions.append(ACTION_ADD_TO_CANDIDATES)
-        if closet.redundancy_level == REDUNDANCY_LOW and outfit.alternatives:
+        if outfit.alternatives:
+            # One condition, not two: V3-006 seeds alternatives only from
+            # V3-005's `covers` items, so a non-empty list already implies the
+            # user owns something in this category. Gating on the band as well
+            # would be a second check that can never be false here — and a
+            # branch no fixture can reach is a branch nobody can verify.
             actions.append(ACTION_STYLE_WITH_EXISTING)
         actions.append(ACTION_SKIP)
     return tuple(actions)

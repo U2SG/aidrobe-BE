@@ -629,6 +629,25 @@ def test_style_with_existing_is_offered_only_when_an_owned_look_exists() -> None
     assert ACTION_STYLE_WITH_EXISTING not in without_alternative.next_actions
 
 
+def test_a_worth_adding_decision_still_offers_the_owned_look_it_found() -> None:
+    """The other side of the gate, and the one the grid does not reach: every
+    alternatives-bearing fixture there also carries a colour clash, which routes
+    to `consider_alternate`. Without this case the `worth_adding` branch of
+    `_next_actions` would never execute in a test."""
+    outcome = decide(
+        _candidate(),
+        _closet(REDUNDANCY_LOW, covers=1),
+        _outfit(outfits=1, alternatives=1),
+    )
+
+    assert outcome.decision == PurchaseDecision.WORTH_ADDING.value
+    assert outcome.next_actions == (
+        ACTION_ADD_TO_CANDIDATES,
+        ACTION_STYLE_WITH_EXISTING,
+        ACTION_SKIP,
+    )
+
+
 def test_an_action_is_never_offered_without_an_outfit_behind_it() -> None:
     for _, closet, outfit in _grid():
         outcome = decide(_candidate(), closet, outfit)
