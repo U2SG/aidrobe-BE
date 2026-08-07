@@ -185,13 +185,42 @@ def test_evidence_separates_covers_from_complements() -> None:
     assert ITEM_C not in relations
 
 
-def test_evidence_caps_the_similar_item_list() -> None:
+def test_evidence_caps_the_displayed_list_but_not_the_count() -> None:
+    """The list is a display slice; the count is what the user owns.
+
+    Reporting `len(similar_items)` as `similar_item_count` would tell someone
+    with 8 gray coats that they own 5 — understating redundancy, which is the
+    buy-encouraging direction. §10.3 reads the field as a count of the wardrobe,
+    not as the length of a list the decision page happens to render.
+    """
     owned = [
         OwnedItemFacts(item_id=uuid.UUID(int=i), category=Category.OUTERWEAR.value, color_main="gray")
         for i in range(MAX_SIMILAR_ITEMS + 3)
     ]
     evidence = build_evidence(_candidate(), owned)
-    assert evidence.similar_item_count == MAX_SIMILAR_ITEMS
+
+    assert evidence.similar_item_count == MAX_SIMILAR_ITEMS + 3
+    assert len(evidence.similar_items) == MAX_SIMILAR_ITEMS
+    assert evidence.as_payload()["similar_item_count"] == MAX_SIMILAR_ITEMS + 3
+    # A complete scan is not a truncated one, whatever the display cap did.
+    assert evidence.same_category_scan_truncated is False
+
+
+def test_a_saturated_scan_marks_the_count_as_a_floor() -> None:
+    """`similar_item_count` is only a total when the scan window was not full.
+
+    The DB layer bounds its same-category window; if that window saturated, the
+    number here is "at least this many". Emitting it bare would restate the
+    truncation bug this flag exists to make visible.
+    """
+    evidence = build_evidence(
+        _candidate(),
+        [_owned(ITEM_A, color_main="gray")],
+        same_category_truncated=True,
+    )
+
+    assert evidence.same_category_scan_truncated is True
+    assert evidence.as_payload()["same_category_scan_truncated"] is True
 
 
 def test_coverage_prefers_wear_feedback_over_weaker_sources() -> None:
@@ -337,8 +366,15 @@ def test_payload_carries_no_numeric_score() -> None:
 
     allowed = set().union(*VOCABULARIES.values()) | set(SCENE_TAGS)
     count_keys = {"similar_item_count", "covered_by_item_count", "evidence_version"}
+    # Enumerated separately and checked before the int branch, because
+    # `isinstance(True, int)` is True in Python — a bool would otherwise be
+    # waved through as a "count".
+    flag_keys = {"same_category_scan_truncated"}
     for path, leaf in _leaves(payload):
         assert not isinstance(leaf, float), f"{path} is a float: {leaf!r}"
+        if isinstance(leaf, bool):
+            assert path.rsplit(".", 1)[-1] in flag_keys, f"{path} is an unexpected flag"
+            continue
         if isinstance(leaf, int):
             assert path.rsplit(".", 1)[-1] in count_keys, f"{path} is an unexpected number"
             continue

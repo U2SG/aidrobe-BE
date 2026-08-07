@@ -20,13 +20,14 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.purchase import compute_similarity_evidence as evidence_module
 from app.application.purchase.candidate_normalizer import ParsedItem
 from app.application.purchase.compute_similarity_evidence import compute_similarity_evidence
 from app.application.purchase.wardrobe_similarity import (
@@ -38,7 +39,7 @@ from app.application.purchase.wardrobe_similarity import (
     SCENE_SOURCE_CATEGORY_DEFAULT,
     SCENE_SOURCE_WEAR_FEEDBACK,
 )
-from app.common.enums import Category, FitFeedbackType, FitScene, ItemStatus
+from app.common.enums import Category, FitFeedbackType, FitScene, ItemStatus, WardrobeItemStatus
 from app.infrastructure.persistence.models.fit import FitFeedback
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -62,7 +63,12 @@ async def _add_item(
     material: str | None = None,
     style_tags: object = None,
     deleted: bool = False,
+    created_at: datetime | None = None,
 ) -> WardrobeItem:
+    # `created_at` is explicit wherever the scan's `ORDER BY created_at DESC`
+    # decides the outcome: the column is `server_default=func.now()` and
+    # Postgres' `now()` is transaction-scoped, so every row seeded by one test
+    # otherwise shares a single timestamp and the ordering is arbitrary.
     item = WardrobeItem(
         user_id=user_id,
         title=title,
@@ -72,6 +78,7 @@ async def _add_item(
         material=material,
         style_tags=style_tags,
         deleted_at=datetime.now(UTC) if deleted else None,
+        **({"created_at": created_at} if created_at is not None else {}),
     )
     session.add(item)
     await session.flush()
@@ -296,5 +303,105 @@ async def test_sql_count_does_not_grow_with_the_wardrobe(
 
     assert len(small) == len(large), f"query count grew: {len(small)} -> {len(large)}"
     assert len(large) <= 4, f"expected a bounded budget, emitted {len(large)}: {large}"
-    # 43 wearable coats, still only the capped handful of similar items.
-    assert evidence.similar_item_count == 5
+    # 43 owned coats: the displayed list stays capped, the count does not. The
+    # count is what tells the user they own 43 of these; `len(similar_items)`
+    # would tell them 5.
+    assert evidence.similar_item_count == 43
+    assert len(evidence.similar_items) == 5
+    assert evidence.same_category_scan_truncated is False
+
+
+# --- P1 regression: complements must not displace same-category items ----
+
+
+async def test_a_complement_heavy_wardrobe_cannot_hide_the_matching_coat(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The displacement bug, against a real database.
+
+    One `LIMIT` across the candidate's category *and* its complements meant the
+    most recent items could fill the whole window with trousers and shoes,
+    loading zero coats — and the evidence then read `redundancy_level="none"`,
+    a confident "you own nothing like this" for someone who owns a matching
+    coat. Wrong in the direction that encourages the purchase.
+
+    The window is shrunk rather than seeding 200+ rows: the bug is about the
+    window being *shared*, not about its size. Timestamps are explicit and
+    descending, with the coat oldest, so the pre-fix code would deterministically
+    drop it.
+    """
+    monkeypatch.setattr(evidence_module, "MAX_ITEMS_PER_CATEGORY_GROUP", 3)
+    user_id = await _seed_user(db_session)
+    base = datetime(2026, 8, 7, 12, 0, tzinfo=UTC)
+
+    for offset, category in enumerate(
+        [Category.BOTTOM.value, Category.SHOES.value, Category.TOP.value, Category.BOTTOM.value]
+    ):
+        await _add_item(
+            db_session,
+            user_id,
+            title=f"complement-{offset}",
+            category=category,
+            created_at=base - timedelta(minutes=offset),
+        )
+    coat = await _add_item(
+        db_session,
+        user_id,
+        title="the oldest coat",
+        color="gray",
+        created_at=base - timedelta(days=30),
+    )
+
+    evidence = await compute_similarity_evidence(db_session, user_id, _candidate())
+
+    assert evidence.redundancy_level == REDUNDANCY_HIGH
+    assert coat.id in [s.item_id for s in evidence.similar_items]
+    assert evidence.similar_item_count == 1
+    # The same-category window held one coat out of a window of three, so the
+    # count is a true total and must not be flagged as a floor.
+    assert evidence.same_category_scan_truncated is False
+
+
+async def test_a_saturated_same_category_window_declares_itself(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """More coats than the window holds: the count becomes an explicit floor,
+    rather than a total that silently understates the wardrobe."""
+    monkeypatch.setattr(evidence_module, "MAX_ITEMS_PER_CATEGORY_GROUP", 3)
+    user_id = await _seed_user(db_session)
+    base = datetime(2026, 8, 7, 12, 0, tzinfo=UTC)
+    for offset in range(5):
+        await _add_item(
+            db_session,
+            user_id,
+            title=f"coat-{offset}",
+            color="gray",
+            created_at=base - timedelta(minutes=offset),
+        )
+
+    evidence = await compute_similarity_evidence(db_session, user_id, _candidate())
+
+    assert evidence.similar_item_count == 3
+    assert evidence.same_category_scan_truncated is True
+
+
+async def test_an_item_in_the_laundry_basket_still_counts_as_owned(
+    db_session: AsyncSession,
+) -> None:
+    """`dirty` is a temporary state with a documented route back to `wearable`
+    (`docs/wardrobe-status-machine.md`), so it is still a coat the user owns.
+    Excluding it would understate redundancy; `donated` genuinely is gone."""
+    user_id = await _seed_user(db_session)
+    in_the_wash = await _add_item(
+        db_session, user_id, title="dirty", color="gray", status=WardrobeItemStatus.DIRTY.value
+    )
+    await _add_item(
+        db_session, user_id, title="given away", color="gray", status=WardrobeItemStatus.DONATED.value
+    )
+
+    evidence = await compute_similarity_evidence(db_session, user_id, _candidate())
+
+    assert [s.item_id for s in evidence.similar_items] == [in_the_wash.id]
+    assert evidence.redundancy_level == REDUNDANCY_HIGH

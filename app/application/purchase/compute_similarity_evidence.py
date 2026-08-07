@@ -6,11 +6,25 @@ Nothing here is exposed: V3-005 registers no router and changes no schema, so
 still gates every V3 surface. V3-006 composes outfits from this evidence and
 V3-007 turns it into a decision and freezes it into `evidence_snapshot`.
 
+**Same-category items are never displaceable by complements.** The scan is two
+*independently* bounded windows — one over the candidate's own category, one
+over its complements — combined with `UNION ALL` into a single statement. The
+first version of this module used one `LIMIT` across both groups, which meant a
+wardrobe whose most recent items were all complements could load zero
+same-category items and then report the *confident* `redundancy_level="none"`
+to someone who owns ten similar coats. That is a wrong answer in the
+buy-encouraging direction, so the bound is per group and `none` now means "the
+same-category window was queried and came back empty". Whether the
+same-category window saturated is reported to the caller, because a saturated
+window makes `similar_item_count` a floor rather than a total.
+
 **Query budget** (V3-005 requires query-count evidence). Constant in the size
 of the wardrobe — the count must not grow with the number of owned items, or a
 large closet would turn one decision into hundreds of round-trips:
 
-- 1 — wardrobe items in the candidate's category plus its complements.
+- 1 — the wardrobe scan. Two bounded windows, one statement: splitting the
+      windows costs no extra round-trip, which is why the per-group bound is
+      not a trade against this budget.
 - 1 — distinct `fit_feedback.scene` per item, batched with `IN` over the ids
       from the first query. This is the N+1 that a naive per-item scene lookup
       would introduce.
@@ -26,6 +40,9 @@ runs without a container. `tests/services/test_v3_similarity_evidence.py`
 re-checks the same invariant against a real Postgres, but as "constant in
 wardrobe size, and bounded" rather than as one exact number — the SQL a driver
 emits around a statement is not this module's contract.
+
+The row bound the scan hands to the scene batch is therefore
+`2 * MAX_ITEMS_PER_CATEGORY_GROUP`, not `MAX_ITEMS_PER_CATEGORY_GROUP`.
 
 **Ranking cascade**, mirroring `outfits/replacements.py` and
 `shopping/sense_check.py` rather than inventing a third convention:
@@ -45,8 +62,9 @@ import os
 import uuid
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import Select, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.application.purchase.candidate_normalizer import ParsedItem
 from app.application.purchase.wardrobe_similarity import (
@@ -58,17 +76,37 @@ from app.application.purchase.wardrobe_similarity import (
     rank_by_attributes,
     unknown_evidence,
 )
-from app.common.enums import ItemStatus
+from app.common.enums import ItemStatus, WardrobeItemStatus
 from app.infrastructure.persistence.models.embedding import ItemEmbedding
 from app.infrastructure.persistence.models.fit import FitFeedback
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 logger = structlog.get_logger(__name__)
 
-# Upper bound on rows pulled into memory for ranking. A wardrobe larger than
-# this still works — it just compares against the most recent slice, which is
-# also the slice the user is most likely to think of as "what I own".
-MAX_ITEMS_CONSIDERED = 200
+# Upper bound on rows pulled into memory for ranking, applied **per category
+# group** (see the module docstring). A wardrobe larger than this still works —
+# it just compares against the most recent slice of each group, which is also
+# the slice the user is most likely to think of as "what I own".
+MAX_ITEMS_PER_CATEGORY_GROUP = 200
+
+# Statuses that mean "the user still owns this". Deliberately wider than the
+# `status == wearable` filter that `outfits/replacements.py` and
+# `shopping/sense_check.py` use, and the difference is the question being asked:
+# those pick something to *wear today*, and a dirty coat cannot be worn today.
+# V3-005 asks whether the user *already owns* something like the candidate, and
+# a coat in the laundry basket is still a coat they own — `dirty` is an
+# explicitly temporary state with a documented transition back to `wearable`
+# (`docs/wardrobe-status-machine.md`). Counting it as absent would understate
+# redundancy in the buy-encouraging direction.
+#
+# `lost` and `donated` stay out: those are no longer owned. `unavailable` also
+# stays out — the status machine gives it no documented meaning beyond "not
+# currently wearable", so reading it as owned would be a guess, and V3-005 is
+# not the place to assign it one.
+OWNED_STATUSES: tuple[str, ...] = (
+    ItemStatus.WEARABLE.value,
+    WardrobeItemStatus.DIRTY.value,
+)
 
 
 def _pgvector_enabled() -> bool:
@@ -93,11 +131,19 @@ async def compute_similarity_evidence(
         return unknown_evidence()
 
     category = (parsed.category or "").strip().lower()
-    categories = (category, *COMPLEMENTARY_CATEGORIES.get(category, ()))
+    complements = COMPLEMENTARY_CATEGORIES.get(category, ())
 
-    items = await _load_items(session, user_id, categories)
+    items = await _load_items(session, user_id, category, complements)
     if not items:
+        # An empty scan is never a truncated one, so the default flag is right.
         return build_evidence(parsed, [])
+
+    # A saturated same-category window means the count is a floor, not a total.
+    # Derived from the rows already in hand, so it costs no extra query — which
+    # is why the per-group bound is not a trade against the query budget.
+    same_category_truncated = (
+        sum(1 for item in items if item.category == category) >= MAX_ITEMS_PER_CATEGORY_GROUP
+    )
 
     scenes = await _wear_scenes(session, [item.id for item in items])
     facts = [
@@ -113,31 +159,61 @@ async def compute_similarity_evidence(
     ]
 
     ranked = await _rank(session, user_id, category, facts, parsed)
-    return build_evidence(parsed, ranked)
+    return build_evidence(parsed, ranked, same_category_truncated=same_category_truncated)
+
+
+def build_wardrobe_scan_statement(
+    user_id: uuid.UUID,
+    category: str,
+    complements: tuple[str, ...],
+) -> Select[tuple[WardrobeItem]]:
+    """Query 1 — two independently bounded windows in one statement.
+
+    Public so `tests/unit/test_v3_similarity_scan_window.py` can assert the
+    per-group bound by compiling the statement, which needs no container. The
+    invariant it pins: the same-category window has its own `LIMIT`, so no
+    number of complements can push same-category items out of the scan.
+
+    Only items the user still owns and has not soft-deleted are compared —
+    claiming redundancy against something they gave away is a claim they cannot
+    act on. See `OWNED_STATUSES` for why that is wider than `wearable`.
+
+    The outer `ORDER BY` is not decoration: Postgres does not carry a leg's
+    ordering through `UNION ALL`, and `order_by_ids` appends its unranked tail
+    in scan order, so without it the pgvector path would return a different
+    order run to run and acceptance 1's determinism would be lost.
+    """
+
+    def _window(categories: tuple[str, ...]) -> Select[tuple[WardrobeItem]]:
+        return (
+            select(WardrobeItem)
+            .where(
+                WardrobeItem.user_id == user_id,
+                WardrobeItem.category.in_(categories),
+                WardrobeItem.status.in_(OWNED_STATUSES),
+                WardrobeItem.deleted_at.is_(None),
+            )
+            .order_by(WardrobeItem.created_at.desc(), WardrobeItem.id)
+            .limit(MAX_ITEMS_PER_CATEGORY_GROUP)
+        )
+
+    same_category = _window((category,))
+    if not complements:
+        # Nothing to displace it with, so the single window *is* the per-group
+        # window. Avoids a pointless `UNION ALL` against an empty `IN ()`.
+        return same_category
+    scan = union_all(same_category, _window(complements)).subquery()
+    owned = aliased(WardrobeItem, scan)
+    return select(owned).order_by(owned.created_at.desc(), owned.id)
 
 
 async def _load_items(
     session: AsyncSession,
     user_id: uuid.UUID,
-    categories: tuple[str, ...],
+    category: str,
+    complements: tuple[str, ...],
 ) -> list[WardrobeItem]:
-    """Query 1 — the candidate's category and its complements, in one pass.
-
-    Wearable and not soft-deleted only: comparing a purchase against something
-    the user has thrown out or lost would produce a redundancy claim they
-    cannot act on.
-    """
-    rows = await session.scalars(
-        select(WardrobeItem)
-        .where(
-            WardrobeItem.user_id == user_id,
-            WardrobeItem.category.in_(categories),
-            WardrobeItem.status == ItemStatus.WEARABLE.value,
-            WardrobeItem.deleted_at.is_(None),
-        )
-        .order_by(WardrobeItem.created_at.desc())
-        .limit(MAX_ITEMS_CONSIDERED)
-    )
+    rows = await session.scalars(build_wardrobe_scan_statement(user_id, category, complements))
     return list(rows)
 
 
@@ -209,9 +285,15 @@ async def _rank_by_embedding(
     same_category = [f for f in facts if f.category == category]
     if not same_category:
         return []
+    # The `ORDER BY` makes the anchor arbitrary but *stable*. Without it the
+    # entire vector ranking hangs on whichever row Postgres happened to return,
+    # so the same wardrobe could rank two ways — and V3-007 freezes this output
+    # into an immutable snapshot, where a run-to-run difference is permanent.
+    # Ordering on the id matches `rank_by_attributes`' tie-break convention.
     anchor_vector = await session.scalar(
         select(ItemEmbedding.vector)
         .where(ItemEmbedding.item_id.in_([f.item_id for f in same_category]))
+        .order_by(ItemEmbedding.item_id)
         .limit(1)
     )
     if anchor_vector is None:
@@ -223,7 +305,7 @@ async def _rank_by_embedding(
             .where(
                 WardrobeItem.user_id == user_id,
                 WardrobeItem.category == category,
-                WardrobeItem.status == ItemStatus.WEARABLE.value,
+                WardrobeItem.status.in_(OWNED_STATUSES),
                 WardrobeItem.deleted_at.is_(None),
             )
             .order_by(ItemEmbedding.vector.op("<->")(anchor_vector))

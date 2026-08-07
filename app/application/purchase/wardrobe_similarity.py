@@ -60,8 +60,13 @@ from app.common.enums import Category, FitScene
 EVIDENCE_VERSION = 1
 
 # --- Frozen literals (docs/v3-p0-contract.md §5.3) -----------------------
-# `relation` is frozen by the contract; V3-007/V3-008 pass these through
-# untouched. Kept as module constants rather than a `app/common/enums.py`
+# `relation` is frozen by the contract, so these two literals reach the API
+# unchanged. The *payload* around them is not §5.3 and V3-008 has to map it:
+# this is internal evidence, so it adds `match_reasons`, `similar_item_count`,
+# `same_category_scan_truncated`, `covered_by_item_count`, `evidence_version`
+# and `scenarios_without_evidence`, and it omits §5.3's `image_url` on purpose
+# (a 30-minute signed URL must be materialized at read time, never frozen into
+# a snapshot). Kept as module constants rather than a `app/common/enums.py`
 # member because nothing here is persisted as a column — there is no CHECK
 # constraint for them to stay in sync with.
 RELATION_COVERS = "covers"
@@ -196,12 +201,18 @@ class ClosetEvidence:
     similar_items: tuple[SimilarItemEvidence, ...] = ()
     coverage_scenarios: tuple[SceneCoverage, ...] = ()
     scenarios_without_evidence: tuple[str, ...] = ()
+    # §10.3 `similar_item_count` — how many owned items would do the same job.
+    # A stored field rather than `len(similar_items)` because that list is
+    # capped at `MAX_SIMILAR_ITEMS` for display: 43 gray coats must report 43,
+    # not 5. Reading a total off a display list understates redundancy, which is
+    # the buy-encouraging direction.
+    similar_item_count: int = 0
+    # True when the same-category scan window saturated, i.e. the user owns at
+    # least `MAX_ITEMS_PER_CATEGORY_GROUP` items in this category and the count
+    # above is a floor rather than a total. V3-007 needs this to avoid writing a
+    # confident total into an immutable snapshot.
+    same_category_scan_truncated: bool = False
     evidence_version: int = EVIDENCE_VERSION
-
-    @property
-    def similar_item_count(self) -> int:
-        """§10.3 `similar_item_count` — items that would do the same job."""
-        return sum(1 for s in self.similar_items if s.relation == RELATION_COVERS)
 
     @property
     def compatible_item_ids(self) -> list[uuid.UUID]:
@@ -213,6 +224,7 @@ class ClosetEvidence:
             "evidence_version": self.evidence_version,
             "redundancy_level": self.redundancy_level,
             "similar_item_count": self.similar_item_count,
+            "same_category_scan_truncated": self.same_category_scan_truncated,
             "similar_items": [s.as_payload() for s in self.similar_items],
             "compatible_item_ids": [str(i) for i in self.compatible_item_ids],
             "coverage_scenarios": [c.as_payload() for c in self.coverage_scenarios],
@@ -339,13 +351,23 @@ def unknown_evidence() -> ClosetEvidence:
     return ClosetEvidence(redundancy_level=REDUNDANCY_UNKNOWN)
 
 
-def build_evidence(parsed: ParsedItem | None, ranked: list[OwnedItemFacts]) -> ClosetEvidence:
+def build_evidence(
+    parsed: ParsedItem | None,
+    ranked: list[OwnedItemFacts],
+    *,
+    same_category_truncated: bool = False,
+) -> ClosetEvidence:
     """Assemble the evidence from an already-ordered list of owned items.
 
     `ranked` order is authoritative and is preserved into the payload — that is
     how the pgvector tier gets to matter without this module knowing embeddings
     exist. The DB layer ranks (vector when available, `rank_by_attributes`
     otherwise) and hands the result here.
+
+    `same_category_truncated` says the DB layer's same-category scan window
+    saturated, so `similar_item_count` is a floor. Only the DB layer can know
+    it, and it defaults to False because a caller that passes a complete list
+    has nothing to declare.
 
     Never raises on partial input: a `ParsedItem` with no category is the
     expected outcome of a degraded V3-004 parse, and it must degrade to
@@ -393,6 +415,9 @@ def build_evidence(parsed: ParsedItem | None, ranked: list[OwnedItemFacts]) -> C
         similar_items=tuple(similar),
         coverage_scenarios=tuple(covered),
         scenarios_without_evidence=tuple(uncovered),
+        # `covers` before the display cap — see the field's comment.
+        similar_item_count=len(covers),
+        same_category_scan_truncated=same_category_truncated,
     )
 
 
