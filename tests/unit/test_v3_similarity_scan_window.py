@@ -20,6 +20,12 @@ The behavioral proof — seed an oversized complement-skewed wardrobe in Postgre
 and assert the matching coat is still found — needs a real database and lives in
 `tests/services/test_v3_similarity_evidence.py`, which CI runs.
 
+A note for whoever sees this file go red on a dependency bump: the structural
+assertions below read *compiled SQL text*, so they are deliberately coupled to
+how SQLAlchemy renders aliases, `LIMIT` and bound-parameter order. A break there
+means the rendering changed, not that the per-group bound regressed — re-read the
+compiled statement before touching `build_wardrobe_scan_statement`.
+
 Runs under `pytest --noconftest`.
 """
 
@@ -161,6 +167,31 @@ async def test_an_unsaturated_window_reports_a_true_total(
 
     assert evidence.same_category_scan_truncated is False
     assert evidence.similar_item_count == 4
+
+
+@pytest.mark.parametrize(
+    ("limit", "owned", "truncated"),
+    [(4, 3, False), (3, 3, True)],
+)
+async def test_the_saturation_boundary_is_exact(
+    monkeypatch: pytest.MonkeyPatch,
+    limit: int,
+    owned: int,
+    truncated: bool,
+) -> None:
+    """One item below the window is a complete count; filling it is a floor.
+
+    The pair is the whole point: an off-by-one here would caveat every wardrobe
+    that happens to sit exactly at the boundary, turning a complete count into a
+    floor — or, in the other direction, report a truncated scan as a total.
+    """
+    monkeypatch.setattr(scan, "MAX_ITEMS_PER_CATEGORY_GROUP", limit)
+    session = RecordingSession([_item() for _ in range(owned)])
+
+    evidence = await compute_similarity_evidence(session, uuid.uuid4(), _candidate())
+
+    assert evidence.same_category_scan_truncated is truncated
+    assert evidence.similar_item_count == owned
 
 
 async def test_complements_filling_the_scan_do_not_mark_the_count_a_floor(
