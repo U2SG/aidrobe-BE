@@ -14,11 +14,18 @@ large closet would turn one decision into hundreds of round-trips:
 - 1 — distinct `fit_feedback.scene` per item, batched with `IN` over the ids
       from the first query. This is the N+1 that a naive per-item scene lookup
       would introduce.
-- +2 — only when pgvector is on: the embedding anchor, then the vector rank.
+- at most +2 — only when pgvector is on: the embedding anchor probe, then the
+      vector rank. The rank query is skipped when the probe finds no anchor,
+      which is the CI case.
 
-So 2 queries in the deterministic path and 4 in the vector path, whether the
-user owns three items or three hundred. `test_v3_similarity_evidence` asserts
-those exact numbers against a counting event listener.
+So 2 queries in the deterministic path, 3 when the vector tier is selected but
+finds nothing to anchor on, and 4 when it ranks — whether the user owns three
+items or three hundred. Those exact per-call counts are pinned in
+`tests/unit/test_v3_similarity_query_count.py` against a session double, which
+runs without a container. `tests/services/test_v3_similarity_evidence.py`
+re-checks the same invariant against a real Postgres, but as "constant in
+wardrobe size, and bounded" rather than as one exact number — the SQL a driver
+emits around a statement is not this module's contract.
 
 **Ranking cascade**, mirroring `outfits/replacements.py` and
 `shopping/sense_check.py` rather than inventing a third convention:
