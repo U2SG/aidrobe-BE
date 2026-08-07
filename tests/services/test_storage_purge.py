@@ -21,9 +21,15 @@ from app.application.users.storage_purge import (
     collect_user_object_keys,
     enqueue_storage_purge,
 )
-from app.common.enums import Category, ItemStatus
+from app.common.enums import (
+    Category,
+    ItemStatus,
+    PurchaseCandidateSource,
+    PurchaseCandidateStatus,
+)
 from app.config.settings import Settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
+from app.infrastructure.persistence.models.purchase_decision import PurchaseCandidate
 from app.infrastructure.persistence.models.style import UserStyleProfile
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
@@ -133,6 +139,25 @@ async def _seed_user_with_images(
                 result={"object_key": f"users/{user_id}/export/e1.json"},
             )
         )
+        # V3-004 — an uploaded purchase-candidate screenshot. Stored as a bare
+        # object key with no URL column, so it must be collected directly.
+        s.add(
+            PurchaseCandidate(
+                user_id=user_id,
+                source_type=PurchaseCandidateSource.SCREENSHOT.value,
+                source_object_key=f"users/{user_id}/purchase/p1/shot.jpg",
+                status=PurchaseCandidateStatus.PARSED.value,
+            )
+        )
+        # A link candidate owns no object at all — must contribute no key.
+        s.add(
+            PurchaseCandidate(
+                user_id=user_id,
+                source_type=PurchaseCandidateSource.SHARE_LINK.value,
+                source_url="https://shop.example.com/coat",
+                status=PurchaseCandidateStatus.PARSED.value,
+            )
+        )
         await s.commit()
     return user_id, item_id
 
@@ -150,6 +175,11 @@ async def test_collect_keys_resolves_internal_and_skips_external(
     # Export bundle keys come from the job result — clear-data has no prefix
     # sweep, so this is its only path to deleting the pre-clear bundle.
     assert f"users/{user_id}/export/e1.json" in keys
+    # V3-004 — an uploaded purchase-candidate screenshot. Row deletion cascades
+    # via the FK, but without this the blob would be orphaned in object storage.
+    assert f"users/{user_id}/purchase/p1/shot.jpg" in keys
+    # A link-sourced candidate owns no internal object.
+    assert not any("shop.example.com" in k for k in keys)
     # External CDN URL yields no key — we must never delete third-party objects.
     assert not any("example-cdn" in k or "logo.png" in k for k in keys)
     assert len(keys) == len(set(keys))

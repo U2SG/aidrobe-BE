@@ -10,6 +10,7 @@ from app.infrastructure.importers.adapters.xhs import XhsAdapter
 from app.infrastructure.importers.link_parser import (
     BROWSER_HEADERS,
     HtmlLinkParser,
+    ProductPage,
     _is_safe_url,
 )
 
@@ -61,6 +62,18 @@ async def _expand_short_links(source_url: str, client: httpx.AsyncClient) -> str
 
 
 async def route_extract_image_url(source_url: str, settings: Settings) -> str | None:
+    return (await route_extract_product_page(source_url, settings)).image_url
+
+
+async def route_extract_product_page(source_url: str, settings: Settings) -> ProductPage:
+    """V3-004 — same routing as `route_extract_image_url`, but also returns the
+    page text on the generic-HTML branch.
+
+    Per-domain adapters (Taobao / XHS / Douyin) resolve an image out of
+    JS-driven pages and expose no page text, so their branch returns
+    image-only. Nothing here sanitizes `ProductPage.text` — that is the ingest
+    path's boundary.
+    """
     try:
         async with httpx.AsyncClient(
             timeout=settings.LINK_PARSE_TIMEOUT_SECONDS,
@@ -69,15 +82,15 @@ async def route_extract_image_url(source_url: str, settings: Settings) -> str | 
         ) as client:
             expanded_url = await _expand_short_links(source_url, client)
             if expanded_url is None:
-                return None
+                return ProductPage()
 
             adapter = _adapter_for_url(expanded_url)
             if adapter is not None:
-                return await adapter.extract_image_url(expanded_url, client)
+                return ProductPage(image_url=await adapter.extract_image_url(expanded_url, client))
 
-        return await HtmlLinkParser(settings).extract_image_url(expanded_url)
+        return await HtmlLinkParser(settings).extract_product_page(expanded_url)
     except (httpx.RequestError, httpx.HTTPStatusError):
-        return None
+        return ProductPage()
 
 
 class RoutedLinkParser:
@@ -86,3 +99,6 @@ class RoutedLinkParser:
 
     async def extract_image_url(self, source_url: str) -> str | None:
         return await route_extract_image_url(source_url, self.settings)
+
+    async def extract_product_page(self, source_url: str) -> ProductPage:
+        return await route_extract_product_page(source_url, self.settings)

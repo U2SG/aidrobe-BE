@@ -21,6 +21,7 @@ from app.config.settings import Settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.image_job import ImageProcessingJob
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
+from app.infrastructure.persistence.models.purchase_decision import PurchaseCandidate
 from app.infrastructure.persistence.models.recommendation import WearHistory
 from app.infrastructure.persistence.models.shopping import ShoppingSenseCheck
 from app.infrastructure.persistence.models.style import UserStyleProfile
@@ -108,6 +109,22 @@ async def collect_user_object_keys(
             keys.append(obj_key)
         elif (k := _url_key(img_url, settings)):
             keys.append(k)
+
+    # PurchaseCandidate (V3-004) — a screenshot / order image is stored as its
+    # stable object key with no URL column, so the key is taken directly. Row
+    # deletion cascades via the FK to users.id, but the blob behind the key
+    # would be orphaned in object storage without this.
+    pc_rows = (
+        await session.execute(
+            select(PurchaseCandidate.source_object_key).where(
+                PurchaseCandidate.user_id == user_id,
+                PurchaseCandidate.source_object_key.is_not(None),
+            )
+        )
+    ).all()
+    for (obj_key,) in pc_rows:
+        if obj_key:
+            keys.append(obj_key)
 
     # WearHistory
     wh_rows = (

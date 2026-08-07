@@ -183,15 +183,32 @@ there is never a gap where a ready avatar silently disappears.
 {
   "source_type": "share_link|screenshot|order_image|ask_link",
   "source_url": "https://…",     // for share_link / ask_link
-  "source_asset_id": "uuid"      // for screenshot / order_image (presign upload)
+  "source_asset_id": "object_key" // for screenshot / order_image (presign upload)
 }
 ```
+
+**`source_asset_id` is the presign `object_key` string, not a uuid** (amended in
+V3-004; this document previously typed it `uuid`). This service has no generic
+asset table — `POST /v1/uploads/presign` returns a stable `object_key` plus a
+TTL-bound `file_url`, so the object key *is* the asset reference and is the
+column `purchase_candidates.source_object_key` persists (V3-003). The key must
+sit under the caller's own `users/<user_id>/` prefix; anything else answers 404,
+not 403, so the response cannot probe which keys exist (§3). Nothing signed is
+ever persisted.
 
 Response / `GET` shape: `{"id", "status", "parsed_item"}` with
 `status: "submitted|parsed|parse_failed"` (frozen enum). Parsing may complete
 synchronously or async; FE polls `GET` until terminal. `parse_failed` still
 allows a decision request — the decision then returns `insufficient_information`
 with a clarifying reason instead of a hard error (graceful degradation).
+
+As implemented in V3-004 parsing is **synchronous**, so `POST` already returns a
+terminal `parsed` or `parse_failed` and `submitted` is not observable through
+this endpoint; the value stays in the frozen enum for a later async parse. FE
+(V3-008) must therefore treat polling as optional-and-usually-unnecessary rather
+than build a loop that expects a non-terminal state — but it must still handle
+`submitted`, and any unknown status, without spinning forever (§3 version-skew
+rule).
 
 `parsed_item` (frozen minimal shape, all fields nullable):
 
