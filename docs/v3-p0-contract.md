@@ -274,6 +274,27 @@ Frozen rules:
   avatar or visual preview. `visual_need` only *suggests* whether a preview
   entry is worth showing.
 
+As implemented in V3-007 (clarifications, no shape change):
+
+- The endpoint answers **HTTP 200**, never 201, because the second call returns
+  the first decision — a created-status would be wrong half the time (§3 allows
+  200/202). The request body is **optional**: an omitted body means
+  `concern: "none"`, and an unrecognized `concern` is a 422.
+- Idempotency is enforced by the unique index on `wardrobe_decisions.candidate_id`,
+  so a repeated POST replays the stored snapshot and **ignores a new `concern`**.
+  P0 never re-decides a candidate.
+- `reasons[].kind` may be any of the five frozen values, but P0 emits four:
+  **`adoption_history` is not produced yet** (no loaded projection carries wear
+  counts). FE must tolerate it without building a surface that depends on it.
+- `closet_comparison.similar_items[].image_url` is signed at read time and is
+  **nullable** — an item with no image, or a storage outage, renders `null`
+  rather than failing the decision. It is never persisted in the snapshot.
+- `decision_text`, `reasons[].text`, `closet_comparison.summary_text` and
+  `boundary_note` are server-rendered from templates in the user's resolved
+  locale (`zh-CN` / `en-US`) and **frozen into the snapshot** at decision time,
+  so a replayed decision keeps the wording — and the language — it was written
+  with. There is no i18n key in this shape; the client renders the strings.
+
 ## 6. Static try-on preview contract
 
 ### 6.1 Endpoints
