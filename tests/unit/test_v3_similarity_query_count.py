@@ -33,7 +33,7 @@ EXPECTED_QUERIES_VECTOR_ATTEMPTED = 3  # + the embedding anchor lookup
 
 
 class _Result:
-    """The slice of `Result` that `_wear_scenes` uses."""
+    """The slice of `Result` that `load_wear_scenes` uses."""
 
     def __init__(self, rows: list[tuple[Any, ...]]) -> None:
         self._rows = rows
