@@ -5253,6 +5253,105 @@
         }
       }
     },
+    "/v1/purchase-candidates/{candidate_id}/decision": {
+      "post": {
+        "tags": [
+          "purchase-candidates"
+        ],
+        "summary": "Decide Purchase Candidate",
+        "description": "Produce — or return the existing — structured decision (contract §5.3).\n\nIdempotent per candidate: repeated calls replay the first decision instead\nof re-evaluating, so the explanation a user saw cannot change under them.\nA `parse_failed` candidate is decidable too; it reaches\n`insufficient_information` rather than an error (contract §5.2).",
+        "operationId": "decide_purchase_candidate_v1_purchase_candidates__candidate_id__decision_post",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Candidate Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DecisionRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WardrobeDecisionResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such candidate for this user (a foreign candidate answers 404, not 403)."
+          },
+          "503": {
+            "description": "`ENABLE_V3_PURCHASE_DECISION` is off."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/jobs": {
       "get": {
         "tags": [
@@ -7338,6 +7437,27 @@
         ],
         "title": "ClearDataResponse"
       },
+      "ClosetComparisonModel": {
+        "properties": {
+          "summary_text": {
+            "type": "string",
+            "title": "Summary Text"
+          },
+          "similar_items": {
+            "items": {
+              "$ref": "#/components/schemas/ComparisonItemModel"
+            },
+            "type": "array",
+            "title": "Similar Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "summary_text"
+        ],
+        "title": "ClosetComparisonModel",
+        "description": "V3_SPEC §5.4 layer 3 — what the wardrobe already covers."
+      },
       "ColorPaletteResponse": {
         "properties": {
           "palette": {
@@ -7353,6 +7473,41 @@
           "palette"
         ],
         "title": "ColorPaletteResponse"
+      },
+      "ComparisonItemModel": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "relation": {
+            "type": "string",
+            "enum": [
+              "covers",
+              "complements"
+            ],
+            "title": "Relation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "relation"
+        ],
+        "title": "ComparisonItemModel",
+        "description": "One row of `closet_comparison.similar_items`.\n\n`image_url` is a short-lived signed URL materialized at read time and never\npersisted (V3_SPEC §13.5); it is `null` when the item has no image or when\nsigning is unavailable, which is a display detail rather than an error."
       },
       "ConfirmImportRequest": {
         "properties": {
@@ -8061,6 +8216,52 @@
           "direction"
         ],
         "title": "DecisionFactorResponse"
+      },
+      "DecisionReasonModel": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "redundancy",
+              "compatibility",
+              "scene_coverage",
+              "extra_purchase_needed",
+              "adoption_history"
+            ],
+            "title": "Kind"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "text"
+        ],
+        "title": "DecisionReasonModel",
+        "description": "One of the 2–3 reasons, ordered by importance.\n\n`text` is server-rendered display copy: contract §5.3 forbids the client to\nsynthesize it, and it is frozen into the decision snapshot so a historical\nexplanation never changes wording. `adoption_history` is part of the frozen\nvocabulary but is not emitted in P0 (no loaded projection carries wear\ncounts) — a client must still tolerate it."
+      },
+      "DecisionRequest": {
+        "properties": {
+          "concern": {
+            "type": "string",
+            "enum": [
+              "volume",
+              "color",
+              "redundancy",
+              "scene",
+              "none"
+            ],
+            "title": "Concern",
+            "description": "What the user is unsure about. Only grades how prominently a visual preview is offered (`volume`/`color` are the two a static preview can answer); it never changes the decision itself.",
+            "default": "none"
+          }
+        },
+        "type": "object",
+        "title": "DecisionRequest",
+        "description": "Contract §5.3 request body. Optional — an omitted body means `none`."
       },
       "DeleteWardrobeItemResponse": {
         "properties": {
@@ -12800,6 +13001,108 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WardrobeDecisionResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "candidate_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Id"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "worth_adding",
+              "consider_alternate",
+              "wait",
+              "avoid_duplicate",
+              "insufficient_information"
+            ],
+            "title": "Decision"
+          },
+          "decision_text": {
+            "type": "string",
+            "title": "Decision Text"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionReasonModel"
+            },
+            "type": "array",
+            "title": "Reasons"
+          },
+          "closet_comparison": {
+            "$ref": "#/components/schemas/ClosetComparisonModel"
+          },
+          "uncertainty": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Uncertainty"
+          },
+          "visual_need": {
+            "type": "string",
+            "enum": [
+              "none",
+              "helpful",
+              "recommended"
+            ],
+            "title": "Visual Need"
+          },
+          "boundary_note": {
+            "type": "string",
+            "title": "Boundary Note",
+            "description": "Fixed copy: this is about the overall look, not a size or fit guarantee."
+          },
+          "next_actions": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "add_to_candidates",
+                "skip",
+                "recheck_color",
+                "style_with_existing"
+              ]
+            },
+            "type": "array",
+            "title": "Next Actions"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "decision",
+          "decision_text",
+          "reasons",
+          "closet_comparison",
+          "uncertainty",
+          "visual_need",
+          "boundary_note",
+          "next_actions",
+          "created_at"
+        ],
+        "title": "WardrobeDecisionResponse",
+        "description": "The frozen §5.3 `wardrobe_decision` shape.\n\nNothing here depends on an avatar or a visual preview: `visual_need` only\nsuggests whether a preview entry is worth showing, so the no-avatar\nexperience is complete (V3_SPEC §5.5)."
       },
       "WardrobeGapDetailResponse": {
         "properties": {

@@ -4,10 +4,11 @@ V3-003 shipped the flag with no router, so this file could only assert that no
 route existed — which would have passed with the flag on too. V3-004 adds the
 first two routes, so the gate is now testable for real, and the check is written
 generically: **every** registered route under the V3 purchase-decision prefixes
-must answer 503 while the flag is off. V3-007 / V3-008 add more routes to these
-prefixes and inherit the assertion without touching this file.
+must answer 503 while the flag is off. V3-007's decision route inherited that
+assertion without changing it; V3-008 adds the last one the same way.
 
-Endpoint-specific behaviour lives in tests/api/test_v3_purchase_candidates.py.
+Endpoint-specific behaviour lives in tests/api/test_v3_purchase_candidates.py
+and tests/api/test_v3_purchase_decision_endpoint.py.
 """
 
 from __future__ import annotations
@@ -28,12 +29,9 @@ from app.presentation.middlewares.exception_handler import setup_exception_handl
 
 V3_DECISION_PREFIXES = ("/v1/purchase-candidates", "/v1/wardrobe-decisions")
 
-# Surfaces the contract freezes but V3-004 does not own. Listed so that adding
-# one without its own feature is visible here rather than silent.
-NOT_YET_IMPLEMENTED = (
-    "/v1/purchase-candidates/{candidate_id}/decision",  # V3-007
-    "/v1/wardrobe-decisions/{decision_id}",  # V3-008
-)
+# Surfaces the contract freezes but no shipped feature owns yet. Listed so that
+# adding one without its own feature is visible here rather than silent.
+NOT_YET_IMPLEMENTED = ("/v1/wardrobe-decisions/{decision_id}",)  # V3-008
 
 
 def _v3_routes() -> list[APIRoute]:
@@ -54,6 +52,9 @@ def test_v3_candidate_routes_are_registered() -> None:
 
     assert "/v1/purchase-candidates" in paths
     assert "/v1/purchase-candidates/{candidate_id}" in paths
+    # V3-007 — the evaluation itself. Acceptance 4 ("flag off cleanly hides the
+    # evaluation") is the generic 503 test below applied to this path.
+    assert "/v1/purchase-candidates/{candidate_id}/decision" in paths
 
 
 def test_later_features_have_not_been_pulled_forward() -> None:
