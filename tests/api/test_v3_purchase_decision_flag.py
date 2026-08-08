@@ -31,7 +31,9 @@ V3_DECISION_PREFIXES = ("/v1/purchase-candidates", "/v1/wardrobe-decisions")
 
 # Surfaces the contract freezes but no shipped feature owns yet. Listed so that
 # adding one without its own feature is visible here rather than silent.
-NOT_YET_IMPLEMENTED = ("/v1/wardrobe-decisions/{decision_id}",)  # V3-008
+# V3-008 shipped the last §5.1 surface, so the list is empty until a later
+# contract section (e.g. §6 static try-on) freezes new decision-prefix routes.
+NOT_YET_IMPLEMENTED: tuple[str, ...] = ()
 
 
 def _v3_routes() -> list[APIRoute]:
@@ -55,6 +57,8 @@ def test_v3_candidate_routes_are_registered() -> None:
     # V3-007 — the evaluation itself. Acceptance 4 ("flag off cleanly hides the
     # evaluation") is the generic 503 test below applied to this path.
     assert "/v1/purchase-candidates/{candidate_id}/decision" in paths
+    # V3-008 — the snapshot replay surface, the last of the four §5.1 routes.
+    assert "/v1/wardrobe-decisions/{decision_id}" in paths
 
 
 def test_later_features_have_not_been_pulled_forward() -> None:
@@ -81,6 +85,7 @@ async def test_every_v3_decision_route_is_503_when_the_flag_is_off(
     session = db_session
     app.dependency_overrides[get_db_session] = _db
     app.include_router(purchase_candidates.router)
+    app.include_router(purchase_candidates.wardrobe_decisions_router)
 
     checked = 0
     transport = ASGITransport(app=app)
@@ -89,7 +94,9 @@ async def test_every_v3_decision_route_is_503_when_the_flag_is_off(
             if method not in route.methods:
                 continue
             # Substitute a concrete id for any path parameter.
-            path = route.path.replace("{candidate_id}", str(uuid.uuid4()))
+            path = route.path.replace("{candidate_id}", str(uuid.uuid4())).replace(
+                "{decision_id}", str(uuid.uuid4())
+            )
             resp = await client.request(
                 method,
                 path,
