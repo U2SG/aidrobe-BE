@@ -5352,6 +5352,88 @@
         }
       }
     },
+    "/v1/wardrobe-decisions/{decision_id}": {
+      "get": {
+        "tags": [
+          "wardrobe-decisions"
+        ],
+        "summary": "Get Wardrobe Decision",
+        "description": "Replay a decision from its immutable snapshots (contract §5.3).\n\nNothing is recomputed: the copy, the reasons and the compared item ids come\nout of the frozen snapshot, so later wardrobe changes never rewrite an old\nexplanation. Only `image_url` is materialized here — same rule as the POST.",
+        "operationId": "get_wardrobe_decision_v1_wardrobe_decisions__decision_id__get",
+        "parameters": [
+          {
+            "name": "decision_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Decision Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WardrobeDecisionResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such decision for this user (a foreign decision answers 404, not 403)."
+          },
+          "503": {
+            "description": "`ENABLE_V3_PURCHASE_DECISION` is off."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/jobs": {
       "get": {
         "tags": [

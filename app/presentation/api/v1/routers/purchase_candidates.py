@@ -1,8 +1,11 @@
-"""V3-004 / V3-007 — purchase candidate and decision router (contract §5.1–§5.3).
+"""V3-004 / V3-007 / V3-008 — purchase candidate and decision routers (contract §5.1–§5.3).
 
-Three surfaces: create a candidate from a link / screenshot / order image, poll
-it, and produce (or replay) its structured decision. The decision *replay*
-surface (`GET /v1/wardrobe-decisions/{id}`) belongs to V3-008.
+The four frozen §5.1 surfaces: create a candidate from a link / screenshot /
+order image, poll it, produce (or replay) its structured decision, and read a
+decision back from its immutable snapshots (`GET /v1/wardrobe-decisions/{id}`,
+V3-008). The read lives in this module rather than its own file so it shares
+`_gate` and `_to_decision_response` — the replay MUST render through the same
+code path as the deciding POST, or the two could drift apart.
 
 Gated by `ENABLE_V3_PURCHASE_DECISION`, default off → 503 (contract §2 rollback
 rule 1, the `ENABLE_SENSE_CHECK` precedent). Candidate and decision rows persist
@@ -38,6 +41,7 @@ from app.infrastructure.persistence.models.purchase_decision import PurchaseCand
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.repositories.purchase_decision_repo import (
     SqlAlchemyPurchaseCandidateRepository,
+    SqlAlchemyWardrobeDecisionRepository,
 )
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
@@ -69,6 +73,16 @@ def _gate() -> None:
 router = APIRouter(
     prefix="/v1/purchase-candidates",
     tags=["purchase-candidates"],
+    dependencies=[Depends(_gate)],
+)
+
+# The replay surface has its own §5.1 prefix but the same flag and the same
+# rollback semantics: rows persist regardless, exposure is gated (contract §2
+# rule 3), so a decision written while the flag was on is hidden — not lost —
+# while it is off.
+wardrobe_decisions_router = APIRouter(
+    prefix="/v1/wardrobe-decisions",
+    tags=["wardrobe-decisions"],
     dependencies=[Depends(_gate)],
 )
 
@@ -110,6 +124,10 @@ _CREATE_ERRORS: dict[int | str, dict[str, str]] = {
 }
 _READ_ERRORS: dict[int | str, dict[str, str]] = {
     404: {"description": "No such candidate for this user (a foreign candidate answers 404, not 403)."},
+    503: {"description": "`ENABLE_V3_PURCHASE_DECISION` is off."},
+}
+_DECISION_READ_ERRORS: dict[int | str, dict[str, str]] = {
+    404: {"description": "No such decision for this user (a foreign decision answers 404, not 403)."},
     503: {"description": "`ENABLE_V3_PURCHASE_DECISION` is off."},
 }
 
@@ -238,4 +256,29 @@ async def decide_purchase_candidate(
         candidate,
         concern=(payload or DecisionRequest()).concern,
     )
+    return await _to_decision_response(session, decision)
+
+
+@wardrobe_decisions_router.get(
+    "/{decision_id}",
+    response_model=WardrobeDecisionResponse,
+    responses=_DECISION_READ_ERRORS,
+)
+async def get_wardrobe_decision(
+    decision_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> WardrobeDecisionResponse:
+    """Replay a decision from its immutable snapshots (contract §5.3).
+
+    Nothing is recomputed: the copy, the reasons and the compared item ids come
+    out of the frozen snapshot, so later wardrobe changes never rewrite an old
+    explanation. Only `image_url` is materialized here — same rule as the POST.
+    """
+    decision = await SqlAlchemyWardrobeDecisionRepository(session).get_for_user(
+        decision_id, current_user.id
+    )
+    if decision is None:
+        # Someone else's decision is NOT_FOUND, not FORBIDDEN (contract §3).
+        raise FriendlyException(error_codes.NOT_FOUND, "Wardrobe decision not found", status_code=404)
     return await _to_decision_response(session, decision)
