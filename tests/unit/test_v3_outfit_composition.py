@@ -517,3 +517,56 @@ def test_the_pure_layer_touches_no_database() -> None:
 
     assert "sqlalchemy" not in source
     assert "AsyncSession" not in source
+
+
+# --- Regressions for the codex review on BE#141 ------------------------------
+
+
+def test_rank1_dress_completes_when_rank0_top_dead_ends() -> None:
+    """A greedy rank-0 failure must not end the search.
+
+    Shoes candidate; the wardrobe holds a scene-boosted top (wins torso at
+    rank 0), a dress, and no bottoms. Rank 0 dead-ends at legs; rank 1 puts
+    the dress in torso+legs and completes the look. The early `break` used to
+    report `incomplete` here and manufacture an extra-purchase reason.
+    """
+    parsed = _candidate(Category.SHOES.value, scenes=["commute"])
+    top = _facts(1, Category.TOP.value, wear_scenes=("commute",))
+    dress = _facts(2, Category.DRESS.value)
+
+    evidence = build_outfit_evidence(parsed, [top, dress])
+
+    assert evidence.status == OUTFIT_STATUS_COMPOSED
+    assert evidence.missing_slots == ()
+    assert evidence.missing_categories == ()
+    dress_outfits = [o for o in evidence.outfits if dress.item_id in o.item_ids]
+    assert dress_outfits, "the dress-based completion must be emitted"
+
+
+def test_gap_evidence_names_one_dress_not_two_purchases() -> None:
+    """When torso AND legs are both open, the minimal purchase is one dress.
+
+    Emitting ("top", "bottom") overstated the gap as two purchases and pushed
+    V3-007's `extra_purchase_needed` reason in the buy-encouraging direction.
+    """
+    parsed = _candidate(Category.SHOES.value)
+    only_outerwear = [_facts(1, Category.OUTERWEAR.value)]
+
+    evidence = build_outfit_evidence(parsed, only_outerwear)
+
+    assert evidence.status == OUTFIT_STATUS_INCOMPLETE
+    assert set(evidence.missing_slots) >= {SLOT_TORSO, SLOT_LEGS}
+    assert evidence.missing_categories == (Category.DRESS.value,)
+
+
+def test_clash_between_supporting_items_is_reported() -> None:
+    """A red bottom with green shoes clashes on the body even when each of
+    them is fine against a neutral candidate."""
+    parsed = _candidate(Category.TOP.value, colors=["white"])
+    red_bottom = _facts(1, Category.BOTTOM.value, color="red")
+    green_shoes = _facts(2, Category.SHOES.value, color="green")
+
+    evidence = build_outfit_evidence(parsed, [red_bottom, green_shoes])
+
+    assert evidence.status == OUTFIT_STATUS_COMPOSED
+    assert any(REASON_COLOR_CONFLICT in o.match_reasons for o in evidence.outfits)

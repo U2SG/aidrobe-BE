@@ -421,7 +421,16 @@ def _compose_one(
     if any((f.color_main or "").strip().lower() in NEUTRAL_COLORS for f in picks):
         reasons.append(REASON_NEUTRAL_ANCHOR)
     colors = _candidate_colors(parsed)
-    if any(_conflicts_with(f, colors) for f in picks):
+    # A clash between two SUPPORTING items is just as visible on the body as a
+    # clash with the candidate, so check every pairing, not only
+    # candidate-versus-pick (codex review, BE#141).
+    pick_colors = [c for f in picks if (c := (f.color_main or "").strip().lower())]
+    picks_clash = any(
+        frozenset((a, b)) in COLOR_CONFLICTS
+        for i, a in enumerate(pick_colors)
+        for b in pick_colors[i + 1 :]
+    )
+    if picks_clash or any(_conflicts_with(f, colors) for f in picks):
         reasons.append(REASON_COLOR_CONFLICT)
 
     return (
@@ -434,6 +443,20 @@ def _compose_one(
         ),
         (),
     )
+
+
+def _gap_categories(missing: tuple[str, ...]) -> tuple[str, ...]:
+    """Name the smallest purchase that closes the gap.
+
+    When both torso and legs are open, one dress closes both; naming
+    "top, bottom" would overstate the gap as two purchases and push V3-007's
+    `extra_purchase_needed` reason in the buy-encouraging direction
+    (codex review, BE#141).
+    """
+    if SLOT_TORSO in missing and SLOT_LEGS in missing:
+        rest = tuple(s for s in missing if s not in (SLOT_TORSO, SLOT_LEGS))
+        return (Category.DRESS.value, *(SLOT_CATEGORIES[s][0] for s in rest))
+    return tuple(SLOT_CATEGORIES[slot][0] for slot in missing)
 
 
 def _distinct(outfits: list[GroundedOutfit]) -> tuple[GroundedOutfit, ...]:
@@ -493,15 +516,22 @@ def build_outfit_evidence(
     prefilled = frozenset(CATEGORY_SLOTS[category])
 
     composed: list[GroundedOutfit] = []
-    missing: tuple[str, ...] = ()
+    gap_attempts: list[tuple[str, ...]] = []
     for rank in range(MAX_OUTFITS):
         outfit, gaps = _compose_one(parsed, available, rank=rank, prefilled=prefilled, anchor=None)
         if outfit is None:
-            # Every rank hits the same empty slot — the wardrobe lacks the
-            # category, it is not a ranking accident.
-            missing = gaps
-            break
+            # NOT necessarily a wardrobe gap: rank selects a different item per
+            # slot, and a later rank can put a multi-slot item where a
+            # single-slot one failed — e.g. rank 0 takes the best top and then
+            # finds no bottom, while rank 1 takes the dress and completes the
+            # look (codex review, BE#141). Keep trying every rank.
+            gap_attempts.append(gaps)
+            continue
         composed.append(outfit)
+    # Only an all-ranks failure is a real gap; report the smallest one seen.
+    missing: tuple[str, ...] = (
+        () if composed else min(gap_attempts, key=len, default=())
+    )
 
     by_id = {f.item_id: f for f in available}
     alternatives: list[GroundedOutfit] = []
@@ -522,7 +552,7 @@ def build_outfit_evidence(
         outfits=outfits,
         alternatives=_distinct(alternatives),
         missing_slots=missing,
-        missing_categories=tuple(SLOT_CATEGORIES[slot][0] for slot in missing),
+        missing_categories=_gap_categories(missing),
         available_item_count=len(available),
         scan_truncated=scan_truncated,
     )

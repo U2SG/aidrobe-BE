@@ -76,7 +76,7 @@ from app.application.purchase.wardrobe_similarity import (
     rank_by_attributes,
     unknown_evidence,
 )
-from app.common.enums import ItemStatus, WardrobeItemStatus
+from app.common.enums import FitFeedbackType, ItemStatus, WardrobeItemStatus
 from app.infrastructure.persistence.models.embedding import ItemEmbedding
 from app.infrastructure.persistence.models.fit import FitFeedback
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -230,12 +230,21 @@ async def load_wear_scenes(
     Public because V3-006 needs the same signal over its own (narrower) item
     set, and a second copy of this query would be a second chance to reintroduce
     the per-item N+1 this one exists to prevent.
+
+    Negative comfort judgments are excluded: "I wore it there and it was
+    uncomfortable / not flattering" is a reason NOT to boost the item in that
+    scene, and counting it as positive `wear_scenes` evidence let explicitly
+    disliked items outrank neutral ones exactly where the user rejected them
+    (codex review, BE#141). `tight`/`loose` stay in — they are size signals,
+    not a rejection of the scene.
     """
     if not item_ids:
         return {}
+    negative = (FitFeedbackType.UNCOMFORTABLE.value, FitFeedbackType.NOT_FLATTERING.value)
     rows = await session.execute(
         select(FitFeedback.item_id, FitFeedback.scene)
         .where(FitFeedback.item_id.in_(item_ids))
+        .where(FitFeedback.feedback_type.notin_(negative))
         .distinct()
     )
     scenes: dict[uuid.UUID, set[str]] = {}

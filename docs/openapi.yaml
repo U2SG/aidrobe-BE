@@ -8081,10 +8081,8 @@ components:
           format: uuid
           title: Id
         candidate_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
+          type: string
+          format: uuid
           title: Candidate Id
         decision:
           type: string
@@ -8141,6 +8139,7 @@ components:
       type: object
       required:
       - id
+      - candidate_id
       - decision
       - decision_text
       - reasons
