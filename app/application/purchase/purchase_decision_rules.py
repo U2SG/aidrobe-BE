@@ -330,6 +330,7 @@ _TEMPLATES: dict[str, dict[str, str]] = {
         "reason.redundancy.high": "你已经有 {count} 件同类的{category}，其中有颜色相同的一件。",
         "reason.redundancy.medium": "你已经有 {count} 件同类的{category}，{shared}也相近。",
         "reason.redundancy.low": "你有 {count} 件同类的{category}，但颜色和材质都不一样。",
+        "reason.redundancy.low_unverified": "你有 {count} 件同类的{category}；商品信息不足，无法比较颜色和材质。",
         "reason.redundancy.none": "衣橱里没有同类的{category}，不属于重复购买。",
         "reason.redundancy.unknown": "没有解析出品类，无法判断它是否和现有衣物重复。",
         "reason.compatibility.composed": "它可以和你已有的 {items} 件单品组成 {outfits} 套完整搭配。",
@@ -365,6 +366,10 @@ _TEMPLATES: dict[str, dict[str, str]] = {
         "reason.redundancy.high": "You already own {count} {category}, one of them in the same colour.",
         "reason.redundancy.medium": "You already own {count} {category}, with similar {shared}.",
         "reason.redundancy.low": "You own {count} {category}, but in different colours and materials.",
+        "reason.redundancy.low_unverified": (
+            "You own {count} {category}; the listing did not give enough detail "
+            "to compare colours or materials."
+        ),
         "reason.redundancy.none": "You own no {category} in this category, so this is not a duplicate.",
         "reason.redundancy.unknown": "No category was parsed, so we cannot tell whether it duplicates anything.",
         "reason.compatibility.composed": "It pairs with {items} items you own to make {outfits} complete outfits.",
@@ -416,7 +421,15 @@ def _is_unusable(closet: ClosetEvidence, outfit: OutfitEvidence) -> bool:
 
 
 def _has_color_conflict(outfit: OutfitEvidence) -> bool:
-    return any(REASON_COLOR_CONFLICT in o.match_reasons for o in outfit.outfits)
+    """Judge only the top-ranked outfit — the one the user is shown first.
+
+    The composer deliberately ranks clashing pieces last, so a clash in a
+    lower-ranked *variation* is expected and must not flip a clean primary
+    look into `consider_alternate` (codex review, BE#142).
+    """
+    if not outfit.outfits:
+        return False
+    return REASON_COLOR_CONFLICT in outfit.outfits[0].match_reasons
 
 
 def _decision_state(closet: ClosetEvidence, outfit: OutfitEvidence) -> str:
@@ -559,7 +572,9 @@ def _next_actions(decision: str, closet: ClosetEvidence, outfit: OutfitEvidence)
 # "ordered by importance"); the list is then truncated to MAX_REASONS.
 
 
-def _redundancy_reason(locale: str, closet: ClosetEvidence, category: str | None) -> DecisionReason | None:
+def _redundancy_reason(
+    locale: str, closet: ClosetEvidence, category: str | None, parsed: ParsedItem | None
+) -> DecisionReason | None:
     label = _category_label(locale, category)
     count = _count_text(locale, closet.similar_item_count, floor=closet.same_category_scan_truncated)
     level = closet.redundancy_level
@@ -583,9 +598,15 @@ def _redundancy_reason(locale: str, closet: ClosetEvidence, category: str | None
                 shared=_shared_attribute_label(locale, closet),
             ),
         )
+    # LOW is assigned whenever no colour/material/scene match was ESTABLISHED —
+    # including when the candidate attributes were simply not parsed. Asserting
+    # "different colours and materials" is only honest when both attributes
+    # were actually present to compare (codex review, BE#142).
+    attributes_compared = parsed is not None and bool(parsed.colors) and bool(parsed.material_hints)
+    key = "reason.redundancy.low" if attributes_compared else "reason.redundancy.low_unverified"
     return DecisionReason(
         REASON_REDUNDANCY,
-        _text(locale, "reason.redundancy.low", count=count, category=label),
+        _text(locale, key, count=count, category=label),
     )
 
 
@@ -676,7 +697,7 @@ def _reasons(
 ) -> tuple[DecisionReason, ...]:
     """2–3 reasons, the one that produced the judgment first."""
     category = parsed.category if parsed is not None else None
-    redundancy = _redundancy_reason(locale, closet, category)
+    redundancy = _redundancy_reason(locale, closet, category, parsed)
     compatibility = _compatibility_reason(locale, outfit)
     scene = _scene_reason(locale, closet)
     extra = _extra_purchase_reason(locale, outfit)

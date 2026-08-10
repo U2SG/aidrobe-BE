@@ -405,3 +405,41 @@ async def test_an_item_in_the_laundry_basket_still_counts_as_owned(
 
     assert [s.item_id for s in evidence.similar_items] == [in_the_wash.id]
     assert evidence.redundancy_level == REDUNDANCY_HIGH
+
+
+async def test_negative_feedback_scenes_are_not_positive_wear_evidence(
+    db_session: AsyncSession,
+) -> None:
+    """"I wore it there and it was uncomfortable / not flattering" is a reason
+    NOT to boost the item in that scene. Counting those rows as `wear_scenes`
+    let explicitly disliked items outrank neutral ones exactly where the user
+    rejected them (codex review, BE#141). Size signals (`tight`) stay in."""
+    user_id = await _seed_user(db_session)
+    disliked = await _add_item(db_session, user_id, title="disliked", color="gray")
+    snug = await _add_item(db_session, user_id, title="snug", color="navy")
+
+    for feedback_type in (FitFeedbackType.UNCOMFORTABLE, FitFeedbackType.NOT_FLATTERING):
+        db_session.add(
+            FitFeedback(
+                user_id=user_id,
+                item_id=disliked.id,
+                feedback_type=feedback_type.value,
+                scene="commute",
+                created_at=datetime.now(UTC),
+            )
+        )
+    db_session.add(
+        FitFeedback(
+            user_id=user_id,
+            item_id=snug.id,
+            feedback_type=FitFeedbackType.TIGHT.value,
+            scene="commute",
+            created_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    scenes = await evidence_module.load_wear_scenes(db_session, [disliked.id, snug.id])
+
+    assert disliked.id not in scenes
+    assert scenes.get(snug.id) == {"commute"}

@@ -17,6 +17,7 @@ candidates that already have one.
 import uuid
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +35,8 @@ from app.application.purchase.ingest_candidate import (
 )
 from app.bootstrap.container import link_parser, ocr_service, vision_service
 from app.common import error_codes
+from app.common.analytics_emit import emit_v3_event
+from app.common.analytics_events import V3AnalyticsEventName
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
 from app.infrastructure.importers.router import RoutedLinkParser
@@ -130,6 +133,34 @@ _DECISION_READ_ERRORS: dict[int | str, dict[str, str]] = {
     404: {"description": "No such decision for this user (a foreign decision answers 404, not 403)."},
     503: {"description": "`ENABLE_V3_PURCHASE_DECISION` is off."},
 }
+
+
+def _emit_decision_completed(
+    user_id: uuid.UUID, candidate: PurchaseCandidate, decision: WardrobeDecision
+) -> None:
+    """V3-008 owns the backend `v3_decision_completed` emitter (analytics §2).
+
+    `flow_id` is the request's correlation id — the FE decision flow sends a
+    UUID via its `X-Correlation-Id` interceptor (V3-008). Anything that is not
+    a UUID cannot join a flow, and a fabricated id would corrupt every funnel
+    join, so those requests simply do not emit.
+    """
+    correlation_id = structlog.contextvars.get_contextvars().get("correlation_id")
+    try:
+        flow_id = str(uuid.UUID(str(correlation_id)))
+    except (TypeError, ValueError, AttributeError):
+        return
+    emit_v3_event(
+        V3AnalyticsEventName.DECISION_COMPLETED.value,
+        {
+            "decision": decision.decision,
+            "uncertainty": decision.uncertainty,
+            "visual_need": decision.visual_need,
+            "parse_status": candidate.status,
+        },
+        user_id=user_id,
+        flow_id=flow_id,
+    )
 
 
 async def _to_decision_response(
@@ -256,6 +287,7 @@ async def decide_purchase_candidate(
         candidate,
         concern=(payload or DecisionRequest()).concern,
     )
+    _emit_decision_completed(current_user.id, candidate, decision)
     return await _to_decision_response(session, decision)
 
 

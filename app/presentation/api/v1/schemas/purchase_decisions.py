@@ -97,7 +97,11 @@ class WardrobeDecisionResponse(BaseModel):
     """
 
     id: uuid.UUID
-    candidate_id: uuid.UUID | None = None
+    # Required, not nullable: every P0 decision is candidate-scoped
+    # (`DecidePurchase` always sets it, and the unique index keys on it).
+    # Declaring it optional taught generated clients to accept a missing id
+    # and would have masked a BE serialization bug (codex review, FE#136).
+    candidate_id: uuid.UUID
     decision: Decision
     decision_text: str
     reasons: list[DecisionReasonModel]

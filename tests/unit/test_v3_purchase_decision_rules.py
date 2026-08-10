@@ -796,3 +796,63 @@ def test_the_response_literals_match_the_frozen_enums() -> None:
     assert set(get_args(VisualNeed)) == VOCABULARIES["visual_need"]
     assert set(get_args(ReasonKind)) == REASON_KINDS
     assert set(get_args(NextAction)) == NEXT_ACTIONS
+
+
+# --- Regressions for the codex review on BE#142 ------------------------------
+
+
+def test_second_variation_clash_does_not_flip_a_clean_primary() -> None:
+    """The composer ranks clashing pieces last, so a clash in a lower-ranked
+    VARIATION is expected — it must not turn a clean primary look into
+    `consider_alternate` with colour-warning copy."""
+    clean_primary = _look()
+    clashing_variation = _look(conflict=True)
+    outfit = OutfitEvidence(
+        status=OUTFIT_STATUS_COMPOSED,
+        outfits=(clean_primary, clashing_variation),
+        alternatives=(),
+        missing_slots=(),
+        missing_categories=(),
+        available_item_count=12,
+        scan_truncated=False,
+    )
+
+    outcome = rules.decide(ParsedItem(category="top", colors=["white"]), _closet(), outfit)
+
+    assert outcome.decision == PurchaseDecision.WORTH_ADDING.value
+    assert rules.ACTION_RECHECK_COLOR not in outcome.next_actions
+
+
+def test_primary_clash_still_flags_consider_alternate() -> None:
+    """The inverse guard: judging only the primary must not lose a REAL clash."""
+    outfit = OutfitEvidence(
+        status=OUTFIT_STATUS_COMPOSED,
+        outfits=(_look(conflict=True), _look()),
+        alternatives=(),
+        missing_slots=(),
+        missing_categories=(),
+        available_item_count=12,
+        scan_truncated=False,
+    )
+
+    outcome = rules.decide(ParsedItem(category="top", colors=["red"]), _closet(), outfit)
+
+    assert outcome.decision == PurchaseDecision.CONSIDER_ALTERNATE.value
+
+
+def test_low_band_copy_never_invents_an_attribute_comparison() -> None:
+    """A category-only parse reaches REDUNDANCY_LOW because nothing could be
+    compared — the copy must say the information was insufficient, not assert
+    that colours and materials "are different"."""
+    closet = _closet(REDUNDANCY_LOW, covers=2)
+
+    unverified = rules.decide(ParsedItem(category="top"), closet, _outfit())
+    red = next(r for r in unverified.reasons if r.kind == rules.REASON_REDUNDANCY)
+    assert "不一样" not in red.text
+    assert "different" not in red.text
+
+    compared = rules.decide(
+        ParsedItem(category="top", colors=["red"], material_hints=["wool"]), closet, _outfit()
+    )
+    red_compared = next(r for r in compared.reasons if r.kind == rules.REASON_REDUNDANCY)
+    assert "不一样" in red_compared.text
