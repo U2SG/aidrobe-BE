@@ -239,3 +239,88 @@ class DecisionVisualNeed(StrEnum):
     NONE = "none"
     HELPFUL = "helpful"
     RECOMMENDED = "recommended"
+
+
+# --- V3 P0 avatar (docs/v3-p0-contract.md §4) -----------------------------
+# Literals are frozen by the contract; the persistence CHECK constraints in
+# `models/avatar.py` and migration 0047 are generated from these enums, and
+# tests/services/test_v3_avatar_migration.py asserts the two cannot drift.
+
+
+class AvatarStatus(StrEnum):
+    """Profile lifecycle (contract §4.1, V3_SPEC §7.2).
+
+    `none` is a real persisted state, not the absence of a row: a profile is
+    created the moment a candidate exists, and `GET /v1/avatar-profile`
+    answers 200 with `status=none` rather than 404.
+    """
+
+    NONE = "none"
+    CANDIDATE = "candidate"
+    PREPARING = "preparing"
+    READY = "ready"
+    REFRESH_RECOMMENDED = "refresh_recommended"
+    DISABLED = "disabled"
+
+
+#: Exactly the two states in which the frozen `GET /v1/avatar-profile` shape
+#: carries a non-null `active_version` (contract §4.2). The CHECK constraint on
+#: `avatar_profiles` is generated from this set, so the response shape cannot
+#: be contradicted by a row.
+AVATAR_STATUSES_WITH_ACTIVE_VERSION: frozenset[AvatarStatus] = frozenset(
+    {AvatarStatus.READY, AvatarStatus.REFRESH_RECOMMENDED}
+)
+
+
+class AvatarSourceType(StrEnum):
+    """Where the person reference material came from (V3_SPEC §11.1, §7.1).
+
+    All four are *contextual* acquisitions — there is no mandatory photo
+    onboarding in V3 (V3_SPEC §21 anti-goal). `outfit_import` material still
+    requires its own explicit consent: importing clothes never implies
+    person-reference consent (contract §4.3, source B rule).
+    """
+
+    OOTD_PHOTO = "ootd_photo"
+    OUTFIT_IMPORT = "outfit_import"
+    USER_UPLOAD = "user_upload"
+    CAMERA_CAPTURE = "camera_capture"
+
+
+#: Source types whose stored object was uploaded **for** the avatar and is
+#: therefore avatar-owned: deleting the avatar deletes the object.
+#:
+#: The other two — `ootd_photo` and `outfit_import` — point at objects that
+#: belong to the OOTD / import features. The avatar only ever *referenced*
+#: them, so deleting the avatar drops the reference and must NOT delete the
+#: user's OOTD photo out of their own history. `AvatarLifecycle.delete_avatar`
+#: is built on this distinction.
+AVATAR_OWNED_SOURCE_TYPES: frozenset[AvatarSourceType] = frozenset(
+    {AvatarSourceType.USER_UPLOAD, AvatarSourceType.CAMERA_CAPTURE}
+)
+
+
+class AvatarConsentStatus(StrEnum):
+    """Per-source-asset consent (contract §4.3).
+
+    `declined` is terminal for that asset: "accept=false dismisses that
+    candidate permanently — the same asset is never re-prompted"
+    (contract §4.2, V3_SPEC §7.3).
+    """
+
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    DECLINED = "declined"
+
+
+class AvatarQualityStatus(StrEnum):
+    """Whether material is usable as a person reference.
+
+    Deliberately three neutral states with no score. V3-012 owns the detection
+    rules; the vocabulary is fixed here so a quality signal can never become a
+    judgement about the person (see `AvatarSourceAsset.quality_signals`).
+    """
+
+    PENDING = "pending"
+    PASSED = "passed"
+    REJECTED = "rejected"
