@@ -23,7 +23,11 @@ so the *enqueue* cannot fail the flow either.
 
 This module therefore takes a resolved `object_key`, never a URL: the
 URL→key step belongs to the enqueue site, which is the last place a signed URL
-legitimately exists. Keeping it there means no signed URL is written into
+legitimately exists — and so does the check that the key was issued to this
+user (`is_owned_object_key`). Every key reaching here has passed that check,
+because `async_jobs` rows are only written by that path; a future caller that
+reaches this use case another way owes the same check first, or it hands a
+stranger's photo to segmentation under the caller's user_id. Keeping it there means no signed URL is written into
 `async_jobs.payload` (contract §7) and the job's idempotency key is stable
 across two differently-signed URLs for the same photo — without which
 prompt-once would leak one duplicate offer per re-signing.
@@ -40,6 +44,17 @@ V3_SPEC §7.3 states two rules, and they need two different mechanisms:
    decided about the first; the pre-read short-circuits before any segmentation
    runs, and `offer_candidate` independently refuses an asset whose consent is
    already decided.
+
+   The short-circuit fires on a *terminal* assessment (`passed` / `rejected`)
+   or a decided consent — not on the mere existence of a row. A `pending` row
+   means nobody has examined the photo yet, which is the shipped default's
+   normal state (`AVATAR_PERSON_DETECTOR=unavailable`), and treating that as
+   "already assessed" would retire material sight unseen: enabling
+   segmentation later could never reconsider it. So a pending row is
+   re-examined and the verdict is written onto that same row —
+   `record_assessment` refuses to overwrite anything else, so this cannot
+   become a second prompt or a re-decided consent. Found by review; the queue
+   side of it is the assessor in the idempotency key.
 2. *用户选"暂不用"后不在日常流程反复提醒* — **per user**, and NOT implied by
    (1). One declined photo does nothing to the *next* distinct OOTD photo, so
    per-asset uniqueness alone would let a user who said no once be asked again
@@ -60,12 +75,23 @@ successor's problem.
 The exception is the second half of acceptance 4, "**unless the user later
 requests preview**" (V3_SPEC §7.3: 未来仅在用户主动要求上身预演时重新说明).
 `CandidateDetectionTrigger.PREVIEW_REQUEST` is that path: when the user is the
-one asking for a try-on, a revoked profile may be offered *newly seen* material
-again. It still cannot re-offer a photo that already has a row, and it still
-cannot decide consent. No caller passes it yet — V3-013's upload endpoint and
-V3-015's on-demand photo setup are its users — but the rule lives here, with
-the rest of the suppression logic, rather than being deferred into a feature
-that would have to re-derive it.
+one asking for a try-on, *newly seen* material is examined even for a profile
+they previously switched off. It still cannot re-offer a photo that already has
+a terminal row, and it still cannot decide consent. No caller passes it yet —
+V3-013's upload endpoint and V3-015's on-demand photo setup are its users — but
+the rule lives here, with the rest of the suppression logic, rather than being
+deferred into a feature that would have to re-derive it.
+
+**What a preview request on a `disabled` profile does, precisely.** The photo is
+examined and recorded; the profile does **not** move. Contract §4.1's frozen
+transition list has no `disabled → candidate` edge, only `disabled → preparing`
+("user re-enables via new consent"), so a status change here would be inventing
+an edge — and V3-012 may not, whatever the code would find convenient. The
+outcome is therefore `QUALIFIED_NOT_OFFERED`, not `OFFERED`: the material is
+usable and its `source_asset_id` is returned, and the user's own consent on that
+asset (V3-013) is what carries them from `disabled` to `preparing`. Reporting
+`OFFERED` while `GET /v1/avatar-profile` would show nothing was the shape of
+this bug before review caught it.
 
 **The flag gates detection itself, which is a deliberate deviation.** The repo
 convention (BE CLAUDE.md) is "persist regardless of the flag, gate exposure",
@@ -91,7 +117,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.avatar.candidate_rules import assess_person_frame
 from app.application.ports.avatar_detection import PersonFrameDetectorPort
 from app.application.ports.storage import ObjectStoragePort
-from app.common.enums import AvatarQualityStatus, AvatarSourceType, AvatarStatus
+from app.common.enums import (
+    AvatarConsentStatus,
+    AvatarQualityStatus,
+    AvatarSourceType,
+    AvatarStatus,
+)
 from app.config.settings import Settings
 from app.infrastructure.persistence.models.avatar import AvatarProfile, AvatarSourceAsset
 from app.infrastructure.persistence.repositories.avatar_repo import (
@@ -116,6 +147,12 @@ class CandidateDetectionTrigger(StrEnum):
 
 class CandidateDetectionOutcome(StrEnum):
     OFFERED = "offered"
+    #: Usable material, recorded — but the profile did not move, because the
+    #: frozen state machine has no edge from its current status to `candidate`
+    #: (contract §4.1). A user-initiated preview on a `disabled` profile is the
+    #: real case: the asset is what V3-013's consent acts on, and that consent
+    #: is the `disabled → preparing` edge.
+    QUALIFIED_NOT_OFFERED = "qualified_not_offered"
     #: Assessed and not usable. The row is kept so the same photo is never
     #: re-examined, and so V3-013 can explain why nothing was offered.
     NOT_USABLE = "not_usable"
@@ -127,7 +164,9 @@ class CandidateDetectionOutcome(StrEnum):
 
 class SkipReason(StrEnum):
     FEATURE_DISABLED = "feature_disabled"
-    #: This exact photo already has a row — whatever its verdict or consent.
+    #: This exact photo already carries a verdict (`passed` / `rejected`) or a
+    #: decided consent. A row that is merely `pending` is not this — nobody has
+    #: examined that photo yet, so it is re-examined rather than skipped.
     ALREADY_ASSESSED = "already_assessed"
     #: The user already declined person-reference material once. V3_SPEC §7.3's
     #: per-user rule; see the module docstring.
@@ -194,7 +233,8 @@ class DetectAvatarCandidate:
         if not self.settings.ENABLE_V3_AVATAR:
             return _skip(SkipReason.FEATURE_DISABLED)
 
-        if await self.assets.get_by_object_key(object_key, user_id) is not None:
+        existing = await self.assets.get_by_object_key(object_key, user_id)
+        if existing is not None and _is_terminally_assessed(existing):
             return _skip(SkipReason.ALREADY_ASSESSED)
 
         profile = await self.profiles.get_for_user(user_id)
@@ -222,10 +262,12 @@ class DetectAvatarCandidate:
             object_key=object_key,
             quality_status=assessment.quality_status,
             signals=assessment.signals,
+            existing=existing,
         )
         if asset is None:
-            # Lost the race against a concurrent detection of the same photo.
-            # The other writer's row is the one row this photo gets.
+            # Lost the race against a concurrent detection of the same photo,
+            # and the winner's row is already terminally assessed. That row is
+            # the one row this photo gets.
             return _skip(SkipReason.ALREADY_ASSESSED)
 
         if not assessment.is_offerable:
@@ -242,9 +284,19 @@ class DetectAvatarCandidate:
 
         if profile is None:
             profile = await self.profiles.add(AvatarProfile(user_id=user_id))
-        await self.lifecycle.offer_candidate(profile, asset)
+        offered = await self.lifecycle.offer_candidate(profile, asset)
         return CandidateDetectionResult(
-            outcome=CandidateDetectionOutcome.OFFERED,
+            # `offered` is the profile actually moving to `candidate`. When it
+            # did not — a user-initiated preview on a `disabled` profile, whose
+            # `disabled → candidate` edge contract §4.1 does not have — the
+            # material is recorded and usable but nothing is on offer, and
+            # saying `OFFERED` would promise a candidate that
+            # `GET /v1/avatar-profile` cannot show.
+            outcome=(
+                CandidateDetectionOutcome.OFFERED
+                if offered
+                else CandidateDetectionOutcome.QUALIFIED_NOT_OFFERED
+            ),
             source_asset_id=asset.id,
             quality_status=asset.quality_status,
             profile_status=profile.status,
@@ -275,14 +327,32 @@ class DetectAvatarCandidate:
         object_key: str,
         quality_status: AvatarQualityStatus,
         signals: dict[str, object],
+        existing: AvatarSourceAsset | None = None,
     ) -> AvatarSourceAsset | None:
-        """Insert the one row this photo gets, or None if another writer won.
+        """Write the assessment onto the one row this photo gets.
 
-        `one_row_per_source_object` closes the race; a SAVEPOINT keeps the
-        violation from poisoning the session, the V3-007 precedent. No
-        check-then-insert guard — a 23505 here is a concurrent duplicate, not
-        a defect.
+        Three paths, and the row is the same row in all three:
+
+        - `existing` is a row nobody had assessed yet → the verdict lands on it
+          via `record_assessment`, which refuses anything but
+          `pending → …` while consent is still pending;
+        - no row → insert;
+        - insert loses `one_row_per_source_object` → a concurrent detection got
+          there first. Re-read it: if that writer recorded a terminal verdict,
+          this run has nothing to add (None → `ALREADY_ASSESSED`); if it is
+          still `pending` — the winner had no detector — this run's verdict is
+          worth more than nothing, so it lands on their row.
+
+        A SAVEPOINT keeps the violation from poisoning the session (the V3-007
+        precedent), and there is no check-then-insert guard: a 23505 here is a
+        concurrent duplicate, not a defect.
         """
+        if existing is not None:
+            await self.assets.record_assessment(
+                existing, quality_status=quality_status, signals=signals
+            )
+            return existing
+
         asset = AvatarSourceAsset(
             user_id=user_id,
             source_type=source_type.value,
@@ -295,7 +365,19 @@ class DetectAvatarCandidate:
                 self.session.add(asset)
                 await self.session.flush()
         except IntegrityError:
-            return None
+            # The rolled-back INSERT's object can still be in the identity map;
+            # leaving it there would let the next flush re-attempt it (and, with
+            # `expire_all`, invite a lazy refresh of a row that does not exist —
+            # the illegal-IO trap V3-003 recorded).
+            if asset in self.session:
+                self.session.expunge(asset)
+            winner = await self.assets.get_by_object_key(object_key, user_id)
+            if winner is None or _is_terminally_assessed(winner):
+                return None
+            await self.assets.record_assessment(
+                winner, quality_status=quality_status, signals=signals
+            )
+            return winner
         return asset
 
 
@@ -310,11 +392,31 @@ def _suppression(
         return SkipReason.CANDIDATE_ALREADY_OFFERED
     if profile.status == AvatarStatus.DISABLED.value:
         # The one place the trigger changes the answer. A user who asked for a
-        # preview is asking us to raise this again; a daily flow is not.
+        # preview is asking us to look again; a daily flow is not. "Look again"
+        # is all it is — the photo gets assessed and recorded, and the profile
+        # stays `disabled` until the user's own consent moves it (contract §4.1
+        # has `disabled → preparing`, and no `disabled → candidate`). The
+        # outcome for that case is `QUALIFIED_NOT_OFFERED`.
         if trigger is CandidateDetectionTrigger.PREVIEW_REQUEST:
             return None
         return SkipReason.REVOKED_BY_USER
     return None
+
+
+def _is_terminally_assessed(asset: AvatarSourceAsset) -> bool:
+    """Has this photo's question actually been answered?
+
+    `passed` / `rejected` is a verdict; `pending` is "nobody looked", which the
+    shipped default produces for every photo and which a later detector must
+    still be able to answer. A decided consent is terminal too, whatever the
+    quality status: the user has spoken, and re-assessing material they already
+    accepted or declined would be re-opening a closed question (contract §4.2,
+    "accept=false dismisses that candidate permanently").
+    """
+    return (
+        asset.quality_status != AvatarQualityStatus.PENDING.value
+        or asset.consent_status != AvatarConsentStatus.PENDING.value
+    )
 
 
 def _skip(reason: SkipReason) -> CandidateDetectionResult:

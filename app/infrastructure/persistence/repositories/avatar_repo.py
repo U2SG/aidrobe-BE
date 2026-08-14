@@ -117,6 +117,43 @@ class SqlAlchemyAvatarSourceAssetRepository:
             ),
         )
 
+    async def record_assessment(
+        self,
+        asset: AvatarSourceAsset,
+        *,
+        quality_status: AvatarQualityStatus,
+        signals: dict[str, object],
+    ) -> None:
+        """Write a *later* assessment onto material nobody had examined.
+
+        Exists because `pending` is not a verdict, it is the absence of one: with
+        no person detector configured, every photo is recorded `pending`, and a
+        detector enabled next month must be able to answer for those rows. The
+        alternative — treating any existing row as assessed — retires material
+        sight unseen and makes the whole feature unrecoverable from its own
+        default configuration.
+
+        Narrow on purpose, because this is the only method in V3-012's path that
+        mutates an existing asset row:
+
+        - only `pending → pending|passed|rejected`. An existing verdict is
+          immutable, so re-running detection can never flip `rejected` to
+          `passed` or re-offer a photo under a second verdict;
+        - only while consent is `pending`. Once the user has accepted or
+          declined, the row records what they were asked about and answered;
+          re-grading it would rewrite the audit trail of their decision.
+
+        Consent is not a parameter here, exactly as it is not one in
+        `offer_candidate` — acceptance 1 holds by signature, not by care.
+        """
+        if asset.quality_status != AvatarQualityStatus.PENDING.value:
+            raise ValueError("material that already carries a verdict cannot be re-assessed")
+        if asset.consent_status != AvatarConsentStatus.PENDING.value:
+            raise ValueError("cannot re-assess material whose consent is already decided")
+        asset.quality_status = quality_status.value
+        asset.quality_signals = signals
+        await self.session.flush()
+
     async def has_declined_material(self, user_id: uuid.UUID) -> bool:
         """Has this user ever said "暂不用" to person-reference material?
 
@@ -203,8 +240,14 @@ class AvatarLifecycle:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def offer_candidate(self, profile: AvatarProfile, asset: AvatarSourceAsset) -> None:
+    async def offer_candidate(self, profile: AvatarProfile, asset: AvatarSourceAsset) -> bool:
         """`none → candidate` — qualified material now exists (contract §4.1).
+
+        Returns whether the profile actually moved. That is not a courtesy: the
+        caller reports its outcome to a log and, through V3-013, to a user, and
+        a silent "no transition" read as "offered" promises a candidate that
+        `GET /v1/avatar-profile` will not show. The real case is a user-initiated
+        preview on a `disabled` profile — see `detect_candidate`.
 
         V3-012's only write to the profile, and the reason it is here rather
         than in the detector: every other transition already lives in this
@@ -240,9 +283,10 @@ class AvatarLifecycle:
         if asset.consent_status != AvatarConsentStatus.PENDING.value:
             raise ValueError("cannot offer a source asset whose consent is already decided")
         if profile.status != AvatarStatus.NONE.value:
-            return
+            return False
         profile.status = AvatarStatus.CANDIDATE.value
         await self.session.flush()
+        return True
 
     async def record_consent(
         self,

@@ -235,34 +235,63 @@ async def test_the_detection_module_contains_no_write_to_a_consent_field() -> No
     consent keyword to a constructor (which would set it explicitly instead of
     relying on the `pending` default), and reaching it through `setattr`.
 
+    Scope note, because it narrowed once and had to be widened again: detection
+    now also writes through `AvatarSourceAssetRepository.record_assessment` (a
+    later verdict onto an unassessed row), and that write is outside this module.
+    So the two functions detection uses to *mutate* rows —
+    `record_assessment` and `offer_candidate` — are walked here too. Without
+    that, moving a consent write one function to the left would pass this test.
+    `avatar_repo` as a whole cannot be walked: `record_consent` is V3-013's
+    surface and assigns consent fields by design.
+
     This complements rather than replaces the real guarantee, which lives in the
-    signature: `offer_candidate` has no consent parameter, so there is no
-    argument through which detection could grant permission.
+    signatures: neither `offer_candidate` nor `record_assessment` has a consent
+    parameter, so there is no argument through which detection could grant
+    permission.
     """
     import ast
 
     fields = {"consent_status", "consent_version", "consent_decided_at", "consented_at"}
-    tree = ast.parse(Path("app/application/avatar/detect_candidate.py").read_text(encoding="utf-8"))
 
-    for node in ast.walk(tree):
-        targets: list[ast.expr] = []
-        if isinstance(node, ast.Assign):
-            targets = list(node.targets)
-        elif isinstance(node, ast.AnnAssign | ast.AugAssign):
-            targets = [node.target]
-        for target in targets:
-            if isinstance(target, ast.Attribute):
-                assert target.attr not in fields, f"assigns {target.attr}"
-            if isinstance(target, ast.Name):
-                assert target.id not in fields, f"assigns {target.id}"
+    def _assert_no_consent_write(tree: ast.AST, where: str) -> None:
+        for node in ast.walk(tree):
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+            elif isinstance(node, ast.AnnAssign | ast.AugAssign):
+                targets = [node.target]
+            for target in targets:
+                if isinstance(target, ast.Attribute):
+                    assert target.attr not in fields, f"{where} assigns {target.attr}"
+                if isinstance(target, ast.Name):
+                    assert target.id not in fields, f"{where} assigns {target.id}"
 
-        if isinstance(node, ast.Call):
-            for keyword in node.keywords:
-                assert keyword.arg not in fields, f"passes {keyword.arg} explicitly"
-            callee = node.func
-            if isinstance(callee, ast.Name) and callee.id == "setattr":
-                literals = [a.value for a in node.args if isinstance(a, ast.Constant)]
-                assert not (fields & set(literals)), "setattr on a consent field"
+            if isinstance(node, ast.Call):
+                for keyword in node.keywords:
+                    assert keyword.arg not in fields, f"{where} passes {keyword.arg} explicitly"
+                callee = node.func
+                if isinstance(callee, ast.Name) and callee.id == "setattr":
+                    literals = [a.value for a in node.args if isinstance(a, ast.Constant)]
+                    assert not (fields & set(literals)), f"{where} setattr on a consent field"
+
+    _assert_no_consent_write(
+        ast.parse(Path("app/application/avatar/detect_candidate.py").read_text(encoding="utf-8")),
+        "detect_candidate",
+    )
+
+    repo_tree = ast.parse(
+        Path("app/infrastructure/persistence/repositories/avatar_repo.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    mutators = {"record_assessment", "offer_candidate"}
+    walked = set()
+    for node in ast.walk(repo_tree):
+        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef) and node.name in mutators:
+            _assert_no_consent_write(node, f"avatar_repo.{node.name}")
+            walked.add(node.name)
+    # The guard is worthless if the functions were renamed out from under it.
+    assert walked == mutators
 
 
 async def test_a_rejected_photo_is_recorded_but_never_offered(db_session: AsyncSession) -> None:
@@ -585,3 +614,263 @@ async def test_rejected_material_can_never_become_an_offer(db_session: AsyncSess
     with pytest.raises(ValueError, match="passed the quality assessment"):
         await AvatarLifecycle(db_session).offer_candidate(profile, asset)
     assert profile.status == AvatarStatus.NONE.value
+
+
+# --- pending is not a verdict (found by review) -----------------------------
+
+
+async def test_an_unassessed_photo_is_re_examined_when_a_detector_appears(
+    db_session: AsyncSession,
+) -> None:
+    """The shipped default (`AVATAR_PERSON_DETECTOR=unavailable`) records every
+    photo `pending` — examined by nobody. If an existing row alone meant
+    "already assessed", enabling segmentation later could never reconsider it and
+    the material would be retired sight unseen.
+
+    So: the first run with no detector leaves `pending`; the second run with one
+    writes the verdict onto that same row and offers it.
+    """
+    user_id = await _seed_user(db_session)
+
+    first = await _use_case(db_session, detector=_FakeDetector(None, raises=True)).execute(
+        user_id=user_id, source_type=AvatarSourceType.OOTD_PHOTO, object_key=OBJECT_KEY
+    )
+    assert first.outcome is CandidateDetectionOutcome.UNDETERMINED
+
+    detector = _FakeDetector(GOOD_OBSERVATION)
+    second = await _use_case(db_session, detector=detector).execute(
+        user_id=user_id, source_type=AvatarSourceType.OOTD_PHOTO, object_key=OBJECT_KEY
+    )
+    assert second.outcome is CandidateDetectionOutcome.OFFERED
+    assert detector.calls == 1
+    # The SAME row, re-assessed — not a second one. `one_row_per_source_object`
+    # would refuse a duplicate, and prompt-once depends on there being one.
+    assert second.source_asset_id == first.source_asset_id
+
+    db_session.expire_all()
+    assets = list((await db_session.scalars(sa.select(AvatarSourceAsset))).all())
+    assert len(assets) == 1
+    assert assets[0].quality_status == AvatarQualityStatus.PASSED.value
+    # Acceptance 1 still holds across a re-assessment.
+    assert assets[0].consent_status == AvatarConsentStatus.PENDING.value
+    assert assets[0].consent_decided_at is None
+    assert assets[0].consent_version is None
+
+
+async def test_a_verdict_already_recorded_is_never_revisited(db_session: AsyncSession) -> None:
+    """The other side of the same rule: `rejected` is terminal. Re-running
+    detection over a photo the rules refused must not re-open it, or a threshold
+    tweak would silently re-offer material that was already judged."""
+    user_id = await _seed_user(db_session)
+
+    first = await _use_case(db_session, observation=TWO_PEOPLE).execute(
+        user_id=user_id, source_type=AvatarSourceType.OOTD_PHOTO, object_key=OBJECT_KEY
+    )
+    assert first.outcome is CandidateDetectionOutcome.NOT_USABLE
+
+    detector = _FakeDetector(GOOD_OBSERVATION)
+    storage = _FakeStorage()
+    second = await _use_case(db_session, detector=detector, storage=storage).execute(
+        user_id=user_id, source_type=AvatarSourceType.OOTD_PHOTO, object_key=OBJECT_KEY
+    )
+    assert second.outcome is CandidateDetectionOutcome.SKIPPED
+    assert second.reason is SkipReason.ALREADY_ASSESSED
+    assert storage.reads == []
+    assert detector.calls == 0
+
+    db_session.expire_all()
+    asset = await db_session.get(AvatarSourceAsset, first.source_asset_id)
+    assert asset is not None
+    assert asset.quality_status == AvatarQualityStatus.REJECTED.value
+
+
+async def test_a_decided_consent_stops_re_assessment_even_while_pending(
+    db_session: AsyncSession,
+) -> None:
+    """A row can be `quality_status=pending` and still be closed: if the user has
+    accepted or declined it, re-grading would rewrite the record of what they
+    were asked about."""
+    user_id = await _seed_user(db_session)
+    db_session.add(
+        AvatarSourceAsset(
+            user_id=user_id,
+            source_type=AvatarSourceType.OOTD_PHOTO.value,
+            source_object_key=OBJECT_KEY,
+            quality_status=AvatarQualityStatus.PENDING.value,
+            consent_status=AvatarConsentStatus.DECLINED.value,
+            consent_decided_at=sa.func.now(),
+        )
+    )
+    await db_session.flush()
+
+    detector = _FakeDetector(GOOD_OBSERVATION)
+    result = await _use_case(db_session, detector=detector).execute(
+        user_id=user_id,
+        source_type=AvatarSourceType.OOTD_PHOTO,
+        object_key=OBJECT_KEY,
+        trigger=CandidateDetectionTrigger.PREVIEW_REQUEST,
+    )
+    assert result.outcome is CandidateDetectionOutcome.SKIPPED
+    assert result.reason is SkipReason.ALREADY_ASSESSED
+    assert detector.calls == 0
+
+    db_session.expire_all()
+    asset = await db_session.scalar(sa.select(AvatarSourceAsset))
+    assert asset is not None
+    assert asset.quality_status == AvatarQualityStatus.PENDING.value
+
+
+async def test_re_assessment_refuses_to_overwrite_a_recorded_verdict(
+    db_session: AsyncSession,
+) -> None:
+    """The repository guard itself, so the invariant does not rest on the
+    caller's ordering. Two ways in, both refused."""
+    from app.infrastructure.persistence.repositories.avatar_repo import (
+        SqlAlchemyAvatarSourceAssetRepository,
+    )
+
+    user_id = await _seed_user(db_session)
+    assessed = AvatarSourceAsset(
+        user_id=user_id,
+        source_type=AvatarSourceType.OOTD_PHOTO.value,
+        source_object_key=OBJECT_KEY,
+        quality_status=AvatarQualityStatus.PASSED.value,
+    )
+    decided = AvatarSourceAsset(
+        user_id=user_id,
+        source_type=AvatarSourceType.OOTD_PHOTO.value,
+        source_object_key=OTHER_KEY,
+        quality_status=AvatarQualityStatus.PENDING.value,
+        consent_status=AvatarConsentStatus.ACCEPTED.value,
+        consent_decided_at=datetime.now(UTC),
+        consent_version="v1",
+    )
+    db_session.add_all([assessed, decided])
+    await db_session.flush()
+
+    repo = SqlAlchemyAvatarSourceAssetRepository(db_session)
+    with pytest.raises(ValueError, match="already carries a verdict"):
+        await repo.record_assessment(
+            assessed, quality_status=AvatarQualityStatus.REJECTED, signals={}
+        )
+    with pytest.raises(ValueError, match="consent is already decided"):
+        await repo.record_assessment(decided, quality_status=AvatarQualityStatus.PASSED, signals={})
+
+
+async def test_the_loser_of_a_race_can_still_answer_an_unassessed_row(
+    db_session: AsyncSession,
+) -> None:
+    """A concurrent detection that wrote `pending` (no detector) must not lock the
+    photo out of the verdict this run actually has. The winner keeps its row; the
+    answer lands on it."""
+    user_id = await _seed_user(db_session)
+    db_session.add(
+        AvatarSourceAsset(
+            user_id=user_id,
+            source_type=AvatarSourceType.OOTD_PHOTO.value,
+            source_object_key=OBJECT_KEY,
+            quality_status=AvatarQualityStatus.PENDING.value,
+        )
+    )
+    await db_session.flush()
+
+    use_case = _use_case(db_session)
+    # Stand where the loser of a real race stands: the pre-read is bypassed, so
+    # the INSERT is attempted and violates `one_row_per_source_object`.
+    asset = await use_case._record(
+        user_id=user_id,
+        source_type=AvatarSourceType.OOTD_PHOTO,
+        object_key=OBJECT_KEY,
+        quality_status=AvatarQualityStatus.PASSED,
+        signals={"signals_version": "v3-012.1"},
+    )
+    assert asset is not None
+    assert asset.quality_status == AvatarQualityStatus.PASSED.value
+    assert len((await db_session.scalars(sa.select(AvatarSourceAsset))).all()) == 1
+    # The session survived the 23505 — the point of the SAVEPOINT.
+    assert await db_session.scalar(sa.select(sa.literal(1))) == 1
+
+
+# --- a preview request on a revoked profile, told honestly ------------------
+
+
+async def test_a_preview_request_on_a_disabled_profile_records_without_claiming_an_offer(
+    db_session: AsyncSession,
+) -> None:
+    """Contract §4.1 has `disabled → preparing` and no `disabled → candidate`, so
+    detection cannot move this profile — and must not report that it did.
+    Reporting OFFERED here promised a candidate `GET /v1/avatar-profile` would
+    never show, and spent the photo's one row doing it."""
+    user_id = await _seed_user(db_session)
+    profile = await _seed_profile(db_session, user_id, AvatarStatus.DISABLED)
+    # Captured before `expire_all()` below: reading `profile.id` afterwards would
+    # be a lazy refresh, i.e. illegal IO under asyncio (the V3-003 trap).
+    profile_id = profile.id
+
+    result = await _use_case(db_session).execute(
+        user_id=user_id,
+        source_type=AvatarSourceType.USER_UPLOAD,
+        object_key=OBJECT_KEY,
+        trigger=CandidateDetectionTrigger.PREVIEW_REQUEST,
+    )
+    assert result.outcome is CandidateDetectionOutcome.QUALIFIED_NOT_OFFERED
+    assert result.profile_status == AvatarStatus.DISABLED.value
+    assert result.source_asset_id is not None
+
+    db_session.expire_all()
+    reread = await db_session.get(AvatarProfile, profile_id)
+    assert reread is not None
+    assert reread.status == AvatarStatus.DISABLED.value
+    asset = await db_session.get(AvatarSourceAsset, result.source_asset_id)
+    assert asset is not None
+    assert asset.quality_status == AvatarQualityStatus.PASSED.value
+    assert asset.consent_status == AvatarConsentStatus.PENDING.value
+
+
+async def test_the_material_recorded_for_a_disabled_profile_is_what_consent_acts_on(
+    db_session: AsyncSession,
+) -> None:
+    """So the row is not spent: it is exactly what V3-013's consent endpoint
+    accepts, and that acceptance is the `disabled → preparing` edge. This is the
+    escape hatch acceptance 4 names, end to end."""
+    user_id = await _seed_user(db_session)
+    profile = await _seed_profile(db_session, user_id, AvatarStatus.DISABLED)
+
+    result = await _use_case(db_session).execute(
+        user_id=user_id,
+        source_type=AvatarSourceType.USER_UPLOAD,
+        object_key=OBJECT_KEY,
+        trigger=CandidateDetectionTrigger.PREVIEW_REQUEST,
+    )
+    asset = await db_session.get(AvatarSourceAsset, result.source_asset_id)
+    assert asset is not None
+
+    await AvatarLifecycle(db_session).record_consent(
+        profile, asset, accept=True, consent_version="v3-privacy-1"
+    )
+    assert profile.status == AvatarStatus.PREPARING.value
+    assert profile.disabled_at is None
+    assert asset.consent_status == AvatarConsentStatus.ACCEPTED.value
+
+
+async def test_offer_candidate_reports_whether_the_profile_actually_moved(
+    db_session: AsyncSession,
+) -> None:
+    """The signal the outcome above is built on, at its source."""
+    user_id = await _seed_user(db_session)
+    asset = AvatarSourceAsset(
+        user_id=user_id,
+        source_type=AvatarSourceType.OOTD_PHOTO.value,
+        source_object_key=OBJECT_KEY,
+        quality_status=AvatarQualityStatus.PASSED.value,
+    )
+    db_session.add(asset)
+    profile = AvatarProfile(user_id=user_id, status=AvatarStatus.NONE.value)
+    db_session.add(profile)
+    await db_session.flush()
+
+    lifecycle = AvatarLifecycle(db_session)
+    assert await lifecycle.offer_candidate(profile, asset) is True
+    assert profile.status == AvatarStatus.CANDIDATE.value
+    # Already offered: no transition, and it says so rather than repeating True.
+    assert await lifecycle.offer_candidate(profile, asset) is False

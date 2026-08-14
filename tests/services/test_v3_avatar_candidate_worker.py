@@ -51,10 +51,20 @@ from app.infrastructure.workers.avatar_candidate_worker import (
     drain_avatar_candidate_jobs,
 )
 
-OBJECT_KEY = "users/worker/ootd/one.jpg"
-#: Derived from the configured storage base, not hard-coded — see the same note
-#: in tests/api/test_v3_avatar_candidate_nonblocking.py.
-INTERNAL_URL = f"{Settings().LOCAL_STORAGE_BASE_URL.rstrip('/')}/files/{OBJECT_KEY}"
+STORAGE_BASE = Settings().LOCAL_STORAGE_BASE_URL.rstrip("/")
+
+
+def _object_key(user_id: uuid.UUID) -> str:
+    """User-scoped, because the enqueue refuses a key that was not issued to the
+    caller. A fixed literal would make every drain assertion below test that
+    guard instead of the worker."""
+    return f"users/{user_id}/ootd/one.jpg"
+
+
+def _internal_url(user_id: uuid.UUID) -> str:
+    #: Derived from the configured storage base, not hard-coded — see the same
+    #: note in tests/api/test_v3_avatar_candidate_nonblocking.py.
+    return f"{STORAGE_BASE}/files/{_object_key(user_id)}"
 
 GOOD_OBSERVATION = PersonFrameObservation(
     subject_region_count=1,
@@ -119,14 +129,14 @@ async def _seed_user(maker: async_sessionmaker[AsyncSession]) -> uuid.UUID:
 
 
 async def _queue(
-    maker: async_sessionmaker[AsyncSession], user_id: uuid.UUID, *, url: str = INTERNAL_URL
+    maker: async_sessionmaker[AsyncSession], user_id: uuid.UUID, *, url: str | None = None
 ) -> None:
     async with maker() as session:
         await enqueue_candidate_detection(
             session,
             user_id=user_id,
             source_type=AvatarSourceType.OOTD_PHOTO,
-            image_url=url,
+            image_url=url if url is not None else _internal_url(user_id),
             settings=get_settings().model_copy(update={"ENABLE_V3_AVATAR": True}),
         )
         await session.commit()
@@ -151,7 +161,7 @@ async def test_the_drain_assesses_a_queued_photo_and_marks_the_job_succeeded(
             sa.select(AvatarSourceAsset).where(AvatarSourceAsset.user_id == user_id)
         )
         assert asset is not None
-        assert asset.source_object_key == OBJECT_KEY
+        assert asset.source_object_key == _object_key(user_id)
         assert asset.quality_status == AvatarQualityStatus.PASSED.value
         # Acceptance 1 across the whole out-of-band path, not only in the
         # use case: the worker cannot grant consent either.
@@ -183,7 +193,7 @@ async def test_a_malformed_payload_fails_its_job_instead_of_killing_the_drain(
             AsyncJob(
                 job_type=JOB_TYPE,
                 idempotency_key=f"{JOB_TYPE}:broken:{uuid.uuid4()}",
-                payload={"user_id": "not-a-uuid", "object_key": OBJECT_KEY},
+                payload={"user_id": "not-a-uuid", "object_key": _object_key(uuid.uuid4())},
                 max_attempts=1,
             )
         )
@@ -273,7 +283,7 @@ async def test_the_savepoint_contains_a_duplicate_on_a_worker_owned_session(
             AvatarSourceAsset(
                 user_id=user_id,
                 source_type=AvatarSourceType.OOTD_PHOTO.value,
-                source_object_key=OBJECT_KEY,
+                source_object_key=_object_key(user_id),
                 quality_status=AvatarQualityStatus.PASSED.value,
             )
         )
@@ -289,7 +299,7 @@ async def test_the_savepoint_contains_a_duplicate_on_a_worker_owned_session(
         duplicate = await use_case._record(
             user_id=user_id,
             source_type=AvatarSourceType.OOTD_PHOTO,
-            object_key=OBJECT_KEY,
+            object_key=_object_key(user_id),
             quality_status=AvatarQualityStatus.PASSED,
             signals={"signals_version": "v3-012.1"},
         )
@@ -314,7 +324,7 @@ async def test_a_declined_user_is_left_alone_by_the_worker_too(
             AvatarSourceAsset(
                 user_id=user_id,
                 source_type=AvatarSourceType.OOTD_PHOTO.value,
-                source_object_key="users/worker/ootd/declined.jpg",
+                source_object_key=f"users/{user_id}/ootd/declined.jpg",
                 quality_status=AvatarQualityStatus.PASSED.value,
                 consent_status=AvatarConsentStatus.DECLINED.value,
                 consent_decided_at=sa.func.now(),
@@ -358,7 +368,7 @@ async def test_the_trigger_survives_the_queue(
             session,
             user_id=user_id,
             source_type=AvatarSourceType.USER_UPLOAD,
-            image_url=INTERNAL_URL,
+            image_url=_internal_url(user_id),
             settings=get_settings().model_copy(update={"ENABLE_V3_AVATAR": True}),
             trigger=CandidateDetectionTrigger.PREVIEW_REQUEST,
         )

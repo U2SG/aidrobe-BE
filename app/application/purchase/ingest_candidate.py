@@ -46,6 +46,7 @@ from app.infrastructure.persistence.models.purchase_decision import PurchaseCand
 from app.infrastructure.persistence.repositories.purchase_decision_repo import (
     SqlAlchemyPurchaseCandidateRepository,
 )
+from app.infrastructure.storage.object_key import is_owned_object_key
 
 logger = structlog.get_logger(__name__)
 
@@ -82,9 +83,13 @@ def assert_owned_object_key(object_key: str, user_id: uuid.UUID) -> None:
     a vision provider: a cross-user image read. Answered as NOT_FOUND rather
     than FORBIDDEN so the response cannot be used to probe which keys exist
     (contract §3, no existence leak).
+
+    The predicate itself is `is_owned_object_key`, shared with V3-012's avatar
+    candidate detection, which needs the same judgement but must answer with a
+    no-op rather than a 404 (its host flow is an OOTD save). Only the *response*
+    to a foreign key differs between the two surfaces; the rule must not.
     """
-    prefix = f"users/{user_id}/"
-    if not object_key.startswith(prefix) or ".." in object_key:
+    if not is_owned_object_key(object_key, user_id):
         raise FriendlyException(error_codes.NOT_FOUND, "Upload not found", status_code=404)
 
 

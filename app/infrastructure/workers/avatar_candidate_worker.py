@@ -70,11 +70,16 @@ async def _process_one(job: AsyncJob, *, detector: PersonFrameDetectorPort | Non
             trigger = CandidateDetectionTrigger(trigger_value)
             if not object_key:
                 raise ValueError("missing object_key")
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError):
             # A malformed payload is permanently bad; failing it is terminal
-            # because MAX_ATTEMPTS is 1 (see the enqueue module).
+            # because MAX_ATTEMPTS is 1 (see the enqueue module). A fixed string
+            # rather than the exception text: `AvatarSourceType("…")` and
+            # `uuid.UUID("…")` both quote the offending value back, and
+            # `async_jobs.error` is a persisted column, not a log line.
             async with AsyncSessionLocal() as session:
-                await mark_failed(session, job.id, claimed_attempt=job.attempts, error=str(exc))
+                await mark_failed(
+                    session, job.id, claimed_attempt=job.attempts, error="invalid_payload"
+                )
                 await session.commit()
             return
 
@@ -116,9 +121,19 @@ async def _process_one(job: AsyncJob, *, detector: PersonFrameDetectorPort | Non
                 await session.commit()
 
         except Exception as exc:
-            logger.exception("avatar.candidate_detection.failed", error=str(exc))
+            # Only the exception *type* is persisted. A DBAPI error carries the
+            # failing statement and its bound parameters, which for this job
+            # includes `source_object_key` — and `async_jobs.error` outlives any
+            # log retention. The traceback still goes to the log/Sentry channel,
+            # where operators need it; contract §7's persisted-artifact rules are
+            # what this branch is protecting.
+            logger.exception(
+                "avatar.candidate_detection.failed", error_type=type(exc).__name__
+            )
             async with AsyncSessionLocal() as session:
-                await mark_failed(session, job.id, claimed_attempt=job.attempts, error=str(exc))
+                await mark_failed(
+                    session, job.id, claimed_attempt=job.attempts, error=type(exc).__name__
+                )
                 await session.commit()
     finally:
         structlog.contextvars.unbind_contextvars("correlation_id", "job_id", "user_id")

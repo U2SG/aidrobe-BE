@@ -231,7 +231,15 @@ async def _offer_outfit_import_as_avatar_candidate(
     tells us. The rule layer would reject a flat-lay anyway, but it would have to
     fetch and segment the photo to do it, and a rejected row would then block
     that key forever via `one_row_per_source_object`.
+
+    The flag is read here rather than left to `enqueue_candidate_detection`,
+    which also checks it: reading the import task back costs a SELECT on every
+    confirm-items call, and a feature that is switched off must not charge the
+    import flow for existing.
     """
+    settings = get_settings()
+    if not settings.ENABLE_V3_AVATAR:
+        return
     task = await SqlAlchemyImportTaskRepository(session).get_for_user(task_id, user_id)
     if task is None or task.input_type != InputType.OUTFIT_IMAGE.value:
         return
@@ -244,7 +252,7 @@ async def _offer_outfit_import_as_avatar_candidate(
         user_id=user_id,
         source_type=AvatarSourceType.OUTFIT_IMPORT,
         image_url=image_url,
-        settings=get_settings(),
+        settings=settings,
         correlation_id=correlation_id if isinstance(correlation_id, str) else None,
     )
 
