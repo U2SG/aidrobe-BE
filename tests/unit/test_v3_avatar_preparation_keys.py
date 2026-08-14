@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import uuid
 
+from app.application.avatar.delete_avatar import JOB_TYPE as PURGE_JOB_TYPE
+from app.application.avatar.delete_avatar import purge_idempotency_key
 from app.application.avatar.prepare_avatar import (
     JOB_TYPE,
     MAX_ATTEMPTS,
@@ -175,3 +177,63 @@ def test_preparation_retries_where_detection_does_not() -> None:
 
     assert DETECTION_MAX_ATTEMPTS == 1
     assert MAX_ATTEMPTS > DETECTION_MAX_ATTEMPTS
+
+
+# --- the purge key, which had the same class of defect --------------------
+#
+# Codex review on BE#147, P1: `avatar_purge:{profile_id}` is not unique to one
+# deletion. The profile row survives a delete as a `disabled` tombstone and keeps
+# its id, so a second deletion after the frozen `disabled -> preparing` re-enable
+# composed the same key, `ON CONFLICT DO NOTHING` returned the SUCCEEDED first
+# job, and the rebuilt avatar's objects were never swept — while the response
+# reported them as scheduled. Pure function, so this is local evidence.
+
+
+def test_the_purge_key_separates_two_deletions_with_different_objects() -> None:
+    profile_id = uuid.uuid4()
+    first = purge_idempotency_key(profile_id, [f"users/{profile_id}/avatar/a.jpg"])
+    second = purge_idempotency_key(profile_id, [f"users/{profile_id}/avatar/b.jpg"])
+
+    assert first != second, "a rebuilt avatar's deletion must not reuse a completed job"
+
+
+def test_the_purge_key_is_stable_for_the_same_deletion() -> None:
+    """Retry idempotency is preserved, which is the point of digesting rather
+    than counting: two DELETEs over the same objects still collapse to one sweep."""
+    profile_id = uuid.uuid4()
+    keys = ["users/x/avatar/source.jpg", "users/x/avatar/canonical/front.png"]
+
+    assert purge_idempotency_key(profile_id, keys) == purge_idempotency_key(profile_id, keys)
+
+
+def test_the_purge_key_does_not_depend_on_key_order() -> None:
+    """The plan is assembled from two separate queries (versions, then source
+    assets), so an unstable order would mint a new key for an identical deletion
+    and re-open the double-sweep it exists to prevent."""
+    profile_id = uuid.uuid4()
+    keys = ["users/x/avatar/source.jpg", "users/x/avatar/canonical/front.png"]
+
+    assert purge_idempotency_key(profile_id, keys) == purge_idempotency_key(
+        profile_id, list(reversed(keys))
+    )
+
+
+def test_the_purge_key_is_the_same_profile_scoped_shape() -> None:
+    profile_id = uuid.uuid4()
+
+    key = purge_idempotency_key(profile_id, ["users/x/a.jpg"])
+
+    assert key.startswith(f"{PURGE_JOB_TYPE}:{profile_id}:")
+
+
+def test_a_huge_deletion_still_fits_the_idempotency_column() -> None:
+    """The whole reason the key set is digested rather than embedded: a user
+    with many photos would otherwise compose a key far past String(128) and 500
+    on the one request that must not fail — a deletion."""
+    profile_id = uuid.uuid4()
+    keys = [f"users/{profile_id}/avatar/source-{i}.jpg" for i in range(500)]
+
+    key = purge_idempotency_key(profile_id, keys)
+
+    assert len(key) == 82
+    assert len(key) <= 128

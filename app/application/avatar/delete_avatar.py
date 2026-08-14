@@ -49,7 +49,9 @@ the failure mode CLAUDE.md names; the limitation above is the honest alternative
 
 from __future__ import annotations
 
+import hashlib
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import structlog
@@ -74,6 +76,39 @@ JOB_TYPE = "avatar_purge"
 #: `delete_objects` is documented idempotent, so a retry after a partial success
 #: is safe by construction.
 MAX_ATTEMPTS = 3
+
+#: 32 hex chars of SHA-256 over the object keys this deletion covers. A length
+#: budget, not secrecy — the composed key is a fixed 82 characters against
+#: `idempotency_key`'s String(128), no matter how many objects are swept.
+_KEY_SET_DIGEST_CHARS = 32
+
+
+def purge_idempotency_key(profile_id: uuid.UUID, object_keys: Sequence[str]) -> str:
+    """Stable per (profile, exact set of objects being deleted).
+
+    Keyed on the profile **and the key set**, because the profile id alone is
+    not unique to one deletion. A deleted profile survives as a `disabled`
+    tombstone and keeps its id, so the frozen `disabled → preparing` re-enable
+    reuses it: delete, re-enable, upload, prepare, delete again, and the second
+    purge composed the same key as the first. `enqueue` is `ON CONFLICT DO
+    NOTHING`, so it returned the *succeeded* first job without replacing its
+    payload — and the new photo and canonical render were never swept, while the
+    response reported them as scheduled. Person material retained after a
+    deletion request, reported as deleted: the worst direction for this
+    particular bug to point.
+
+    Retry idempotency is preserved rather than traded away, which is why the
+    digest is over the key set and not a deletion counter: two DELETEs over the
+    *same* objects still compose the same key and still collapse to one sweep,
+    including the second call whose plan is empty. Sorted first, because the
+    plan's order comes from two separate queries and an unstable order would
+    mint a new key for an identical deletion — the same determinism trap V3-005
+    hit with its scan ordering.
+    """
+    digest = hashlib.sha256("\n".join(sorted(object_keys)).encode("utf-8")).hexdigest()[
+        :_KEY_SET_DIGEST_CHARS
+    ]
+    return f"{JOB_TYPE}:{profile_id}:{digest}"
 
 
 class AvatarProfileNotFound(Exception):
@@ -121,13 +156,12 @@ class DeleteAvatarProfile:
             job, created = await enqueue(
                 self.session,
                 job_type=JOB_TYPE,
-                # Keyed on the profile, not on the key list: a second DELETE
-                # while the first purge is still queued must not enqueue a second
-                # sweep over the same objects. The profile id is stable across
-                # both calls and the second call's plan is empty anyway (the rows
-                # are already gone), so this is belt-and-braces rather than the
-                # load-bearing guard.
-                idempotency_key=f"{JOB_TYPE}:{profile.id}",
+                # Keyed on the profile AND the exact key set — see
+                # `purge_idempotency_key`. A second DELETE over the same objects
+                # still collapses into the first sweep; a *later* deletion of a
+                # rebuilt avatar gets its own job instead of being swallowed by
+                # the completed one, which is what the profile-only key did.
+                idempotency_key=purge_idempotency_key(profile.id, keys),
                 payload={
                     "user_id": str(user_id),
                     "avatar_profile_id": str(profile.id),

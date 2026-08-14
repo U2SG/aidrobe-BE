@@ -30,7 +30,10 @@ before the version row is written. The reverse order can produce a `ready`
 profile pointing at an object that does not exist — a broken avatar the user
 cannot fix — whereas this order's worst case is an orphaned object with no row,
 which costs storage and is invisible to the user. Given a choice between leaking
-bytes and showing a user a broken likeness of themselves, leak the bytes.
+bytes and showing a user a broken likeness of themselves, leak the bytes. The
+one case where leaking them is *not* acceptable is a deletion that landed
+mid-preparation, where the orphan is a likeness of someone who asked for exactly
+that to be removed — so that path cleans up after itself explicitly.
 
 **What CI exercises.** `FakeAvatarPreparation` is local, deterministic and the
 only adapter in the tree (contract §6.4), so the whole `preparing → ready`
@@ -49,7 +52,12 @@ import structlog
 
 from app.application.ports.avatar_preparation import AvatarPreparationPort
 from app.bootstrap.container import avatar_preparation, object_storage
-from app.infrastructure.persistence.models.avatar import AvatarProfile, AvatarVersion
+from app.common.enums import AvatarStatus
+from app.infrastructure.persistence.models.avatar import (
+    AvatarProfile,
+    AvatarSourceAsset,
+    AvatarVersion,
+)
 from app.infrastructure.persistence.repositories.avatar_repo import AvatarLifecycle
 from app.infrastructure.persistence.session import AsyncSessionLocal
 from app.infrastructure.workers.job_runtime import (
@@ -121,15 +129,50 @@ async def _process_one(job: Any, *, preparation: AvatarPreparationPort | None = 
             async with AsyncSessionLocal() as session:
                 profile = await session.get(AvatarProfile, profile_id)
                 if profile is None or profile.user_id != user_id:
-                    # The profile was deleted (or never belonged to this user)
-                    # while the provider was working. Nothing to activate; the
-                    # freshly written objects are orphaned and swept by the
+                    # The profile was hard-deleted (account purge) or never
+                    # belonged to this user. Nothing to activate; the freshly
+                    # written objects are orphaned and swept by the
                     # account-level prefix purge. Not an error — the user's
                     # deletion is allowed to win a race with their own
                     # preparation.
                     await mark_succeeded(session, job.id, claimed_attempt=job.attempts)
                     await session.commit()
                     logger.info("avatar.preparation.profile_gone_discarding")
+                    return
+
+                # `DELETE /v1/avatar-profile` does NOT remove the profile row —
+                # it disables it as a tombstone and deletes the versions and
+                # source assets. So the guard above passes for a deleted avatar,
+                # and activating here would set the profile back to `ready`:
+                # a deleted avatar resurrected by a job the user could not see,
+                # over a `disabled → ready` edge §4.1 does not list, with a
+                # canonical render written after the purge plan was computed and
+                # therefore never swept. Two independent signals are checked
+                # because they are written by different statements and either
+                # one alone means the same thing.
+                source_gone = await session.get(AvatarSourceAsset, source_asset_id) is None
+                if profile.status == AvatarStatus.DISABLED.value or source_gone:
+                    await mark_succeeded(session, job.id, claimed_attempt=job.attempts)
+                    await session.commit()
+                    # These renders were written *after* the deletion computed
+                    # its purge plan, so the `avatar_purge` job does not know
+                    # about them. Left alone they are a generated likeness of a
+                    # user who asked us to delete exactly that — the account
+                    # prefix sweep would only reach them if the whole account
+                    # went too. Deleted here instead; `delete_objects` is
+                    # idempotent, and the rows they would have belonged to were
+                    # never written.
+                    await storage.delete_objects(
+                        [key for key in (front_key, side_key) if key is not None]
+                    )
+                    # A distinct event from `profile_gone_discarding`: that one
+                    # is an account purge, this one is a user deleting their
+                    # avatar mid-preparation. Different operator stories.
+                    logger.info(
+                        "avatar.preparation.deleted_discarding",
+                        profile_status=profile.status,
+                        source_gone=source_gone,
+                    )
                     return
 
                 version = AvatarVersion(

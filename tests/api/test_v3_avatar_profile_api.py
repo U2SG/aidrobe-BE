@@ -382,6 +382,103 @@ async def test_re_deciding_a_decided_candidate_is_a_conflict(
 # --- POST /v1/avatar-profile/uploads (source C) ----------------------------
 
 
+async def test_consent_emits_the_contracted_analytics_event_once(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review on BE#147, P1 — the frozen `v3_avatar_consent` emitter.
+
+    The analytics contract §0 assigns it to this feature by name ("emitters ship
+    with the feature that owns the surface ... V3-013 avatar"). Without it every
+    consent is missing from the consent-rate data the kill criteria are read
+    from, and no later feature is assigned to add it — V3-014/V3-015 are FE.
+
+    Emitted once per real decision: `record_consent` treats an exact repeat as an
+    idempotent retry, and counting a network retry as a second consent would
+    inflate the rate with duplicates of one user action.
+    """
+    _enable(monkeypatch)
+    emitted: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        avatar_router,
+        "emit_v3_event",
+        lambda name, fields, **kw: emitted.append({"name": name, "fields": dict(fields), **kw}),
+    )
+    user_id, profile, asset = await _seed_candidate(db_session)
+
+    body = {"accept": True, "consent_version": CONSENT_COPY_V1}
+    first = await client.post(
+        f"/v1/avatar-candidates/{asset.id}/consent", json=body, headers=_headers(user_id)
+    )
+    repeat = await client.post(
+        f"/v1/avatar-candidates/{asset.id}/consent", json=body, headers=_headers(user_id)
+    )
+
+    assert first.status_code == 200
+    assert repeat.status_code == 200, "an exact repeat is an idempotent retry, not a conflict"
+    assert len(emitted) == 1, "the idempotent repeat must not be counted twice"
+    assert emitted[0]["name"] == "v3_avatar_consent"
+    # Exactly the frozen field set: no photo, no key, no consent copy text.
+    assert emitted[0]["fields"] == {
+        "accepted": True,
+        "source_type": AvatarSourceType.OOTD_PHOTO.value,
+    }
+    assert emitted[0]["user_id"] == user_id
+
+
+async def test_a_declined_consent_is_also_emitted(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`accepted` is a field of the event, not a filter on it — a consent rate
+    computed from acceptances alone has no denominator."""
+    _enable(monkeypatch)
+    emitted: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        avatar_router,
+        "emit_v3_event",
+        lambda name, fields, **kw: emitted.append({"name": name, "fields": dict(fields), **kw}),
+    )
+    user_id, profile, asset = await _seed_candidate(db_session)
+
+    await client.post(
+        f"/v1/avatar-candidates/{asset.id}/consent",
+        json={"accept": False},
+        headers=_headers(user_id),
+    )
+
+    assert len(emitted) == 1
+    assert emitted[0]["fields"]["accepted"] is False
+
+
+async def test_deletion_emits_the_contracted_analytics_event(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review on BE#147, P2 — the frozen `v3_avatar_deleted` emitter.
+
+    `not_applicable` for `flow_id`, so none may be passed: `validate_v3_event`
+    rejects the event outright if one is, and `emit_v3_event` swallows the
+    failure with a warning. Getting that backwards deletes the event, not the
+    request, which is why the absence of a flow is asserted rather than assumed.
+    """
+    _enable(monkeypatch)
+    emitted: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        avatar_router,
+        "emit_v3_event",
+        lambda name, fields, **kw: emitted.append({"name": name, "fields": dict(fields), **kw}),
+    )
+    user_id, profile, asset = await _seed_candidate(db_session)
+
+    response = await client.delete(
+        "/v1/avatar-profile?purge_derived=true", headers=_headers(user_id)
+    )
+
+    assert response.status_code == 200
+    assert len(emitted) == 1
+    assert emitted[0]["name"] == "v3_avatar_deleted"
+    assert emitted[0]["fields"] == {"purge_derived": True}
+    assert emitted[0].get("flow_id") is None
+
+
 async def test_registering_an_upload_queues_detection_as_a_preview_request(
     client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:

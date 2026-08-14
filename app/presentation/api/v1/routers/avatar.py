@@ -51,7 +51,9 @@ from app.application.avatar.prepare_avatar import (
     PrepareAvatar,
 )
 from app.common import error_codes
-from app.common.enums import AvatarSourceType, AvatarStatus
+from app.common.analytics_emit import emit_v3_event
+from app.common.analytics_events import V3AnalyticsEventName
+from app.common.enums import AvatarConsentStatus, AvatarSourceType, AvatarStatus
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.avatar import (
@@ -122,6 +124,22 @@ _PREPARE_ERRORS: dict[PreparationRefusal, tuple[int, str, int]] = {
         409,
     ),
 }
+
+
+def _flow_id() -> str | None:
+    """The request's correlation id, when it is one a funnel can join on.
+
+    `v3_avatar_consent` is `when_in_flow`, not `required` — a consent reached
+    outside a preview flow is still a consent and must still be counted, so
+    unlike V3-008's `required` emitter this returns None rather than suppressing
+    the event. A fabricated id would corrupt every funnel join, so a
+    non-UUID correlation id yields no flow rather than a made-up one.
+    """
+    correlation_id = structlog.contextvars.get_contextvars().get("correlation_id")
+    try:
+        return str(uuid.UUID(str(correlation_id)))
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 async def _load_profile(session: AsyncSession, user_id: uuid.UUID) -> AvatarProfile | None:
@@ -266,6 +284,11 @@ async def decide_avatar_consent(
         # against.
         raise FriendlyException(error_codes.NOT_FOUND, "no avatar profile", status_code=404)
 
+    # Read before the decision is applied: `record_consent` treats an exact
+    # repeat as an idempotent retry and returns quietly, so afterwards a network
+    # retry is indistinguishable from a fresh decision. Counting both would
+    # inflate the consent rate with duplicates of one user action.
+    was_undecided = asset.consent_status == AvatarConsentStatus.PENDING.value
     try:
         await AvatarLifecycle(session).record_consent(
             profile,
@@ -287,6 +310,17 @@ async def decide_avatar_consent(
         profile_status=profile.status,
         source_type=asset.source_type,
     )
+    if was_undecided:
+        # V3-013 owns the backend avatar emitters (analytics contract §0:
+        # "emitters ship with the feature that owns the surface ... V3-013
+        # avatar"). A decline is emitted too — `accepted` is a field of the
+        # event, not a filter on it, and the consent rate needs both halves.
+        emit_v3_event(
+            V3AnalyticsEventName.AVATAR_CONSENT.value,
+            {"accepted": payload.accept, "source_type": asset.source_type},
+            user_id=user.id,
+            flow_id=_flow_id(),
+        )
     return AvatarConsentResponse(
         status=profile.status,
         source_asset_id=str(asset.id),
@@ -428,6 +462,18 @@ async def delete_avatar_profile(
         raise FriendlyException(
             error_codes.NOT_FOUND, "no avatar profile", status_code=404
         ) from exc
+
+    # `not_applicable`, so no flow_id may be passed — deletion is a settings
+    # action, not a step in a preview funnel, and `validate_v3_event` rejects
+    # one outright. A repeated DELETE emits again on purpose: the second call is
+    # a real user request to delete, answered honestly with nothing left to
+    # remove, and suppressing it would hide a user deleting twice because they
+    # did not believe us the first time.
+    emit_v3_event(
+        V3AnalyticsEventName.AVATAR_DELETED.value,
+        {"purge_derived": deleted.plan.purge_derived},
+        user_id=user.id,
+    )
 
     return AvatarDeleteResponse(
         status=AvatarStatus.DISABLED.value,

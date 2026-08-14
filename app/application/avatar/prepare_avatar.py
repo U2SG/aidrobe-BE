@@ -8,17 +8,22 @@ row. `avatar_preparation_worker` does the paid part later, on its own session.
 **Two independent guards, because one of them is not enough.**
 
 1. **The in-flight conflict.** Contract §4.2 freezes it: "prepare/replace while
-   a preparation job is running ⇒ `4091 STATE_CONFLICT`". That is a *read* of
-   the job table, so it is subject to a race — two requests can both read "no
-   job running" before either inserts.
+   a preparation job is running ⇒ `4091 STATE_CONFLICT`". It is a *read* of the
+   job table, so on its own it races — two requests can both read "no job
+   running" before either inserts. The `FOR UPDATE` lock on the profile row in
+   `execute` is what closes that: preparations are per-profile, so serializing
+   on the profile makes the read and the insert one critical section.
 2. **The idempotency key.** `job_runtime.enqueue` is idempotent on
-   `idempotency_key` (a unique index), so the loser of that race gets the
-   existing row rather than a second one. This is the guard that actually holds
-   under concurrency; the 409 is what makes a *sequential* duplicate legible to
-   the client instead of looking like fresh work was started.
+   `idempotency_key` (a unique index), so even without the lock a duplicate that
+   slipped past the read gets the existing row rather than a second one.
 
-Neither is decorative and they fail in opposite directions, which is why both
-are here. A test covers each ordering: sequential-while-running gets the 409,
+Neither is decorative and they cover different failures, which is why both are
+here — the key alone is not sufficient, and that is the specific hole the lock
+fills. The key is stable per (profile, source photo, pipeline), so two racing
+requests only collide on it when they picked the *same* source; a new consent
+committing between them yields two different keys and, before the lock, two
+paid preparations for one profile with completion order deciding whose avatar
+went live. A test covers each ordering: sequential-while-running gets the 409,
 and a duplicate that slips past the read collides on the key and charges once.
 
 **What the key is made of, and why.** Everything that determines the paid work:
@@ -229,8 +234,17 @@ class PrepareAvatar:
         mode: PreparationMode,
         correlation_id: str | None = None,
     ) -> PreparationStarted:
+        # `FOR UPDATE` on the profile row, taken before anything is read, is
+        # what makes the in-flight check below race-free. Without it the key is
+        # the only guard, and the key only holds when both requests select the
+        # SAME source: two concurrent prepares that straddle a new consent pick
+        # different sources, compose different keys, and both enqueue — two paid
+        # preparations for one profile, with completion order deciding whose
+        # avatar goes live. Serializing per profile is enough because every
+        # preparation is scoped to one, and the lock is released when the
+        # request's session commits.
         profile = await self.session.scalar(
-            select(AvatarProfile).where(AvatarProfile.user_id == user_id)
+            select(AvatarProfile).where(AvatarProfile.user_id == user_id).with_for_update()
         )
         if profile is None:
             raise PreparationRefused(PreparationRefusal.NO_PROFILE)

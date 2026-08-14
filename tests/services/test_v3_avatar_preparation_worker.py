@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from app.application.avatar.delete_avatar import DeleteAvatarProfile
 from app.application.avatar.prepare_avatar import (
     JOB_TYPE as PREPARATION_JOB_TYPE,
 )
@@ -721,6 +722,58 @@ async def test_a_deleted_profile_does_not_get_a_version_activated(
             ).all()
         )
         assert versions == []
+
+
+async def test_an_avatar_deleted_mid_preparation_is_not_resurrected(
+    factory: async_sessionmaker[AsyncSession], storage: _FakeStorage
+) -> None:
+    """Codex review on BE#147, P1 — deletion must win this race.
+
+    `DELETE /v1/avatar-profile` does not remove the profile row: it disables it
+    as a tombstone and deletes the versions and source assets. The worker's only
+    guard was `profile is None`, which a tombstone passes, so a preparation
+    already in flight went on to `activate_version` and put the profile back to
+    `ready` — an avatar the user deleted, restored by a job they could not see,
+    over a `disabled -> ready` edge S4.1 does not list. The canonical render was
+    written after the purge plan was computed, so it was never swept either.
+
+    The photo is read before the delete lands (the provider is slow, the user is
+    not), so this is the genuine ordering rather than a shortcut.
+    """
+    user_id, profile_id, _source_key = await _seed_consented_user(factory)
+    started = await _queue_preparation(factory, user_id)
+    async with factory() as session:
+        await DeleteAvatarProfile(session).execute(user_id=user_id, purge_derived=True)
+        await session.commit()
+    objects_before = set(storage.objects)
+
+    assert await drain_avatar_preparation_jobs(ctx=None) == 1
+
+    async with factory() as session:
+        profile = await session.get(AvatarProfile, profile_id)
+        assert profile is not None
+        assert profile.status == AvatarStatus.DISABLED.value, "a deleted avatar stays deleted"
+        assert profile.active_version_id is None
+        versions = list(
+            (
+                await session.scalars(
+                    sa.select(AvatarVersion).where(AvatarVersion.avatar_profile_id == profile_id)
+                )
+            ).all()
+        )
+        assert versions == []
+    # Discarded work is not a failure: the job is terminal, so nothing retries
+    # this forever.
+    job = await _job(factory, started.job_id)
+    assert job.status == "succeeded"
+    # The renders written mid-race are swept rather than left behind. They are a
+    # generated likeness of a user who asked for exactly that to be deleted, and
+    # the purge job's key list was computed before they existed. Asserted as
+    # "everything written is also deleted" rather than "some key was deleted",
+    # so a side render would have to be swept too.
+    written = set(storage.objects) - objects_before
+    assert written, "the provider really did run and write a render before the discard"
+    assert written <= set(storage.deleted)
 
 
 async def test_an_invalid_payload_fails_without_leaking_its_value(

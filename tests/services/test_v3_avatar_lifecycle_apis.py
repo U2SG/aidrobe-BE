@@ -753,6 +753,68 @@ async def test_deleting_twice_is_idempotent(db_session: AsyncSession) -> None:
     assert len(await _jobs(db_session, PURGE_JOB_TYPE)) == 1
 
 
+async def test_deleting_a_rebuilt_avatar_schedules_its_own_purge(
+    db_session: AsyncSession,
+) -> None:
+    """Codex review on BE#147, P1 — the completed job must not swallow it.
+
+    The profile id survives a deletion (the tombstone keeps it) and the frozen
+    `disabled -> preparing` re-enable reuses it, so `avatar_purge:{profile_id}`
+    was not unique to one deletion. Once the first purge had SUCCEEDED, the
+    second deletion's `enqueue` hit that key, `ON CONFLICT DO NOTHING` returned
+    the finished job without replacing its payload, and the rebuilt avatar's
+    photo and canonical render were never swept — while the response reported
+    them as scheduled. Person material retained after a deletion request, and
+    reported as deleted.
+    """
+    user_id, profile, version, asset = await _ready_profile_with_material(db_session)
+    first = await DeleteAvatarProfile(db_session).execute(user_id=user_id, purge_derived=True)
+    first_job = (await _jobs(db_session, PURGE_JOB_TYPE))[0]
+    # The first sweep finishes, which is what made the old key permanent.
+    first_job.status = JOB_STATUS_SUCCEEDED
+    await db_session.flush()
+
+    # The user comes back: new photo, new consent, new version, live again.
+    rebuilt_asset = AvatarSourceAsset(
+        user_id=user_id,
+        source_type=AvatarSourceType.USER_UPLOAD.value,
+        source_object_key=f"users/{user_id}/avatar/rebuilt-source.jpg",
+        quality_status=AvatarQualityStatus.PASSED.value,
+        consent_status=AvatarConsentStatus.PENDING.value,
+    )
+    db_session.add(rebuilt_asset)
+    await db_session.flush()
+    lifecycle = AvatarLifecycle(db_session)
+    await lifecycle.record_consent(
+        profile, rebuilt_asset, accept=True, consent_version=CONSENT_COPY_V1
+    )
+    rebuilt_version = AvatarVersion(
+        avatar_profile_id=profile.id,
+        source_asset_ids=[str(rebuilt_asset.id)],
+        provider="fake",
+        model_version="m2",
+        prompt_version="p1",
+        canonical_front_object_key=f"users/{user_id}/avatar/canonical/rebuilt-front.png",
+    )
+    db_session.add(rebuilt_version)
+    await db_session.flush()
+    await lifecycle.activate_version(profile, rebuilt_version)
+
+    second = await DeleteAvatarProfile(db_session).execute(user_id=user_id, purge_derived=True)
+
+    assert second.purge_job_id is not None
+    assert second.purge_job_id != first.purge_job_id
+    jobs = await _jobs(db_session, PURGE_JOB_TYPE)
+    assert len(jobs) == 2
+    scheduled = next(job for job in jobs if job.id == second.purge_job_id)
+    assert scheduled.status == JOB_STATUS_QUEUED
+    keys = scheduled.payload["object_keys"] if scheduled.payload else []
+    assert rebuilt_asset.source_object_key in keys
+    assert rebuilt_version.canonical_front_object_key in keys
+    # And the response is not lying about what will be swept.
+    assert second.deleted_object_count == len(keys)
+
+
 async def test_delete_without_a_profile_is_not_found(db_session: AsyncSession) -> None:
     user_id = await _seed_user(db_session)
 
