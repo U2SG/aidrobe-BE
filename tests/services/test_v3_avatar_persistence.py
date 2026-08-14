@@ -199,6 +199,83 @@ async def test_declining_is_terminal_and_records_no_consent(db_session: AsyncSes
     assert profile.consent_version is None
 
 
+async def test_a_declined_asset_cannot_later_be_accepted(db_session: AsyncSession) -> None:
+    """"Terminal" has to mean the row cannot be re-decided.
+
+    If a replayed or malicious second call could flip `declined` to `accepted`,
+    "accept=false dismisses that candidate permanently" (contract §4.2) would
+    be a UI convention rather than a property of the record.
+    """
+    user_id = await _seed_user(db_session)
+    asset = await _add_asset(db_session, user_id, object_key="users/u/avatar-src/a.jpg")
+    profile = await _add_profile(db_session, user_id)
+    lifecycle = AvatarLifecycle(db_session)
+    await lifecycle.record_consent(profile, asset, accept=False)
+
+    with pytest.raises(ValueError):
+        await lifecycle.record_consent(profile, asset, accept=True, consent_version=CONSENT_COPY_V1)
+
+    assert asset.consent_status == AvatarConsentStatus.DECLINED.value
+    assert profile.consent_version is None
+
+
+async def test_re_accepting_under_a_newer_copy_cannot_rewrite_the_audit_record(
+    db_session: AsyncSession,
+) -> None:
+    """The consent record says which text the user was actually shown. A second
+    call under a revised copy version must not overwrite that."""
+    user_id = await _seed_user(db_session)
+    asset = await _add_asset(db_session, user_id, object_key="users/u/avatar-src/a.jpg")
+    profile = await _add_profile(db_session, user_id)
+    lifecycle = AvatarLifecycle(db_session)
+    await lifecycle.record_consent(profile, asset, accept=True, consent_version=CONSENT_COPY_V1)
+
+    with pytest.raises(ValueError):
+        await lifecycle.record_consent(profile, asset, accept=True, consent_version=CONSENT_COPY_V2)
+
+    assert asset.consent_version == CONSENT_COPY_V1
+
+
+async def test_an_identical_repeat_is_an_idempotent_retry_not_an_error(
+    db_session: AsyncSession,
+) -> None:
+    """Network retries are normal; replaying the exact same decision must not
+    500, and must not move the recorded timestamp."""
+    user_id = await _seed_user(db_session)
+    asset = await _add_asset(db_session, user_id, object_key="users/u/avatar-src/a.jpg")
+    profile = await _add_profile(db_session, user_id)
+    lifecycle = AvatarLifecycle(db_session)
+    first = datetime(2026, 8, 14, 9, 0, tzinfo=UTC)
+    await lifecycle.record_consent(profile, asset, accept=True, consent_version=CONSENT_COPY_V1, now=first)
+
+    await lifecycle.record_consent(
+        profile, asset, accept=True, consent_version=CONSENT_COPY_V1, now=first + timedelta(hours=1)
+    )
+
+    assert asset.consent_decided_at == first
+    assert asset.consent_version == CONSENT_COPY_V1
+
+
+async def test_a_version_from_another_profile_cannot_be_activated(db_session: AsyncSession) -> None:
+    """No foreign key can express "this version belongs to this profile", so the
+    pairing is checked. Without it, one user's profile could point at another
+    user's canonical render — a body-image leak between accounts.
+    """
+    owner = await _seed_user(db_session)
+    stranger = await _seed_user(db_session)
+    owner_profile = await _add_profile(db_session, owner)
+    stranger_profile = await _add_profile(db_session, stranger)
+    stranger_version = await _add_version(
+        db_session, stranger_profile, front_key="users/stranger/avatar-canonical/front.png"
+    )
+
+    with pytest.raises(ValueError):
+        await AvatarLifecycle(db_session).activate_version(owner_profile, stranger_version)
+
+    assert owner_profile.active_version_id is None
+    assert owner_profile.status == AvatarStatus.CANDIDATE.value
+
+
 async def test_a_declined_photo_cannot_be_offered_a_second_time(db_session: AsyncSession) -> None:
     """"每张候选只提示一次" (V3_SPEC §7.3) enforced by the database, not by
     V3-012 remembering to check."""

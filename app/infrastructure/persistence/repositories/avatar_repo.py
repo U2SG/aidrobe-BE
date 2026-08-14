@@ -193,8 +193,26 @@ class AvatarLifecycle:
         consent was given. It does move a `candidate` profile back to `none` —
         the offer is withdrawn — but it never writes `disabled_at` or a consent
         version: refusing one photo is not revoking the avatar.
+
+        **A decided asset is not re-decidable.** "Terminal" has to mean the row
+        cannot be re-decided, not merely that the UI stops offering it:
+        otherwise a declined photo could be flipped to accepted by a replayed
+        request, and re-accepting under newer copy would silently rewrite the
+        audit record of what the user was actually shown. An exact repeat is
+        treated as an idempotent retry (network retries are normal and must not
+        500); anything else raises, which V3-013 maps to the frozen
+        `4091 STATE_CONFLICT`.
         """
         decided_at = now or datetime.now(UTC)
+        if asset.consent_status != AvatarConsentStatus.PENDING.value:
+            already = asset.consent_status == (
+                AvatarConsentStatus.ACCEPTED.value if accept else AvatarConsentStatus.DECLINED.value
+            )
+            if already and asset.consent_version == (consent_version if accept else None):
+                return
+            raise ValueError(
+                "consent for this source asset is already decided and cannot be changed"
+            )
         if not accept:
             asset.consent_status = AvatarConsentStatus.DECLINED.value
             asset.consent_decided_at = decided_at
@@ -245,7 +263,18 @@ class AvatarLifecycle:
         swap on success ... replace failure keeps the previous version active":
         a failed preparation simply never reaches this method, so the old row
         is still live and still pointed at.
+
+        The pairing is checked rather than trusted. No foreign key can express
+        "this version belongs to this profile" — `active_version_id` only
+        references `avatar_versions.id` — so a caller that mixed up ids while
+        finalizing concurrent preparations could point profile A at profile B's
+        canonical render, i.e. show one person another person's avatar. It
+        would also wedge B: deleting B's version fires ON DELETE SET NULL
+        against A's row and trips A's ready-state CHECK. A leak between two
+        users' body images is not a defect worth leaving to caller discipline.
         """
+        if version.avatar_profile_id != profile.id:
+            raise ValueError("cannot activate a version that belongs to a different avatar profile")
         retired_at = now or datetime.now(UTC)
         previous_id = profile.active_version_id
         if previous_id is not None and previous_id != version.id:

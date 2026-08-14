@@ -19,6 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import Settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
+from app.infrastructure.persistence.models.avatar import (
+    AvatarProfile,
+    AvatarSourceAsset,
+    AvatarVersion,
+)
 from app.infrastructure.persistence.models.image_job import ImageProcessingJob
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
 from app.infrastructure.persistence.models.purchase_decision import PurchaseCandidate
@@ -125,6 +130,46 @@ async def collect_user_object_keys(
     for (obj_key,) in pc_rows:
         if obj_key:
             keys.append(obj_key)
+
+    # Avatar (V3-011) — person-reference material and the canonical renders
+    # derived from it. Both are stored as bare object keys with no URL column,
+    # so they are taken directly. Rows cascade away via the users FK, and
+    # without this the most sensitive blobs the product holds would be orphaned
+    # in storage with their keys no longer recoverable from anywhere.
+    #
+    # Every source key is collected here, including `ootd_photo` /
+    # `outfit_import` material that the avatar only *referenced*. That is the
+    # opposite of `AvatarLifecycle.delete_avatar`, which deliberately leaves
+    # those objects alone — and the two are consistent, because they answer
+    # different questions. Deleting the avatar must not take the user's OOTD
+    # photo out of a history they are keeping; clearing the account is a
+    # request for all of it to go, and the OOTD row that also owns that key is
+    # being collected two blocks below regardless.
+    avatar_source_rows = (
+        await session.execute(
+            select(AvatarSourceAsset.source_object_key).where(AvatarSourceAsset.user_id == user_id)
+        )
+    ).all()
+    for (obj_key,) in avatar_source_rows:
+        if obj_key:
+            keys.append(obj_key)
+
+    avatar_version_rows = (
+        await session.execute(
+            select(
+                AvatarVersion.canonical_front_object_key,
+                AvatarVersion.canonical_side_object_key,
+            ).where(
+                AvatarVersion.avatar_profile_id.in_(
+                    select(AvatarProfile.id).where(AvatarProfile.user_id == user_id)
+                )
+            )
+        )
+    ).all()
+    for front_key, side_key in avatar_version_rows:
+        for obj_key in (front_key, side_key):
+            if obj_key:
+                keys.append(obj_key)
 
     # WearHistory
     wh_rows = (
