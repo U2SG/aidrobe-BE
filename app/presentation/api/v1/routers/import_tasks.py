@@ -1,14 +1,16 @@
 import uuid
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, status
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.avatar.enqueue_candidate_detection import enqueue_candidate_detection
 from app.application.import_tasks.confirm_import import ConfirmImageImportTask, ConfirmItemInput
 from app.application.import_tasks.create_import import CreateImageImportTask
 from app.common import error_codes
-from app.common.enums import InputType
+from app.common.enums import AvatarSourceType, InputType
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
 from app.infrastructure.cache.client import get_redis_client, invalidate_daily_recommendation_cache
@@ -202,10 +204,56 @@ async def confirm_import_items(
             {"category": item.category, "color_main": item.color_main},
         )
     await invalidate_daily_recommendation_cache(redis_client, current_user.id)
+    await _offer_outfit_import_as_avatar_candidate(session, task_id=task_id, user_id=current_user.id)
     return ResponseModel(
         data=ConfirmItemsResponse(
             created_items=[ConfirmedItem(temp_item_id=temp_id, item_id=item.id) for temp_id, item in created]
         )
+    )
+
+
+async def _offer_outfit_import_as_avatar_candidate(
+    session: AsyncSession, *, task_id: uuid.UUID, user_id: uuid.UUID
+) -> None:
+    """V3-012 source B (V3_SPEC §7.1): the full-body photo a user uploaded to
+    split into garments may also be reusable person reference material.
+
+    Hooked here, after the garments are confirmed, because §7.1 requires the
+    person-reference question to come **after** the clothing import completes and
+    to be authorized separately — importing clothes never implies consent
+    (contract §4.3). Queue-only: the enqueue contains its own failures, so a
+    detection problem cannot fail an import the user has already completed.
+
+    Filtered to `input_type == outfit_image` — that is the one input type whose
+    subject is a person wearing an outfit. `image`/`screenshot`/`receipt_*` are
+    single garments, product pages and receipts; running human segmentation over
+    a taobao screenshot would burn CPU to learn what the input type already
+    tells us. The rule layer would reject a flat-lay anyway, but it would have to
+    fetch and segment the photo to do it, and a rejected row would then block
+    that key forever via `one_row_per_source_object`.
+
+    The flag is read here rather than left to `enqueue_candidate_detection`,
+    which also checks it: reading the import task back costs a SELECT on every
+    confirm-items call, and a feature that is switched off must not charge the
+    import flow for existing.
+    """
+    settings = get_settings()
+    if not settings.ENABLE_V3_AVATAR:
+        return
+    task = await SqlAlchemyImportTaskRepository(session).get_for_user(task_id, user_id)
+    if task is None or task.input_type != InputType.OUTFIT_IMAGE.value:
+        return
+    image_url = (task.input_payload or {}).get("image_url")
+    if not isinstance(image_url, str):
+        return
+    correlation_id = structlog.contextvars.get_contextvars().get("correlation_id")
+    await enqueue_candidate_detection(
+        session,
+        user_id=user_id,
+        source_type=AvatarSourceType.OUTFIT_IMPORT,
+        image_url=image_url,
+        settings=settings,
+        correlation_id=correlation_id if isinstance(correlation_id, str) else None,
     )
 
 

@@ -8,6 +8,7 @@ except ImportError:  # arq is optional at runtime
     RedisSettings = None  # type: ignore[assignment, misc]
     create_pool = None  # type: ignore[assignment]
 
+from app.application.ports.avatar_detection import PersonFrameDetectorPort
 from app.application.ports.embedding import EmbeddingPort
 from app.application.ports.image_cutout import ImageCutoutPort
 from app.application.ports.llm import LlmPort
@@ -96,6 +97,31 @@ def image_cutout_service() -> ImageCutoutPort:
     if settings.IMAGE_CUTOUT_PROVIDER == "openai":
         return OpenAIImageCutout(settings)
     return FakeImageCutout()
+
+
+def person_frame_detector() -> PersonFrameDetectorPort:
+    """V3-012 — what measures a photo for avatar candidate detection.
+
+    ``unavailable`` (default) determines nothing, so material stays ``pending``:
+    unassessed, never offered, never rejected. ``human_seg`` runs the local
+    rembg/u2net_human_seg model — no third party and no network, which is what
+    lets this look at real user photos at all (CLAUDE.md forbids sending them to
+    a provider during development loops, and a hosted vision API would also be a
+    provider choice, i.e. a human gate).
+
+    Lazy-imported to match ``image_cutout_service`` / ``ocr_service``, and here
+    it also matters that merely selecting the default never touches PIL or the
+    optional segmentation extras.
+    """
+    from app.infrastructure.vision.person_frame_detector import (
+        MaskPersonFrameDetector,
+        UnavailablePersonFrameDetector,
+    )
+
+    settings = get_settings()
+    if settings.AVATAR_PERSON_DETECTOR == "human_seg":
+        return MaskPersonFrameDetector()
+    return UnavailablePersonFrameDetector()
 
 
 def ocr_service() -> OcrPort:

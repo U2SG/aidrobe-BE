@@ -2,9 +2,78 @@
 
 from __future__ import annotations
 
+import uuid
 from urllib.parse import unquote, urlparse
 
 from app.config.settings import Settings
+
+#: Phase E5 per-purpose buckets (plan §2.9), by settings field. Used only to
+#: recognize our own objects in a bucket we cannot resolve a key for — see
+#: `names_unresolvable_per_purpose_bucket`.
+_PER_PURPOSE_BUCKET_FIELDS = (
+    "ALIYUN_OSS_BUCKET_ITEMS",
+    "ALIYUN_OSS_BUCKET_OOTD",
+    "ALIYUN_OSS_BUCKET_PRIVATE",
+    "ALIYUN_OSS_BUCKET_DERIVED",
+)
+
+
+def is_owned_object_key(object_key: str, user_id: uuid.UUID) -> bool:
+    """Was this key issued to *this* user by one of our upload surfaces?
+
+    `POST /v1/uploads/presign` issues keys under `users/<user_id>/`, and
+    `POST /v1/uploads/sts-token` scopes its temporary credentials to
+    `users/<user_id>/<action>/`. A key from anywhere else was never handed to
+    this caller, so a request that names one is asking us to read someone
+    else's object with backend credentials — the URL's own access controls are
+    not in the path at all once we hold a key.
+
+    The predicate lives here, once, because two surfaces need it: V3-004's
+    purchase-candidate ingest (`assert_owned_object_key`, which answers 404 so
+    the response cannot be used to probe which keys exist) and V3-012's avatar
+    candidate detection (which must not answer at all — its host flow is an
+    OOTD save that has to succeed). Two copies of a cross-user-read guard would
+    be two chances to fix only one of them.
+
+    `..` is rejected outright rather than normalized: no legitimate key we
+    issue contains it, and a traversal segment is how a key that starts with
+    the right prefix can still address something else.
+    """
+    return object_key.startswith(f"users/{user_id}/") and ".." not in object_key
+
+
+def names_unresolvable_per_purpose_bucket(image_url: str | None, settings: Settings) -> bool:
+    """Is this one of *our* objects in a bucket we deliberately cannot resolve?
+
+    `extract_internal_object_key` returns None for a URL in a Phase E5
+    per-purpose bucket (items/ootd/private/derived) on purpose — resolving it
+    would hand a bare key to a signer that signs against `ALIYUN_OSS_BUCKET`,
+    producing a valid-looking URL for the wrong bucket. That refusal is
+    correct, but it makes `None` cover two very different situations: an
+    external URL that is none of our business, and our own photo somewhere the
+    read path cannot reach.
+
+    This predicate separates them so the second can be *reported* instead of
+    looking like the first. It resolves no key and grants no access; it only
+    recognizes the bucket in the host or path, using the same
+    scheme-qualified-endpoint assumption as `_key_after_endpoint_bucket`.
+    """
+    if not image_url or not settings.ALIYUN_OSS_ENDPOINT:
+        return False
+    parsed = urlparse(image_url)
+    endpoint = urlparse(settings.ALIYUN_OSS_ENDPOINT)
+    endpoint_path = endpoint.path.rstrip("/")
+    for field in _PER_PURPOSE_BUCKET_FIELDS:
+        bucket = str(getattr(settings, field, "") or "")
+        # A single-bucket dev config that aliases a purpose onto the default
+        # bucket IS resolvable, so it is not this case.
+        if not bucket or bucket == settings.ALIYUN_OSS_BUCKET:
+            continue
+        if parsed.netloc == f"{bucket}.{endpoint.netloc}":
+            return True
+        if parsed.netloc == endpoint.netloc and parsed.path.startswith(f"{endpoint_path}/{bucket}/"):
+            return True
+    return False
 
 
 def extract_internal_object_key(

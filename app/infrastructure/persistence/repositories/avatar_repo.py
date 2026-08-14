@@ -16,8 +16,10 @@ What lives elsewhere on purpose:
 - **Prepare / replace jobs** (V3-013) — this module never calls a provider and
   never enqueues work. `activate_version` is the *landing* of a preparation
   that already succeeded.
-- **Candidate detection** (V3-012) — `AvatarSourceAssetRepository.add` will
-  accept whatever V3-012 detects, and cannot grant consent while doing so.
+- **Candidate detection** (V3-012) — `app/application/avatar/detect_candidate.py`
+  decides *whether* a photo is worth offering; the `none → candidate`
+  transition it produces lands in `offer_candidate` below, which cannot grant
+  consent because consent is not one of its parameters.
 - **Derived try-on asset purge** (V3-013/V3-018) — see `AvatarDeletionPlan`.
 """
 
@@ -32,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.enums import (
     AVATAR_OWNED_SOURCE_TYPES,
     AvatarConsentStatus,
+    AvatarQualityStatus,
     AvatarSourceType,
     AvatarStatus,
 )
@@ -114,6 +117,74 @@ class SqlAlchemyAvatarSourceAssetRepository:
             ),
         )
 
+    async def record_assessment(
+        self,
+        asset: AvatarSourceAsset,
+        *,
+        quality_status: AvatarQualityStatus,
+        signals: dict[str, object],
+    ) -> None:
+        """Write a *later* assessment onto material nobody had examined.
+
+        Exists because `pending` is not a verdict, it is the absence of one: with
+        no person detector configured, every photo is recorded `pending`, and a
+        detector enabled next month must be able to answer for those rows. The
+        alternative — treating any existing row as assessed — retires material
+        sight unseen and makes the whole feature unrecoverable from its own
+        default configuration.
+
+        Narrow on purpose, because this is the only method in V3-012's path that
+        mutates an existing asset row:
+
+        - only `pending → pending|passed|rejected`. An existing verdict is
+          immutable, so re-running detection can never flip `rejected` to
+          `passed` or re-offer a photo under a second verdict;
+        - only while consent is `pending`. Once the user has accepted or
+          declined, the row records what they were asked about and answered;
+          re-grading it would rewrite the audit trail of their decision.
+
+        Consent is not a parameter here, exactly as it is not one in
+        `offer_candidate` — acceptance 1 holds by signature, not by care.
+        """
+        if asset.quality_status != AvatarQualityStatus.PENDING.value:
+            raise ValueError("material that already carries a verdict cannot be re-assessed")
+        if asset.consent_status != AvatarConsentStatus.PENDING.value:
+            raise ValueError("cannot re-assess material whose consent is already decided")
+        asset.quality_status = quality_status.value
+        asset.quality_signals = signals
+        await self.session.flush()
+
+    async def has_declined_material(self, user_id: uuid.UUID) -> bool:
+        """Has this user ever said "暂不用" to person-reference material?
+
+        V3-012's *cross-asset* suppression read, and the reason it is a query
+        rather than a profile column: V3_SPEC §7.3 has two separate rules, and
+        `one_row_per_source_object` only satisfies the first. "每张候选只提示
+        一次" is per-photo — the unique constraint covers it. "用户选'暂不用'
+        后不在日常流程反复提醒" is per-*user*: after one decline, the next
+        distinct OOTD photo must not re-open the question, or a user who said
+        no once gets asked again tomorrow and the day after, which is exactly
+        the 反复提醒 the spec forbids.
+
+        Deliberately a bare EXISTS rather than `list_for_user` + a Python
+        filter: this runs on every natural-flow detection and the number of
+        source assets per user is unbounded.
+
+        Only `declined` counts. `pending` material is an open question, not a
+        refusal, and `accepted` material means the user is already somewhere
+        further along the state machine, which the profile-status rules handle.
+        """
+        return (
+            await self.session.scalar(
+                select(AvatarSourceAsset.id)
+                .where(
+                    AvatarSourceAsset.user_id == user_id,
+                    AvatarSourceAsset.consent_status == AvatarConsentStatus.DECLINED.value,
+                )
+                .limit(1)
+            )
+        ) is not None
+
     async def list_for_user(self, user_id: uuid.UUID) -> list[AvatarSourceAsset]:
         result = await self.session.scalars(
             select(AvatarSourceAsset)
@@ -168,6 +239,54 @@ class AvatarLifecycle:
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def offer_candidate(self, profile: AvatarProfile, asset: AvatarSourceAsset) -> bool:
+        """`none → candidate` — qualified material now exists (contract §4.1).
+
+        Returns whether the profile actually moved. That is not a courtesy: the
+        caller reports its outcome to a log and, through V3-013, to a user, and
+        a silent "no transition" read as "offered" promises a candidate that
+        `GET /v1/avatar-profile` will not show. The real case is a user-initiated
+        preview on a `disabled` profile — see `detect_candidate`.
+
+        V3-012's only write to the profile, and the reason it is here rather
+        than in the detector: every other transition already lives in this
+        class, and the one thing this transition must never do is touch
+        consent. It doesn't — `candidate` is exactly "qualified material
+        exists, **not yet consented**", so the asset stays `pending` and the
+        profile's `consent_version` / `consented_at` are not arguments to this
+        method at all. Detection cannot grant permission because there is no
+        parameter through which it could.
+
+        The three preconditions are checked rather than trusted:
+
+        - the asset must belong to the same user as the profile, or one
+          person's photo could be offered on another's profile;
+        - it must have passed the quality assessment, so a `rejected` or
+          not-yet-assessed photo can never become the thing a user is asked
+          about;
+        - its consent must still be `pending`, so an already-declined photo
+          cannot be re-offered by re-running detection — V3_SPEC §7.3's
+          prompt-once rule, enforced instead of remembered.
+
+        Only a profile with no material on offer moves. `candidate` is left
+        alone (an offer is already outstanding), and `preparing` / `ready` /
+        `refresh_recommended` / `disabled` are deliberately not reachable from
+        here — the frozen transition list has no edge from them to
+        `candidate`, and inventing one would let a background detection
+        interrupt a preparation or reverse a revocation.
+        """
+        if asset.user_id != profile.user_id:
+            raise ValueError("cannot offer a source asset that belongs to a different user")
+        if asset.quality_status != AvatarQualityStatus.PASSED.value:
+            raise ValueError("only material that passed the quality assessment can be offered")
+        if asset.consent_status != AvatarConsentStatus.PENDING.value:
+            raise ValueError("cannot offer a source asset whose consent is already decided")
+        if profile.status != AvatarStatus.NONE.value:
+            return False
+        profile.status = AvatarStatus.CANDIDATE.value
+        await self.session.flush()
+        return True
 
     async def record_consent(
         self,

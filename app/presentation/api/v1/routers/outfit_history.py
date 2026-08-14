@@ -4,12 +4,16 @@ import uuid
 from datetime import date
 from typing import Annotated, Any
 
+import structlog
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.avatar.enqueue_candidate_detection import enqueue_candidate_detection
 from app.common import error_codes
+from app.common.enums import AvatarSourceType
 from app.common.exceptions import FriendlyException
+from app.config.settings import get_settings
 from app.infrastructure.persistence.models.recommendation import Outfit, OutfitFeedback, WearHistory
 from app.infrastructure.persistence.session import get_db_session as get_db
 from app.presentation.api.v1.deps import get_current_user
@@ -168,4 +172,19 @@ async def upload_ootd(
 
     h.ootd_image_url = body.ootd_image_url
     await db.flush()
+
+    # V3-012 source A (V3_SPEC §7.1): an OOTD selfie may also be reusable person
+    # reference material. Queue-only — the assessment runs later in
+    # `avatar_candidate_worker`, and the enqueue contains its own failures, so
+    # nothing about avatar detection can fail or slow down saving an OOTD photo.
+    # No consent is granted or implied here; see `detect_candidate`.
+    correlation_id = structlog.contextvars.get_contextvars().get("correlation_id")
+    await enqueue_candidate_detection(
+        db,
+        user_id=current_user.id,
+        source_type=AvatarSourceType.OOTD_PHOTO,
+        image_url=body.ootd_image_url,
+        settings=get_settings(),
+        correlation_id=correlation_id if isinstance(correlation_id, str) else None,
+    )
     return OotdUploadResponse(wear_history_id=h.id, ootd_image_url=body.ootd_image_url)

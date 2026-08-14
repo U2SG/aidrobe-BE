@@ -15,7 +15,7 @@ existing rows too, instead of leaving historical rows on a retention decision
 that was never approved.
 
 What this module deliberately does **not** do: delete anything. There is no
-sweeper in P0. `AvatarLifecycle.delete_profile` (avatar_repo) handles the
+sweeper in P0. `AvatarLifecycle.delete_avatar` (avatar_repo) handles the
 user-initiated deletion path, which is immediate and not retention-driven.
 """
 
