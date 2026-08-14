@@ -200,21 +200,50 @@ async def test_an_offer_records_material_without_granting_consent(db_session: As
 
 
 async def test_the_detection_module_contains_no_write_to_a_consent_field() -> None:
-    """Acceptance 1 made structural rather than incidental, in V3-005's
-    "no numeric score" style: a future edit that granted consent from the
-    detection path fails here even if it happens to satisfy the behavioural
-    test above."""
-    source = Path("app/application/avatar/detect_candidate.py").read_text(encoding="utf-8")
-    code_lines = [
-        line
-        for line in source.splitlines()
-        if not line.lstrip().startswith("#") and "consent" in line
-    ]
-    for line in code_lines:
-        assert "consent_status =" not in line, line
-        assert "consent_version =" not in line, line
-        assert "consent_decided_at =" not in line, line
-        assert "consented_at =" not in line, line
+    """A source-level pin on acceptance 1, so an edit that granted consent from
+    the detection path fails here even if it happened to satisfy the behavioural
+    test above.
+
+    Checked over the parsed AST, not the source text. A text scan looked
+    sufficient and was not: the module's own docstring contains the string
+    `consent_status='pending'` while explaining that the column default supplies
+    it, so a substring match either fires on prose or has to be loosened until it
+    stops catching `consent_status=` written without spaces. The AST has no such
+    ambiguity — it sees assignments, keyword arguments and `setattr` calls, and
+    cannot see a docstring at all.
+
+    Three edit shapes are covered: assigning a consent attribute, passing a
+    consent keyword to a constructor (which would set it explicitly instead of
+    relying on the `pending` default), and reaching it through `setattr`.
+
+    This complements rather than replaces the real guarantee, which lives in the
+    signature: `offer_candidate` has no consent parameter, so there is no
+    argument through which detection could grant permission.
+    """
+    import ast
+
+    fields = {"consent_status", "consent_version", "consent_decided_at", "consented_at"}
+    tree = ast.parse(Path("app/application/avatar/detect_candidate.py").read_text(encoding="utf-8"))
+
+    for node in ast.walk(tree):
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, ast.AnnAssign | ast.AugAssign):
+            targets = [node.target]
+        for target in targets:
+            if isinstance(target, ast.Attribute):
+                assert target.attr not in fields, f"assigns {target.attr}"
+            if isinstance(target, ast.Name):
+                assert target.id not in fields, f"assigns {target.id}"
+
+        if isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                assert keyword.arg not in fields, f"passes {keyword.arg} explicitly"
+            callee = node.func
+            if isinstance(callee, ast.Name) and callee.id == "setattr":
+                literals = [a.value for a in node.args if isinstance(a, ast.Constant)]
+                assert not (fields & set(literals)), "setattr on a consent field"
 
 
 async def test_a_rejected_photo_is_recorded_but_never_offered(db_session: AsyncSession) -> None:
