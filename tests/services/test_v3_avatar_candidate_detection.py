@@ -49,6 +49,7 @@ from app.infrastructure.persistence.models.avatar import (
     AvatarVersion,
 )
 from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.repositories.avatar_repo import AvatarLifecycle
 
 OBJECT_KEY = "users/photo-a/ootd/one.jpg"
 OTHER_KEY = "users/photo-a/ootd/two.jpg"
@@ -128,15 +129,20 @@ async def _seed_profile(
 
     Seeding them properly keeps the suppression matrix a test of *suppression*
     rather than an accidental test of V3-011's constraints.
+
+    `ready` / `refresh_recommended` cannot simply be constructed with the right
+    status either: `avatar_versions.avatar_profile_id` points back at the
+    profile, so the profile row has to exist first — and inserting it already
+    marked `ready` trips the constraint before there is any version to point at.
+    (That is exactly what a second cut of this helper did.) The way through is
+    the one production uses: insert at `none`, create the version, then let
+    `AvatarLifecycle.activate_version` move the status and the pointer in a
+    single flush, which is the only ordering the constraint permits.
     """
-    profile = AvatarProfile(
-        user_id=user_id,
-        status=status.value,
-        disabled_at=datetime.now(UTC) if status is AvatarStatus.DISABLED else None,
-    )
-    session.add(profile)
-    await session.flush()
     if status in {AvatarStatus.READY, AvatarStatus.REFRESH_RECOMMENDED}:
+        profile = AvatarProfile(user_id=user_id, status=AvatarStatus.NONE.value)
+        session.add(profile)
+        await session.flush()
         version = AvatarVersion(
             avatar_profile_id=profile.id,
             source_asset_ids=[],
@@ -147,8 +153,21 @@ async def _seed_profile(
         )
         session.add(version)
         await session.flush()
-        profile.active_version_id = version.id
-        await session.flush()
+        await AvatarLifecycle(session).activate_version(profile, version)
+        if status is AvatarStatus.REFRESH_RECOMMENDED:
+            # `ready → refresh_recommended` keeps the active version, so this
+            # update satisfies the constraint on its own.
+            profile.status = status.value
+            await session.flush()
+        return profile
+
+    profile = AvatarProfile(
+        user_id=user_id,
+        status=status.value,
+        disabled_at=datetime.now(UTC) if status is AvatarStatus.DISABLED else None,
+    )
+    session.add(profile)
+    await session.flush()
     return profile
 
 
@@ -529,8 +548,6 @@ async def test_one_users_photo_cannot_be_offered_on_another_users_profile(
     """`offer_candidate`'s ownership precondition, exercised rather than read.
     The same object key belongs to two users, which the unique index permits
     (it is scoped per user) — so the guard is the only thing standing here."""
-    from app.infrastructure.persistence.repositories.avatar_repo import AvatarLifecycle
-
     owner = await _seed_user(db_session)
     stranger = await _seed_user(db_session)
     asset = AvatarSourceAsset(
@@ -553,8 +570,6 @@ async def test_rejected_material_can_never_become_an_offer(db_session: AsyncSess
     """The second `offer_candidate` precondition: a photo the rules refused
     cannot become the thing a user is asked about, even if a future caller
     passes it in by mistake."""
-    from app.infrastructure.persistence.repositories.avatar_repo import AvatarLifecycle
-
     user_id = await _seed_user(db_session)
     asset = AvatarSourceAsset(
         user_id=user_id,
