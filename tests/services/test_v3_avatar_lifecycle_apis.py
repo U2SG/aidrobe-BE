@@ -534,6 +534,51 @@ async def test_an_ootd_photo_is_not_deleted_with_the_avatar(
     An OOTD photo stays in the user's own history after they delete their avatar.
     Deleting it because it once happened to be a candidate would destroy content
     they never gave us for this purpose.
+
+    The user deliberately owns **both** kinds of material here — an OOTD photo the
+    avatar merely referenced, and an uploaded photo the avatar owns. The first
+    version of this test seeded only the OOTD asset, so there was nothing to purge
+    at all, no job was enqueued (correctly), and the payload assertion crashed on
+    an empty list. It also would not have been discriminating: "the OOTD key is
+    absent" is trivially true of a purge that does not exist. With both present
+    the purge job is real, and the assertion below actually distinguishes
+    referenced from owned — if `AVATAR_OWNED_SOURCE_TYPES` wrongly included
+    `ootd_photo`, this fails.
+    """
+    user_id, profile, ootd_asset = await _seed_candidate(
+        db_session, source_type=AvatarSourceType.OOTD_PHOTO
+    )
+    owned_asset = AvatarSourceAsset(
+        user_id=user_id,
+        source_type=AvatarSourceType.USER_UPLOAD.value,
+        source_object_key=f"users/{user_id}/avatar/uploaded.jpg",
+        quality_status=AvatarQualityStatus.PASSED.value,
+        consent_status=AvatarConsentStatus.PENDING.value,
+    )
+    db_session.add(owned_asset)
+    await db_session.flush()
+
+    deleted = await DeleteAvatarProfile(db_session).execute(
+        user_id=user_id, purge_derived=True
+    )
+
+    assert ootd_asset.source_object_key in deleted.plan.retained_object_keys
+    assert ootd_asset.source_object_key not in deleted.plan.source_object_keys
+    assert owned_asset.source_object_key in deleted.plan.source_object_keys
+
+    purge_payload = (await _jobs(db_session, PURGE_JOB_TYPE))[0].payload or {}
+    assert owned_asset.source_object_key in purge_payload["object_keys"]
+    assert ootd_asset.source_object_key not in purge_payload["object_keys"]
+
+
+async def test_nothing_to_purge_enqueues_no_job(db_session: AsyncSession) -> None:
+    """A delete with only *referenced* material schedules no storage sweep.
+
+    Found while fixing the test above, and worth pinning rather than leaving
+    implicit: a user whose only candidate was an OOTD photo owns no avatar
+    objects, so there is nothing for the purge worker to do and no job is
+    created. Enqueuing an empty sweep would put a row on the queue for every
+    such deletion and make "a purge is pending" meaningless as a signal.
     """
     user_id, profile, asset = await _seed_candidate(
         db_session, source_type=AvatarSourceType.OOTD_PHOTO
@@ -543,10 +588,13 @@ async def test_an_ootd_photo_is_not_deleted_with_the_avatar(
         user_id=user_id, purge_derived=True
     )
 
+    assert deleted.purge_job_id is None
+    assert deleted.deleted_object_count == 0
+    assert await _jobs(db_session, PURGE_JOB_TYPE) == []
+    # The row is still deleted and the photo still retained — "no purge job" is
+    # not "nothing happened".
+    assert await db_session.get(AvatarSourceAsset, asset.id) is None
     assert asset.source_object_key in deleted.plan.retained_object_keys
-    assert asset.source_object_key not in deleted.plan.source_object_keys
-    purge_payload = (await _jobs(db_session, PURGE_JOB_TYPE))[0].payload or {}
-    assert asset.source_object_key not in purge_payload["object_keys"]
 
 
 async def test_purge_derived_is_recorded_on_both_branches(
