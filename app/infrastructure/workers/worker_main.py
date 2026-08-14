@@ -10,6 +10,7 @@ except ImportError:  # arq is optional at runtime
 from app.application.fit_profile.build_fit_profile import build_all_fit_profiles
 from app.config.settings import get_settings
 from app.infrastructure.persistence.session import AsyncSessionLocal
+from app.infrastructure.workers.avatar_candidate_worker import drain_avatar_candidate_jobs
 from app.infrastructure.workers.cutout_worker import (
     drain_cutout_jobs,
     reconcile_dead_cutout_items,
@@ -89,6 +90,7 @@ class WorkerSettings:
         drain_user_export_jobs,
         drain_user_purge_jobs,
         drain_storage_purge_jobs,
+        drain_avatar_candidate_jobs,
         drain_import_jobs,
         recover_async_job_leases,
         reconcile_dead_outfit_board_assets,
@@ -117,6 +119,11 @@ class WorkerSettings:
             # PDF ingest is heavy (download + rasterize N pages) and drains one
             # at a time; a coarser cadence is plenty.
             cron(drain_pdf_ingest_jobs, second={0}, name="pdf_ingest_drain"),
+            # V3-012 avatar candidate detection. Nothing user-visible waits
+            # on it (the whole point is that it rides behind a flow that has
+            # already answered), so a once-a-minute cadence is right: local
+            # segmentation is CPU-heavy and there is no queue-wait to trim.
+            cron(drain_avatar_candidate_jobs, second={15}, name="avatar_candidate_drain"),
             cron(
                 drain_recommendation_recompute_jobs,
                 second=set(range(0, 60, 5)),

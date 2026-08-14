@@ -323,6 +323,23 @@ class Settings(BaseSettings):
     AVATAR_SOURCE_RETENTION_DAYS: int = 30
     AVATAR_RETIRED_VERSION_RETENTION_DAYS: int = 30
 
+    # --- Avatar candidate detection (V3-012) -----------------------------
+    # Which person-frame detector V3-012 measures photos with.
+    #
+    #   "unavailable"  determines nothing; every photo stays `pending`, i.e.
+    #                  unassessed — never offered and never rejected.
+    #   "human_seg"    local rembg/u2net_human_seg segmentation, the same tool
+    #                  already behind the OOTD poster. Requires the optional
+    #                  `rembg` + `onnxruntime` extras.
+    #
+    # Default "unavailable" rather than "human_seg" because the optional extras
+    # are not in the install set: defaulting to a detector that raises on every
+    # photo would turn a missing dependency into a stream of worker failures,
+    # whereas "unavailable" is the same absence stated honestly. This is a
+    # capability selector like VISION_PROVIDER / OCR_PROVIDER, not a feature
+    # flag — ENABLE_V3_AVATAR is what gates the feature.
+    AVATAR_PERSON_DETECTOR: str = "unavailable"
+
     # V4 M19 — PDF / magazine multi-page style ingest. When False, POST
     # /v1/style/sources returns 503 (kill switch). The parent row is still
     # persisted regardless; only the async rasterize/ingest is gated so a bad
