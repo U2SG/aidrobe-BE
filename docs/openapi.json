@@ -5486,6 +5486,9 @@
               }
             }
           },
+          "503": {
+            "description": "`ENABLE_V3_AVATAR` is off."
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -5558,6 +5561,9 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "`ENABLE_V3_AVATAR` is off."
           },
           "422": {
             "description": "Validation Error",
@@ -5645,6 +5651,9 @@
               }
             }
           },
+          "503": {
+            "description": "`ENABLE_V3_AVATAR` is off."
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -5721,6 +5730,9 @@
               }
             }
           },
+          "503": {
+            "description": "`ENABLE_V3_AVATAR` is off."
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -5787,6 +5799,9 @@
               }
             }
           },
+          "503": {
+            "description": "`ENABLE_V3_AVATAR` is off."
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -5852,6 +5867,9 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "`ENABLE_V3_AVATAR` is off."
           },
           "422": {
             "description": "Validation Error",
