@@ -22,6 +22,7 @@ segmentation model finds a person in a real photograph.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -42,7 +43,11 @@ from app.common.enums import (
     AvatarStatus,
 )
 from app.config.settings import Settings, get_settings
-from app.infrastructure.persistence.models.avatar import AvatarProfile, AvatarSourceAsset
+from app.infrastructure.persistence.models.avatar import (
+    AvatarProfile,
+    AvatarSourceAsset,
+    AvatarVersion,
+)
 from app.infrastructure.persistence.models.user import User
 
 OBJECT_KEY = "users/photo-a/ootd/one.jpg"
@@ -105,6 +110,46 @@ async def _seed_user(session: AsyncSession) -> uuid.UUID:
     session.add(User(id=user_id))
     await session.flush()
     return user_id
+
+
+async def _seed_profile(
+    session: AsyncSession, user_id: uuid.UUID, status: AvatarStatus
+) -> AvatarProfile:
+    """A profile in `status`, satisfying the CHECK constraints V3-011 attached
+    to that status.
+
+    Two of them are database constraints, not conventions, and a first cut of this
+    test violated both — Postgres correctly refused the rows:
+
+    - `(status IN (ready, refresh_recommended)) = (active_version_id IS NOT NULL)`
+      means those two states cannot exist without a real version;
+    - `(status = 'disabled') = (disabled_at IS NOT NULL)` means a revocation
+      always records when it happened.
+
+    Seeding them properly keeps the suppression matrix a test of *suppression*
+    rather than an accidental test of V3-011's constraints.
+    """
+    profile = AvatarProfile(
+        user_id=user_id,
+        status=status.value,
+        disabled_at=datetime.now(UTC) if status is AvatarStatus.DISABLED else None,
+    )
+    session.add(profile)
+    await session.flush()
+    if status in {AvatarStatus.READY, AvatarStatus.REFRESH_RECOMMENDED}:
+        version = AvatarVersion(
+            avatar_profile_id=profile.id,
+            source_asset_ids=[],
+            provider="fake",
+            model_version="test-model-1",
+            prompt_version="test-prompt-1",
+            canonical_front_object_key="users/x/avatar/front.png",
+        )
+        session.add(version)
+        await session.flush()
+        profile.active_version_id = version.id
+        await session.flush()
+    return profile
 
 
 def _use_case(
@@ -358,8 +403,7 @@ async def test_a_natural_flow_stays_quiet_in_every_non_none_profile_state(
     db_session: AsyncSession, status: AvatarStatus, expected_reason: SkipReason
 ) -> None:
     user_id = await _seed_user(db_session)
-    db_session.add(AvatarProfile(user_id=user_id, status=status.value))
-    await db_session.flush()
+    await _seed_profile(db_session, user_id, status)
 
     storage = _FakeStorage()
     result = await _use_case(db_session, storage=storage).execute(
@@ -377,8 +421,7 @@ async def test_a_preview_request_reopens_only_the_disabled_state(db_session: Asy
     (contract §4.1) has no `preparing → candidate` edge from detection, and
     inventing one would let this interrupt a running preparation."""
     user_id = await _seed_user(db_session)
-    db_session.add(AvatarProfile(user_id=user_id, status=AvatarStatus.PREPARING.value))
-    await db_session.flush()
+    await _seed_profile(db_session, user_id, AvatarStatus.PREPARING)
 
     result = await _use_case(db_session).execute(
         user_id=user_id,
