@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+import structlog
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -405,13 +406,27 @@ async def test_consent_emits_the_contracted_analytics_event_once(
     )
     user_id, profile, asset = await _seed_candidate(db_session)
 
+    # A real correlation id, so the flow_id wiring is exercised rather than
+    # assumed. Without it every assertion below would pass identically if the
+    # router hard-coded `flow_id=None`, and `v3_avatar_consent` is `when_in_flow`
+    # precisely so a consent can be joined to the preview funnel that produced
+    # it — a consent that always arrives flowless is the failure this catches.
+    #
+    # Bound directly rather than sent as a header: this app fixture mounts the
+    # router alone, so `CorrelationIdMiddleware` (which is what binds the header
+    # in production) is not in the stack. Same seam the V3-008 emitter test uses.
+    flow = str(uuid.uuid4())
+    structlog.contextvars.bind_contextvars(correlation_id=flow)
     body = {"accept": True, "consent_version": CONSENT_COPY_V1}
-    first = await client.post(
-        f"/v1/avatar-candidates/{asset.id}/consent", json=body, headers=_headers(user_id)
-    )
-    repeat = await client.post(
-        f"/v1/avatar-candidates/{asset.id}/consent", json=body, headers=_headers(user_id)
-    )
+    try:
+        first = await client.post(
+            f"/v1/avatar-candidates/{asset.id}/consent", json=body, headers=_headers(user_id)
+        )
+        repeat = await client.post(
+            f"/v1/avatar-candidates/{asset.id}/consent", json=body, headers=_headers(user_id)
+        )
+    finally:
+        structlog.contextvars.unbind_contextvars("correlation_id")
 
     assert first.status_code == 200
     assert repeat.status_code == 200, "an exact repeat is an idempotent retry, not a conflict"
@@ -423,6 +438,7 @@ async def test_consent_emits_the_contracted_analytics_event_once(
         "source_type": AvatarSourceType.OOTD_PHOTO.value,
     }
     assert emitted[0]["user_id"] == user_id
+    assert emitted[0]["flow_id"] == flow, "the consent must be joinable to its flow"
 
 
 async def test_a_declined_consent_is_also_emitted(
