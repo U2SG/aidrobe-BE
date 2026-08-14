@@ -334,16 +334,20 @@ async def register_avatar_upload(
         logger.warning("avatar.upload_registration.foreign_object_key", user_id=str(user.id))
         raise FriendlyException(error_codes.NOT_FOUND, "upload not found", status_code=404)
 
-    # Re-signed through the storage backend so detection's URL→key resolution
-    # takes the same path as the OOTD hook rather than a second, avatar-only one.
-    # The signed URL exists only for the duration of this call and never reaches
-    # the job payload (contract §7) — `enqueue_candidate_detection` resolves it
-    # back to the stable key before enqueuing.
+    # The **stable key**, passed straight through. An earlier version signed it
+    # into a URL just so `extract_internal_object_key` could undo the signing,
+    # and that round-trip could not fail loudly: `resolve_render_url` swallows a
+    # signing error and returns its fallback (`None` here), so a storage
+    # misconfiguration became `NO_INTERNAL_OBJECT_KEY` and a per-purpose-bucket
+    # config became `UNRESOLVABLE_STORAGE_BUCKET` — both HTTP 200, both silently
+    # dropping a photo the user deliberately took for this. The OOTD and import
+    # hooks still pass a URL because a URL is what their host request holds;
+    # this surface holds the key already.
     outcome = await enqueue_candidate_detection(
         session,
         user_id=user.id,
         source_type=AvatarSourceType.USER_UPLOAD,
-        image_url=resolve_render_url(object_key, None),
+        object_key=object_key,
         settings=settings,
         trigger=CandidateDetectionTrigger.PREVIEW_REQUEST,
     )

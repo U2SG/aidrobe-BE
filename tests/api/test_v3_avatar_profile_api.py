@@ -414,6 +414,52 @@ async def test_registering_an_upload_queues_detection_as_a_preview_request(
     assert "http" not in payload["object_key"]
 
 
+async def test_a_broken_url_signer_cannot_silently_drop_the_upload(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This surface must not depend on signing a key just to un-sign it.
+
+    The first version of this endpoint passed
+    `image_url=resolve_render_url(object_key, None)` and let
+    `extract_internal_object_key` recover the key. That round-trip could not fail
+    loudly: `resolve_render_url` swallows a signing exception and returns its
+    fallback — `None` here — so a storage misconfiguration produced
+    `NO_INTERNAL_OBJECT_KEY`, and an `aliyun_oss` per-purpose-bucket config
+    produced `UNRESOLVABLE_STORAGE_BUCKET`. Either way the endpoint answered
+    **HTTP 200** while quietly discarding a photo the user deliberately took for
+    this purpose, which is V3-012's round-2 "reported an outcome the system did
+    not perform" finding in a new place.
+
+    Breaking the signer outright is the discriminating test: under the old code
+    this returned 200 with no job, and it now enqueues normally, because the key
+    never goes near a URL.
+    """
+    _enable(monkeypatch)
+    user_id = await _seed_user(db_session)
+
+    class _BrokenSigner:
+        def sign_render_url(self, key: str, **kwargs: object) -> str:
+            raise RuntimeError("storage signing is misconfigured")
+
+    monkeypatch.setattr(
+        "app.bootstrap.container.object_storage", lambda: _BrokenSigner()
+    )
+
+    response = await client.post(
+        "/v1/avatar-profile/uploads",
+        json={"object_key": f"users/{user_id}/avatar/deliberate.jpg"},
+        headers=_headers(user_id),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["detection_outcome"] == "enqueued"
+    job = await db_session.scalar(
+        sa.select(AsyncJob).where(AsyncJob.job_type == enqueue_module.JOB_TYPE)
+    )
+    assert job is not None
+    assert (job.payload or {})["object_key"] == f"users/{user_id}/avatar/deliberate.jpg"
+
+
 async def test_registering_another_users_object_is_not_found(
     client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:

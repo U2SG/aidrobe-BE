@@ -154,16 +154,32 @@ async def enqueue_candidate_detection(
     *,
     user_id: uuid.UUID,
     source_type: AvatarSourceType,
-    image_url: str | None,
+    image_url: str | None = None,
     settings: Settings,
     trigger: CandidateDetectionTrigger = CandidateDetectionTrigger.NATURAL_FLOW,
     correlation_id: str | None = None,
+    object_key: str | None = None,
 ) -> EnqueueOutcome:
-    """Queue detection for one photo. Never raises."""
+    """Queue detection for one photo. Never raises.
+
+    Callers pass **either** `image_url` (the OOTD / import hooks, which is what
+    their host request actually holds) **or** `object_key` when they already have
+    the stable key — V3-013's `POST /v1/avatar-profile/uploads`.
+
+    That second path was added because the first version of V3-013 signed its key
+    into a URL purely to hand it here and have `extract_internal_object_key` undo
+    the signing. That round-trip could not fail loudly: `resolve_render_url`
+    swallows a signing error and returns its fallback, so a storage
+    misconfiguration produced `image_url=None` → `NO_INTERNAL_OBJECT_KEY`, and a
+    per-purpose-bucket config produced `UNRESOLVABLE_STORAGE_BUCKET` — either way
+    an HTTP 200 in which the user's deliberate upload was quietly dropped.
+    Skipping the round-trip removes the failure mode rather than reporting it.
+    """
     if not settings.ENABLE_V3_AVATAR:
         return EnqueueOutcome.FEATURE_DISABLED
 
-    object_key = extract_internal_object_key(image_url, settings)
+    if object_key is None:
+        object_key = extract_internal_object_key(image_url, settings)
     if not object_key:
         if names_unresolvable_per_purpose_bucket(image_url, settings):
             # Our own photo, in a bucket the read path cannot reach. Logged so
