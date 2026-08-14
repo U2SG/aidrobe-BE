@@ -3213,6 +3213,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AvatarProfileResponse'
+        '503':
+          description: '`ENABLE_V3_AVATAR` is off.'
         '422':
           description: Validation Error
           content:
@@ -3269,6 +3271,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AvatarDeleteResponse'
+        '503':
+          description: '`ENABLE_V3_AVATAR` is off.'
         '422':
           description: Validation Error
           content:
@@ -3337,6 +3341,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AvatarConsentResponse'
+        '503':
+          description: '`ENABLE_V3_AVATAR` is off.'
         '422':
           description: Validation Error
           content:
@@ -3410,6 +3416,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AvatarUploadRegistrationResponse'
+        '503':
+          description: '`ENABLE_V3_AVATAR` is off.'
         '422':
           description: Validation Error
           content:
@@ -3447,6 +3455,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AvatarPrepareResponse'
+        '503':
+          description: '`ENABLE_V3_AVATAR` is off.'
         '422':
           description: Validation Error
           content:
@@ -3494,6 +3504,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AvatarPrepareResponse'
+        '503':
+          description: '`ENABLE_V3_AVATAR` is off.'
         '422':
           description: Validation Error
           content:

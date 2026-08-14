@@ -225,7 +225,16 @@ async def _candidate_asset(session: AsyncSession, user_id: uuid.UUID) -> AvatarS
     )
 
 
-@router.get("/avatar-profile", response_model=AvatarProfileResponse)
+# Advertised in OpenAPI so generated clients can model the flag-off state every
+# operation reaches at runtime (contract §2 rollback rule 1; the FE self-hides
+# on it). Description only — the body is the service-wide envelope, which no
+# router in this repo re-declares per route (purchase_candidates precedent).
+_FLAG_OFF: dict[int | str, dict[str, str]] = {
+    503: {"description": "`ENABLE_V3_AVATAR` is off."},
+}
+
+
+@router.get("/avatar-profile", response_model=AvatarProfileResponse, responses=_FLAG_OFF)
 async def get_avatar_profile(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
@@ -235,7 +244,11 @@ async def get_avatar_profile(
     return await _render_profile(session, user.id, profile)
 
 
-@router.post("/avatar-candidates/{source_asset_id}/consent", response_model=AvatarConsentResponse)
+@router.post(
+    "/avatar-candidates/{source_asset_id}/consent",
+    response_model=AvatarConsentResponse,
+    responses=_FLAG_OFF,
+)
 async def decide_avatar_consent(
     source_asset_id: uuid.UUID,
     payload: AvatarConsentRequest,
@@ -330,7 +343,11 @@ async def decide_avatar_consent(
     )
 
 
-@router.post("/avatar-profile/uploads", response_model=AvatarUploadRegistrationResponse)
+@router.post(
+    "/avatar-profile/uploads",
+    response_model=AvatarUploadRegistrationResponse,
+    responses=_FLAG_OFF,
+)
 async def register_avatar_upload(
     payload: AvatarUploadRegistrationRequest,
     user: Annotated[User, Depends(get_current_user)],
@@ -393,7 +410,7 @@ async def register_avatar_upload(
     )
 
 
-@router.post("/avatar-profile/prepare", response_model=AvatarPrepareResponse)
+@router.post("/avatar-profile/prepare", response_model=AvatarPrepareResponse, responses=_FLAG_OFF)
 async def prepare_avatar_profile(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
@@ -402,7 +419,7 @@ async def prepare_avatar_profile(
     return await _start_preparation(session, user, PreparationMode.PREPARE)
 
 
-@router.post("/avatar-profile/replace", response_model=AvatarPrepareResponse)
+@router.post("/avatar-profile/replace", response_model=AvatarPrepareResponse, responses=_FLAG_OFF)
 async def replace_avatar_profile(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
@@ -437,7 +454,7 @@ async def _start_preparation(
     )
 
 
-@router.delete("/avatar-profile", response_model=AvatarDeleteResponse)
+@router.delete("/avatar-profile", response_model=AvatarDeleteResponse, responses=_FLAG_OFF)
 async def delete_avatar_profile(
     purge_derived: Annotated[bool, Query()],
     user: Annotated[User, Depends(get_current_user)],
