@@ -11,6 +11,8 @@ from app.application.fit_profile.build_fit_profile import build_all_fit_profiles
 from app.config.settings import get_settings
 from app.infrastructure.persistence.session import AsyncSessionLocal
 from app.infrastructure.workers.avatar_candidate_worker import drain_avatar_candidate_jobs
+from app.infrastructure.workers.avatar_preparation_worker import drain_avatar_preparation_jobs
+from app.infrastructure.workers.avatar_purge_worker import drain_avatar_purge_jobs
 from app.infrastructure.workers.cutout_worker import (
     drain_cutout_jobs,
     reconcile_dead_cutout_items,
@@ -91,6 +93,8 @@ class WorkerSettings:
         drain_user_purge_jobs,
         drain_storage_purge_jobs,
         drain_avatar_candidate_jobs,
+        drain_avatar_preparation_jobs,
+        drain_avatar_purge_jobs,
         drain_import_jobs,
         recover_async_job_leases,
         reconcile_dead_outfit_board_assets,
@@ -124,6 +128,20 @@ class WorkerSettings:
             # already answered), so a once-a-minute cadence is right: local
             # segmentation is CPU-heavy and there is no queue-wait to trim.
             cron(drain_avatar_candidate_jobs, second={15}, name="avatar_candidate_drain"),
+            # V3-013 avatar preparation. A user IS waiting on this one — the
+            # profile sits in `preparing` until it lands — so it drains every 5s
+            # like the other user-visible generators, not on the candidate
+            # detector's once-a-minute cadence.
+            cron(
+                drain_avatar_preparation_jobs,
+                second=set(range(0, 60, 5)),
+                name="avatar_preparation_drain",
+            ),
+            # V3-013 avatar object purge. The rows are already gone and the user
+            # has their answer, so latency does not matter; what matters is that
+            # it runs, since a dropped purge leaves person material in the
+            # bucket after a deletion request.
+            cron(drain_avatar_purge_jobs, second={45}, name="avatar_purge_drain"),
             cron(
                 drain_recommendation_recompute_jobs,
                 second=set(range(0, 60, 5)),

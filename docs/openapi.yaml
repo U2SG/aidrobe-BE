@@ -3183,6 +3183,323 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/avatar-profile:
+    get:
+      tags:
+      - avatar
+      summary: Get Avatar Profile
+      operationId: get_avatar_profile_v1_avatar_profile_get
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarProfileResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - avatar
+      summary: Delete Avatar Profile
+      description: 'Disable and delete (contract §4.2).
+
+
+        `purge_derived` is a **required** query parameter with no default — declared
+
+        here without one, so omitting it is a 422 rather than a silent choice about
+
+        somebody''s photos. V3_SPEC §13.5 requires being explicit about whether
+
+        derived assets are deleted too, which means the caller has to say.
+
+
+        What it governs today, and what it does not yet, is documented in
+
+        `app/application/avatar/delete_avatar.py`.'
+      operationId: delete_avatar_profile_v1_avatar_profile_delete
+      parameters:
+      - name: purge_derived
+        in: query
+        required: true
+        schema:
+          type: boolean
+          title: Purge Derived
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarDeleteResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/avatar-candidates/{source_asset_id}/consent:
+    post:
+      tags:
+      - avatar
+      summary: Decide Avatar Consent
+      description: 'Accept or decline one candidate (contract §4.2).
+
+
+        Acceptance 1 lands here: `record_consent` writes the copy version and the
+
+        decision timestamp onto the asset *and* the profile, and the table''s CHECK
+
+        constraints refuse a decided consent with no timestamp or an accepted one
+
+        with no version — so a recorded consent cannot be missing either field.
+
+
+        The two shape rules are enforced before the transition, as business errors
+
+        rather than FastAPI 422s: accepting requires a copy version, and declining
+
+        must not carry one (a "declined under version X" record would imply the user
+
+        agreed to something).'
+      operationId: decide_avatar_consent_v1_avatar_candidates__source_asset_id__consent_post
+      parameters:
+      - name: source_asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Source Asset Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvatarConsentRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarConsentResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/avatar-profile/uploads:
+    post:
+      tags:
+      - avatar
+      summary: Register Avatar Upload
+      description: 'Source C — a photo the user deliberately took or picked for this
+        purpose.
+
+
+        Registration is not consent. This hands the photo to V3-012''s detection with
+
+        `PREVIEW_REQUEST`, which assesses it and — if it qualifies — offers it as
+        a
+
+        `candidate`; the user then accepts through the consent endpoint. Two steps,
+
+        because V3_SPEC §7.1''s source-B rule is that material never becomes a person
+
+        reference implicitly, and a deliberate upload does not change who has to say
+
+        yes. It also means this endpoint cannot be used to skip the consent record
+
+        that acceptance 1 requires.
+
+
+        `PREVIEW_REQUEST` is the trigger V3-012 built for exactly this caller: it
+
+        widens which *users* may be asked (a `disabled` profile can be offered
+
+        material again, contract §4.1''s `disabled → preparing` path) without widening
+
+        which *photos* may be re-offered — a previously declined photo stays declined.
+
+        Until this endpoint existed, that trigger had no caller, which V3-012
+
+        recorded as an open risk.'
+      operationId: register_avatar_upload_v1_avatar_profile_uploads_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvatarUploadRegistrationRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarUploadRegistrationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/avatar-profile/prepare:
+    post:
+      tags:
+      - avatar
+      summary: Prepare Avatar Profile
+      description: Start preparation from a consented source (contract §4.2).
+      operationId: prepare_avatar_profile_v1_avatar_profile_prepare_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarPrepareResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/avatar-profile/replace:
+    post:
+      tags:
+      - avatar
+      summary: Replace Avatar Profile
+      description: 'Prepare a new version; atomic swap on success (contract §4.2).
+
+
+        Same machinery as `prepare`, different precondition — and the swap itself
+        is
+
+        `AvatarLifecycle.activate_version`, reached only after the provider
+
+        succeeded, which is what makes "replace failure keeps the previous version
+
+        active" true by construction rather than by a compensating write.'
+      operationId: replace_avatar_profile_v1_avatar_profile_replace_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarPrepareResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/admin/jobs:
     get:
       tags:
@@ -4277,6 +4594,250 @@ components:
       - token_type
       - expires_in
       title: AuthTokenResponse
+    AvatarActiveVersionModel:
+      properties:
+        id:
+          type: string
+          title: Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        canonical_front_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Canonical Front Url
+      type: object
+      required:
+      - id
+      - created_at
+      title: AvatarActiveVersionModel
+      description: '`active_version` — null unless status is ready/refresh_recommended.'
+    AvatarCandidateModel:
+      properties:
+        source_asset_id:
+          type: string
+          title: Source Asset Id
+        source_type:
+          type: string
+          title: Source Type
+        preview_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Preview Url
+      type: object
+      required:
+      - source_asset_id
+      - source_type
+      title: AvatarCandidateModel
+      description: '`candidate` — null unless status is candidate.'
+    AvatarConsentModel:
+      properties:
+        version:
+          type: string
+          title: Version
+        consented_at:
+          type: string
+          format: date-time
+          title: Consented At
+      type: object
+      required:
+      - version
+      - consented_at
+      title: AvatarConsentModel
+      description: '`consent` — null until first consent.
+
+
+        Together these two fields are V3-013 acceptance 1 ("Consent version and
+
+        timestamp are recorded") as seen from outside: the version is the copy the
+
+        user actually accepted, and the timestamp is when.'
+    AvatarConsentRequest:
+      properties:
+        accept:
+          type: boolean
+          title: Accept
+        consent_version:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Consent Version
+      type: object
+      required:
+      - accept
+      title: AvatarConsentRequest
+      description: '`POST …/consent` body: `{"accept": true|false}`.
+
+
+        `consent_version` is required when accepting and forbidden otherwise — the
+
+        frozen §4.2 rule ("`accept=true` requires the consent copy version"). It is
+
+        validated in the router rather than by a model validator so the refusal
+
+        carries the same `4001 VALIDATION_ERROR` envelope as every other business
+
+        rule, instead of FastAPI''s raw 422 shape.
+
+
+        Bounded at 64 characters to match `avatar_source_assets.consent_version`,
+        so
+
+        an over-long value is refused at the edge rather than truncated by the
+
+        database.'
+    AvatarConsentResponse:
+      properties:
+        status:
+          type: string
+          title: Status
+        source_asset_id:
+          type: string
+          title: Source Asset Id
+        consent_status:
+          type: string
+          title: Consent Status
+        consent_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Consent Version
+        consented_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Consented At
+      type: object
+      required:
+      - status
+      - source_asset_id
+      - consent_status
+      title: AvatarConsentResponse
+    AvatarDeleteResponse:
+      properties:
+        status:
+          type: string
+          title: Status
+        purge_derived:
+          type: boolean
+          title: Purge Derived
+        scheduled_object_count:
+          type: integer
+          title: Scheduled Object Count
+        purge_job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Purge Job Id
+      type: object
+      required:
+      - status
+      - purge_derived
+      - scheduled_object_count
+      title: AvatarDeleteResponse
+    AvatarPrepareResponse:
+      properties:
+        status:
+          type: string
+          title: Status
+        job_id:
+          type: string
+          title: Job Id
+        source_asset_id:
+          type: string
+          title: Source Asset Id
+        created:
+          type: boolean
+          title: Created
+      type: object
+      required:
+      - status
+      - job_id
+      - source_asset_id
+      - created
+      title: AvatarPrepareResponse
+    AvatarProfileResponse:
+      properties:
+        status:
+          type: string
+          title: Status
+        active_version:
+          anyOf:
+          - $ref: '#/components/schemas/AvatarActiveVersionModel'
+          - type: 'null'
+        candidate:
+          anyOf:
+          - $ref: '#/components/schemas/AvatarCandidateModel'
+          - type: 'null'
+        consent:
+          anyOf:
+          - $ref: '#/components/schemas/AvatarConsentModel'
+          - type: 'null'
+      type: object
+      required:
+      - status
+      title: AvatarProfileResponse
+    AvatarUploadRegistrationRequest:
+      properties:
+        object_key:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 1
+          - type: 'null'
+          title: Object Key
+        file_url:
+          anyOf:
+          - type: string
+            maxLength: 2048
+            minLength: 1
+          - type: 'null'
+          title: File Url
+      type: object
+      title: AvatarUploadRegistrationRequest
+      description: '`POST /v1/avatar-profile/uploads` — source C (V3_SPEC §7.1).
+
+
+        Carries the reference to an object the client has *already* uploaded through
+
+        the existing presign flow, which is what contract §4.2 specifies ("Reuses
+        the
+
+        existing presign upload flow; body carries the uploaded asset reference").
+
+        Either the `object_key` from `POST /v1/uploads/presign` or the `file_url`
+        it
+
+        returned alongside — clients hold both, and accepting only one of them would
+
+        make this endpoint depend on which field a client happened to keep.
+
+
+        Ownership of whatever this resolves to is enforced in the router: this is
+        a
+
+        free-form client-supplied reference, the exact shape of the cross-user read
+
+        V3-012''s round-3 review found.'
+    AvatarUploadRegistrationResponse:
+      properties:
+        detection_outcome:
+          type: string
+          title: Detection Outcome
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - detection_outcome
+      - status
+      title: AvatarUploadRegistrationResponse
     BackfillItemNamesResponse:
       properties:
         scanned:

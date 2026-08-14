@@ -406,6 +406,37 @@ class AvatarLifecycle:
         profile.disabled_at = None
         await self.session.flush()
 
+    async def fail_preparation(self, profile: AvatarProfile) -> bool:
+        """`preparing → candidate` — the preparation did not produce a version.
+
+        Contract §4.1 freezes this edge as "preparation fails; source stays
+        consentable", and V3-013's preparation worker is its only caller. Returns
+        whether the profile moved, for the same reason `offer_candidate` does:
+        the caller logs its outcome, and "no transition" reported as a rollback
+        would claim a state change that did not happen.
+
+        Only a `preparing` profile moves, and that is the whole safety property
+        of this method. A `replace` failure finds the profile still `ready` with
+        its previous version active — `record_consent` deliberately does not move
+        a profile that already has a live version — so this is a no-op there, and
+        the previous avatar stays exactly where it was. That is contract §4.2's
+        "replace failure keeps the previous version active ... there is never a
+        gap where a ready avatar silently disappears", and it holds here by
+        leaving the row alone rather than by any compensating write.
+
+        The accepted source asset is **not** reverted to `pending`. Consent is a
+        record of what the user agreed to, not a workflow slot: rewriting it
+        because our provider failed would falsify the audit trail that V3-013
+        acceptance 1 exists to protect, and `record_consent` refuses to re-decide
+        a decided asset anyway. The profile showing `candidate` again is what
+        makes a retry available.
+        """
+        if profile.status != AvatarStatus.PREPARING.value:
+            return False
+        profile.status = AvatarStatus.CANDIDATE.value
+        await self.session.flush()
+        return True
+
     async def disable(self, profile: AvatarProfile, *, now: datetime | None = None) -> None:
         """Revoke: `any → disabled` (contract §4.1).
 

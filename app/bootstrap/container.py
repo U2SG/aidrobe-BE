@@ -9,6 +9,7 @@ except ImportError:  # arq is optional at runtime
     create_pool = None  # type: ignore[assignment]
 
 from app.application.ports.avatar_detection import PersonFrameDetectorPort
+from app.application.ports.avatar_preparation import AvatarPreparationPort
 from app.application.ports.embedding import EmbeddingPort
 from app.application.ports.image_cutout import ImageCutoutPort
 from app.application.ports.llm import LlmPort
@@ -122,6 +123,28 @@ def person_frame_detector() -> PersonFrameDetectorPort:
     if settings.AVATAR_PERSON_DETECTOR == "human_seg":
         return MaskPersonFrameDetector()
     return UnavailablePersonFrameDetector()
+
+
+def avatar_preparation() -> AvatarPreparationPort:
+    """V3-013 — what builds canonical avatar assets from a consented photo.
+
+    One adapter, and that is the P0 answer rather than a placeholder: contract
+    §6.4 restricts development and CI to fake/recorded adapters, and selecting a
+    production provider is an explicit human gate (V3-016). `FakeAvatarPreparation`
+    is local and deterministic, so no user photo leaves the machine and no call is
+    billed — the same constraint `person_frame_detector` is written to.
+
+    Unlike that selector there is deliberately no `unavailable` default here. A
+    detector that determines nothing leaves material `pending`, which is a
+    meaningful state; a preparation that prepares nothing would leave every user
+    stuck in `preparing`, so the honest default is the adapter that works.
+
+    Lazy-imported to match its siblings — selecting it must not pull PIL into an
+    app that never prepares an avatar.
+    """
+    from app.infrastructure.vision.fake_avatar_preparation import FakeAvatarPreparation
+
+    return FakeAvatarPreparation()
 
 
 def ocr_service() -> OcrPort:
