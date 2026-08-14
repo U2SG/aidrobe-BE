@@ -52,6 +52,8 @@ from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsse
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.repositories.avatar_repo import AvatarLifecycle
 from app.infrastructure.workers.job_runtime import (
+    JOB_STATUS_DEAD,
+    JOB_STATUS_QUEUED,
     JOB_STATUS_RUNNING,
     JOB_STATUS_SUCCEEDED,
 )
@@ -309,6 +311,78 @@ async def test_prepare_after_a_successful_preparation_is_free(
 
     assert again.created is False
     assert again.job_id == job.id
+    assert len(await _jobs(db_session, PREPARATION_JOB_TYPE)) == 1
+
+
+async def _kill_the_preparation(
+    session: AsyncSession, profile: AvatarProfile
+) -> AsyncJob:
+    """What the worker leaves behind once a preparation is out of attempts."""
+    job = (await _jobs(session, PREPARATION_JOB_TYPE))[0]
+    job.status = JOB_STATUS_DEAD
+    job.attempts = job.max_attempts
+    job.last_error = "RuntimeError"
+    await session.flush()
+    await AvatarLifecycle(session).fail_preparation(profile)
+    assert profile.status == AvatarStatus.CANDIDATE.value
+    return job
+
+
+async def test_a_retry_after_a_dead_preparation_re_opens_the_same_job(
+    db_session: AsyncSession,
+) -> None:
+    """The dead end, at the seam where it was created.
+
+    `enqueue` is `ON CONFLICT DO NOTHING`, so the terminal row owned the key and
+    every later `prepare` was handed a job that would never run — reported as a
+    200. The row is re-opened rather than re-keyed, so the photo keeps one row,
+    one cost history and one error trail.
+    """
+    user_id, profile = await _consent_and_prepare(db_session)
+    dead = await _kill_the_preparation(db_session, profile)
+
+    retried = await PrepareAvatar(db_session, settings=_settings()).execute(
+        user_id=user_id, mode=PreparationMode.PREPARE
+    )
+
+    assert retried.created is True
+    assert retried.job_id == dead.id
+    assert retried.profile_status == AvatarStatus.PREPARING.value
+    assert dead.status == JOB_STATUS_QUEUED
+    assert dead.attempts == 0
+    assert dead.last_error == "RuntimeError"
+    assert profile.status == AvatarStatus.PREPARING.value
+    assert len(await _jobs(db_session, PREPARATION_JOB_TYPE)) == 1
+
+
+async def test_a_second_retry_does_not_re_open_an_already_revived_job(
+    db_session: AsyncSession,
+) -> None:
+    """The conditional UPDATE, tested from the side a sequential call cannot reach.
+
+    Sequentially the second retry never gets this far — the revived job is
+    `queued`, so the in-flight read answers 409. Bypassing that read is what a
+    race does, and it is the only way to exercise the guard *behind* it: the
+    `status IN (dead, failed)` predicate must refuse to re-open a live job, or
+    two retries would both reset `attempts` and one would report starting work
+    the other had already started.
+
+    Its limit, stated plainly: one session, so this proves the predicate, not
+    that two concurrent transactions interleave safely — the same bound
+    `test_a_duplicate_that_slips_past_the_conflict_read_charges_once` carries.
+    """
+    user_id, profile = await _consent_and_prepare(db_session)
+    dead = await _kill_the_preparation(db_session, profile)
+    use_case = PrepareAvatar(db_session, settings=_settings())
+    first = await use_case.execute(user_id=user_id, mode=PreparationMode.PREPARE)
+    use_case._preparation_in_flight = lambda _profile_id: _false()  # type: ignore[assignment]
+
+    second = await use_case.execute(user_id=user_id, mode=PreparationMode.PREPARE)
+
+    assert first.created is True
+    assert second.created is False, "a live job must not be re-opened a second time"
+    assert second.job_id == dead.id
+    assert dead.status == JOB_STATUS_QUEUED
     assert len(await _jobs(db_session, PREPARATION_JOB_TYPE)) == 1
 
 
@@ -710,6 +784,10 @@ async def test_a_failed_preparation_returns_the_profile_to_candidate(
     The accepted consent is deliberately *not* reverted: consent records what the
     user agreed to, and rewriting it because our provider failed would falsify the
     audit trail acceptance 1 exists to protect.
+
+    This is the transition in isolation; the worker calls it only once the job is
+    out of attempts, and `test_a_dead_preparation_is_retried_and_reaches_ready`
+    (worker tests) is where "a retry is available" is actually collected on.
     """
     user_id, profile, asset = await _seed_candidate(db_session)
     lifecycle = AvatarLifecycle(db_session)
@@ -724,6 +802,51 @@ async def test_a_failed_preparation_returns_the_profile_to_candidate(
     assert profile.status == AvatarStatus.CANDIDATE.value
     assert asset.consent_status == AvatarConsentStatus.ACCEPTED.value
     assert profile.consent_version == CONSENT_COPY_V1
+
+
+async def test_only_a_candidate_profile_re_enters_preparation(
+    db_session: AsyncSession,
+) -> None:
+    """`begin_preparation`'s bound *is* the guarantee, so it is tested as one.
+
+    Widening it by one status would break something specific in each case:
+    `ready`/`refresh_recommended` would strip `active_version_id` through the
+    `active_version_matches_status` CHECK — the gap contract §4.2 forbids, and
+    exactly what a `replace` retry would hit — and `disabled` would have to erase
+    `disabled_at` to satisfy `disabled_status_has_timestamp`, deleting the
+    record of an explicit revocation at the moment a preparation *starts*.
+    """
+    lifecycle = AvatarLifecycle(db_session)
+
+    # `candidate` — the retry path, the only one that moves.
+    _user_id, candidate_profile, _asset = await _seed_candidate(db_session)
+    assert await lifecycle.begin_preparation(candidate_profile) is True
+    assert candidate_profile.status == AvatarStatus.PREPARING.value
+
+    # `ready` — where `replace` retries from. The live version must survive.
+    _ready_user, ready_profile, version, _ready_asset = await _ready_profile_with_material(
+        db_session
+    )
+    assert await lifecycle.begin_preparation(ready_profile) is False
+    assert ready_profile.status == AvatarStatus.READY.value
+    assert ready_profile.active_version_id == version.id
+
+    # `disabled` — the revocation timestamp must survive.
+    await lifecycle.disable(ready_profile)
+    assert ready_profile.status == AvatarStatus.DISABLED.value
+    disabled_at = ready_profile.disabled_at
+    assert disabled_at is not None
+    assert await lifecycle.begin_preparation(ready_profile) is False
+    assert ready_profile.status == AvatarStatus.DISABLED.value
+    assert ready_profile.disabled_at == disabled_at
+
+    # `none` — nothing to prepare from.
+    none_user = await _seed_user(db_session)
+    none_profile = AvatarProfile(user_id=none_user, status=AvatarStatus.NONE.value)
+    db_session.add(none_profile)
+    await db_session.flush()
+    assert await lifecycle.begin_preparation(none_profile) is False
+    assert none_profile.status == AvatarStatus.NONE.value
 
 
 async def test_a_failed_replace_leaves_the_live_version_alone(

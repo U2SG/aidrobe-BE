@@ -23,6 +23,7 @@ from __future__ import annotations
 import io
 import uuid
 from collections.abc import AsyncIterator, Sequence
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -38,7 +39,9 @@ from app.application.avatar.prepare_avatar import (
     JOB_TYPE as PREPARATION_JOB_TYPE,
 )
 from app.application.avatar.prepare_avatar import (
+    MAX_ATTEMPTS,
     PreparationMode,
+    PreparationStarted,
     PrepareAvatar,
 )
 from app.application.ports.avatar_preparation import PreparedAvatarAssets
@@ -67,6 +70,10 @@ from app.infrastructure.workers.avatar_preparation_worker import (
     drain_avatar_preparation_jobs,
 )
 from app.infrastructure.workers.avatar_purge_worker import drain_avatar_purge_jobs
+from app.infrastructure.workers.job_runtime import (
+    JOB_STATUS_DEAD,
+    JOB_STATUS_QUEUED,
+)
 
 CONSENT_COPY_V1 = "avatar_consent_placeholder_v1"
 
@@ -106,6 +113,33 @@ class _FakeStorage:
 class _ExplodingPreparation:
     async def prepare(self, *, source_image: bytes) -> PreparedAvatarAssets:
         raise RuntimeError("provider is down")
+
+
+class _FlakyPreparation:
+    """Down until `heal()`, then works — one object, so a retry can succeed.
+
+    The alternative (patch exploding, then `monkeypatch.undo()`) would also undo
+    the storage double, and the retry would write to real storage.
+    """
+
+    def __init__(self) -> None:
+        self.healthy = False
+        self.calls = 0
+
+    def heal(self) -> None:
+        self.healthy = True
+
+    async def prepare(self, *, source_image: bytes) -> PreparedAvatarAssets:
+        self.calls += 1
+        if not self.healthy:
+            raise RuntimeError("provider is down")
+        return PreparedAvatarAssets(
+            front_image=b"front-bytes",
+            side_image=None,
+            provider="fake",
+            model_version="recovered-1",
+            prompt_version="v1",
+        )
 
 
 class _SideViewPreparation:
@@ -183,10 +217,65 @@ async def _queue_preparation(
     maker: async_sessionmaker[AsyncSession],
     user_id: uuid.UUID,
     mode: PreparationMode = PreparationMode.PREPARE,
-) -> None:
+) -> PreparationStarted:
     async with maker() as session:
-        await PrepareAvatar(session, settings=_settings()).execute(user_id=user_id, mode=mode)
+        started = await PrepareAvatar(session, settings=_settings()).execute(
+            user_id=user_id, mode=mode
+        )
         await session.commit()
+    return started
+
+
+async def _job(maker: async_sessionmaker[AsyncSession], job_id: uuid.UUID) -> AsyncJob:
+    async with maker() as session:
+        row = await session.get(AsyncJob, job_id)
+    assert row is not None
+    return row
+
+
+async def _preparation_job_count(maker: async_sessionmaker[AsyncSession]) -> int:
+    """How many preparation rows exist at all.
+
+    One row per (profile, photo, pipeline), *including across retries* — the
+    revival re-opens the row rather than minting a second one, which is the
+    property that keeps a photo's cost and error history in one place.
+    """
+    async with maker() as session:
+        return len(
+            list(
+                (
+                    await session.scalars(
+                        sa.select(AsyncJob.id).where(AsyncJob.job_type == PREPARATION_JOB_TYPE)
+                    )
+                ).all()
+            )
+        )
+
+
+async def _drain_until_dead(
+    maker: async_sessionmaker[AsyncSession], job_id: uuid.UUID
+) -> AsyncJob:
+    """Drain until the job is out of attempts, fast-forwarding the backoff.
+
+    `mark_failed` schedules the next attempt 60s out and doubles from there, so
+    a test that only drained would see one failure and stop. Moving `next_run_at`
+    into the past is the only thing simulated here: the attempts, the retries and
+    the dead-letter are all real.
+    """
+    for _ in range(MAX_ATTEMPTS + 1):
+        await drain_avatar_preparation_jobs(ctx=None)
+        job = await _job(maker, job_id)
+        if job.status == JOB_STATUS_DEAD:
+            return job
+        assert job.status == JOB_STATUS_QUEUED
+        async with maker() as session:
+            await session.execute(
+                sa.update(AsyncJob)
+                .where(AsyncJob.id == job_id)
+                .values(next_run_at=datetime.now(UTC) - timedelta(seconds=1))
+            )
+            await session.commit()
+    raise AssertionError("the preparation job never dead-lettered")
 
 
 async def test_the_drain_prepares_a_canonical_version_and_marks_the_profile_ready(
@@ -263,24 +352,57 @@ async def test_no_signed_url_or_image_byte_reaches_the_job_row(
     assert source_key in serialized
 
 
-async def test_a_provider_failure_rolls_the_profile_back_to_candidate(
+async def test_a_retryable_failure_leaves_the_profile_preparing(
+    factory: async_sessionmaker[AsyncSession],
+    storage: _FakeStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blip with attempts left is not a rollback.
+
+    `mark_failed` puts the job back on the queue, so work really is still
+    pending. Reporting `candidate` here would advertise material that is not on
+    offer — the accepted asset is no longer *pending*, so the frozen GET shape
+    renders `candidate: null` beside `status: candidate` — and the eventual
+    success would then move `candidate → ready`, an edge §4.1 does not list.
+    """
+    monkeypatch.setattr(
+        avatar_preparation_worker, "avatar_preparation", lambda: _ExplodingPreparation()
+    )
+    user_id, profile_id, _source_key = await _seed_consented_user(factory)
+    started = await _queue_preparation(factory, user_id)
+
+    await drain_avatar_preparation_jobs(ctx=None)
+
+    job = await _job(factory, started.job_id)
+    assert job.status == JOB_STATUS_QUEUED
+    assert job.attempts == 1
+    assert job.attempts < job.max_attempts
+    async with factory() as session:
+        profile = await session.get(AvatarProfile, profile_id)
+        assert profile is not None
+        assert profile.status == AvatarStatus.PREPARING.value
+
+
+async def test_the_terminal_failure_returns_the_profile_to_candidate(
     factory: async_sessionmaker[AsyncSession],
     storage: _FakeStorage,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Contract §4.1's `preparing → candidate`, and no half-built version.
 
-    The user is left able to retry rather than stuck in `preparing`, and nothing
-    was written that could later be activated.
+    Only once the attempts are exhausted: the user is left able to retry rather
+    than stuck in `preparing`, and nothing was written that could later be
+    activated.
     """
     monkeypatch.setattr(
         avatar_preparation_worker, "avatar_preparation", lambda: _ExplodingPreparation()
     )
     user_id, profile_id, _source_key = await _seed_consented_user(factory)
-    await _queue_preparation(factory, user_id)
+    started = await _queue_preparation(factory, user_id)
 
-    await drain_avatar_preparation_jobs(ctx=None)
+    job = await _drain_until_dead(factory, started.job_id)
 
+    assert job.attempts == MAX_ATTEMPTS
     async with factory() as session:
         profile = await session.get(AvatarProfile, profile_id)
         assert profile is not None
@@ -297,6 +419,169 @@ async def test_a_provider_failure_rolls_the_profile_back_to_candidate(
             ).all()
         )
         assert versions == []
+
+
+async def test_a_dead_preparation_is_retried_and_reaches_ready(
+    factory: async_sessionmaker[AsyncSession],
+    storage: _FakeStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point of `preparing → candidate`: a retry that actually runs.
+
+    Every earlier failure test stopped at "the profile can retry" and none of
+    them retried, which is how a dead end survived review. Before the fix this
+    got as far as `prepare` and no further — the status guard refused a
+    `candidate` profile, and past it the idempotency key handed back the dead
+    row: HTTP 200, a `job_id`, and nothing behind it. The user's only recovery
+    was a new photograph.
+
+    Same photo, same consent, same key — the row is re-opened, and this asserts
+    the retry lands rather than merely that it was accepted.
+    """
+    flaky = _FlakyPreparation()
+    monkeypatch.setattr(avatar_preparation_worker, "avatar_preparation", lambda: flaky)
+    user_id, profile_id, _source_key = await _seed_consented_user(factory)
+    started = await _queue_preparation(factory, user_id)
+    dead = await _drain_until_dead(factory, started.job_id)
+    assert dead.status == JOB_STATUS_DEAD
+    assert flaky.calls == MAX_ATTEMPTS
+
+    # The user asks again from the state the failure left them in.
+    retried = await _queue_preparation(factory, user_id)
+
+    assert retried.created is True, "a retry that started work must not report a duplicate"
+    assert retried.job_id == dead.id, "the revival re-opens the row, it does not mint a second"
+    assert retried.profile_status == AvatarStatus.PREPARING.value
+    revived = await _job(factory, dead.id)
+    assert revived.status == JOB_STATUS_QUEUED
+    assert revived.attempts == 0, "a user-initiated retry gets the full attempt budget back"
+    assert revived.last_error == "RuntimeError", "why they are retrying stays on the row"
+    assert await _preparation_job_count(factory) == 1
+
+    flaky.heal()
+    assert await drain_avatar_preparation_jobs(ctx=None) == 1
+
+    async with factory() as session:
+        profile = await session.get(AvatarProfile, profile_id)
+        assert profile is not None
+        assert profile.status == AvatarStatus.READY.value
+        assert profile.active_version_id is not None
+        version = await session.get(AvatarVersion, profile.active_version_id)
+        assert version is not None
+        assert version.model_version == "recovered-1"
+    final = await _job(factory, dead.id)
+    assert final.status == "succeeded"
+    assert flaky.calls == MAX_ATTEMPTS + 1
+
+
+async def test_a_dead_replacement_is_retried_without_disturbing_the_live_avatar(
+    factory: async_sessionmaker[AsyncSession],
+    storage: _FakeStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry path runs for `replace` too, and must not open a gap.
+
+    `replace` retries from `ready`, so this is where re-entering `preparing`
+    would be actively wrong: the `active_version_matches_status` CHECK forces
+    `active_version_id` NULL in `preparing`, i.e. the working avatar would
+    disappear for the duration of a replacement that might fail again — the gap
+    contract §4.2 forbids. `begin_preparation` moves `candidate` and nothing
+    else, and this asserts the live version is still pointed at throughout.
+    """
+    flaky = _FlakyPreparation()
+    user_id, profile_id, _source_key = await _seed_consented_user(factory)
+    await _queue_preparation(factory, user_id)
+    await drain_avatar_preparation_jobs(ctx=None)
+
+    async with factory() as session:
+        profile = await session.get(AvatarProfile, profile_id)
+        assert profile is not None
+        live_version_id = profile.active_version_id
+        second = AvatarSourceAsset(
+            user_id=user_id,
+            source_type=AvatarSourceType.USER_UPLOAD.value,
+            source_object_key=f"users/{user_id}/avatar/second.jpg",
+            quality_status=AvatarQualityStatus.PASSED.value,
+            consent_status=AvatarConsentStatus.PENDING.value,
+        )
+        session.add(second)
+        await session.flush()
+        await AvatarLifecycle(session).record_consent(
+            profile, second, accept=True, consent_version=CONSENT_COPY_V1
+        )
+        await session.commit()
+
+    monkeypatch.setattr(avatar_preparation_worker, "avatar_preparation", lambda: flaky)
+    replacement = await _queue_preparation(factory, user_id, PreparationMode.REPLACE)
+    dead = await _drain_until_dead(factory, replacement.job_id)
+    assert dead.status == JOB_STATUS_DEAD
+
+    async with factory() as session:
+        profile = await session.get(AvatarProfile, profile_id)
+        assert profile is not None
+        # The failed replacement changed nothing: still ready, still the old
+        # version. `fail_preparation` is a no-op outside `preparing`.
+        assert profile.status == AvatarStatus.READY.value
+        assert profile.active_version_id == live_version_id
+
+    retried = await _queue_preparation(factory, user_id, PreparationMode.REPLACE)
+
+    assert retried.created is True
+    assert retried.job_id == replacement.job_id
+    assert retried.profile_status == AvatarStatus.READY.value, (
+        "a replacement retry must not take the working avatar away while it runs"
+    )
+    # Two rows total — the original preparation and the replacement — because a
+    # different consented photo is a different key. The retry added neither.
+    assert await _preparation_job_count(factory) == 2
+
+    flaky.heal()
+    assert await drain_avatar_preparation_jobs(ctx=None) == 1
+
+    async with factory() as session:
+        profile = await session.get(AvatarProfile, profile_id)
+        assert profile is not None
+        assert profile.status == AvatarStatus.READY.value
+        assert profile.active_version_id != live_version_id
+        retired = await session.get(AvatarVersion, live_version_id)
+        assert retired is not None
+        assert retired.retired_at is not None
+
+
+async def test_a_succeeded_preparation_is_never_revived(
+    factory: async_sessionmaker[AsyncSession], storage: _FakeStorage
+) -> None:
+    """Acceptance 2, at the exact point the retry path could have broken it.
+
+    `_revive_if_terminal` is what makes a dead job re-runnable; if it treated
+    `succeeded` as terminal too, every repeated `prepare` after a success would
+    buy another provider run. The bound is the guarantee, so it is asserted
+    directly rather than inferred from the dead-job tests.
+    """
+    user_id, profile_id, _source_key = await _seed_consented_user(factory)
+    started = await _queue_preparation(factory, user_id)
+    await drain_avatar_preparation_jobs(ctx=None)
+    first = await _job(factory, started.job_id)
+    assert first.status == "succeeded"
+
+    async with factory() as session:
+        repeat = await PrepareAvatar(session, settings=_settings()).execute(
+            user_id=user_id, mode=PreparationMode.REPLACE
+        )
+        await session.commit()
+
+    assert repeat.created is False
+    assert repeat.job_id == first.id
+    unchanged = await _job(factory, first.id)
+    assert unchanged.status == "succeeded"
+    assert unchanged.attempts == first.attempts
+    assert await _preparation_job_count(factory) == 1
+    # Nothing re-entered the queue, so nothing can be claimed and charged.
+    assert await drain_avatar_preparation_jobs(ctx=None) == 0
+    async with factory() as session:
+        profile = await session.get(AvatarProfile, profile_id)
+        assert profile is not None
+        assert profile.status == AvatarStatus.READY.value
 
 
 async def test_a_failure_persists_only_the_exception_type(

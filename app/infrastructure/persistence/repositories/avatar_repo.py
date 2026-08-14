@@ -368,6 +368,44 @@ class AvatarLifecycle:
         profile.disabled_at = None
         await self.session.flush()
 
+    async def begin_preparation(self, profile: AvatarProfile) -> bool:
+        """`candidate → preparing` — a retry after a preparation that failed.
+
+        The same frozen §4.1 edge `record_consent` uses; the difference is only
+        what re-enters it. Consent is already recorded (`fail_preparation`
+        deliberately does not revert it), so the user does not consent twice to
+        retry the photo they already agreed to — they re-enter preparation with
+        the consent that is already on file.
+
+        Without this, a retry accepted by `PrepareAvatar` would leave the profile
+        reading `candidate` while a job ran, and a later success would move it
+        `candidate → ready` — an edge §4.1 does not list. Worse, `candidate` with
+        no *pending* asset renders as a candidate block of null (the accepted
+        asset is no longer pending), i.e. the profile advertises material that is
+        not on offer while real work is in flight.
+
+        **Only `candidate` moves, and that bound is the safety property.** A
+        `ready` or `refresh_recommended` profile is where `replace` retries from,
+        and moving it to `preparing` would force `active_version_id` NULL through
+        the `active_version_matches_status` CHECK — taking the user's working
+        avatar away for the duration of a replacement that might fail, which is
+        the gap contract §4.2 forbids. `disabled` is deliberately left alone too:
+        the `(status='disabled') = (disabled_at IS NOT NULL)` CHECK means moving
+        it here would have to erase the revocation timestamp at enqueue time, so
+        a preparation that then failed would land the user in `candidate` with
+        their explicit revoke silently deleted. Leaving a disabled profile
+        disabled while it prepares is honest; see the V3-014 open item.
+
+        Returns whether the profile moved, like `offer_candidate` and
+        `fail_preparation`, so the caller logs what happened rather than what it
+        assumed.
+        """
+        if profile.status != AvatarStatus.CANDIDATE.value:
+            return False
+        profile.status = AvatarStatus.PREPARING.value
+        await self.session.flush()
+        return True
+
     async def activate_version(
         self,
         profile: AvatarProfile,
@@ -414,6 +452,15 @@ class AvatarLifecycle:
         whether the profile moved, for the same reason `offer_candidate` does:
         the caller logs its outcome, and "no transition" reported as a rollback
         would claim a state change that did not happen.
+
+        **"The preparation failed" means terminally.** The worker calls this only
+        when `mark_failed` dead-letters the job, never on an intermediate attempt
+        that is going to be retried: a transient blip that flipped the profile to
+        `candidate` while a retry sat queued would advertise material that is not
+        on offer, and the eventual success would then move `candidate → ready`,
+        an edge §4.1 does not list. While attempts remain, `preparing` is the
+        honest state — work really is pending. `begin_preparation` is the way
+        back once this has fired.
 
         Only a `preparing` profile moves, and that is the whole safety property
         of this method. A `replace` failure finds the profile still `ready` with

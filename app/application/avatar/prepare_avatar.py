@@ -36,6 +36,42 @@ mirrors `container.avatar_preparation()` exactly, so the key names the pipeline
 that will actually answer the job. V3-012 learned this the hard way with
 `assessor_identity`: a key that claims an assessment the worker did not make
 makes rows permanently unreachable. A unit test pins the two selectors together.
+
+**Retrying a preparation that died, and why the key alone made that impossible.**
+An idempotency key that never expires is exactly right for work that *succeeded*
+and exactly wrong for work that died: the same photo through the same pipeline
+composes the same key, so once the job reached `dead` every later `prepare`
+collided with the terminal row and answered HTTP 200 with a `job_id` that would
+never run again. Recovery needed a new photograph. Two layers had to change,
+because either one alone still dead-ends:
+
+1. **The status guard.** A first-time failure leaves the profile `candidate`
+   (`AvatarLifecycle.fail_preparation`), which the PREPARE whitelist refused —
+   so the retry was rejected before it ever reached the key, and with the wrong
+   reason ("no consented source" when a consented source was sitting right
+   there). `candidate` is now prepare-able; the genuine no-consent case still
+   refuses with the same code, one line further down, because the source lookup
+   is what answers it.
+2. **The terminal row.** `enqueue` is `ON CONFLICT DO NOTHING`, so it hands back
+   whatever row owns the key regardless of its status. `_revive_if_terminal`
+   re-opens that row — and only that row, and only from `dead`/`failed` — under
+   a conditional UPDATE, so two concurrent retries still produce one live job.
+
+The decision recorded in `docs/async-jobs.md`: **revive the row rather than add
+an attempt component to the key.** A generation counter would grow the key per
+retry and scatter one photo's history across rows; reviving keeps one row per
+(profile, photo, pipeline), which is where the cost columns and the error
+history already live. Acceptance 2 is untouched by this, and the reason is the
+narrow definition of what gets revived: `succeeded` is not a terminal *failure*,
+so a repeated `prepare` after a success still returns the existing job and buys
+nothing. Only a job that produced no avatar at all re-opens, and only when a
+user explicitly asks again.
+
+This also un-sticks a case that has no rollback at all: `recover_expired_leases`
+dead-letters a crash-looping job directly, without ever calling `mark_failed`, so
+`fail_preparation` never fires and the profile stays `preparing` forever. That
+status is in the PREPARE whitelist and a `dead` job is not "in flight", so the
+same retry path recovers it.
 """
 
 from __future__ import annotations
@@ -43,18 +79,22 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import cast
+from typing import Any, cast
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.enums import AvatarConsentStatus, AvatarStatus
 from app.config.settings import Settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.avatar import AvatarProfile, AvatarSourceAsset
+from app.infrastructure.persistence.repositories.avatar_repo import AvatarLifecycle
 from app.infrastructure.workers.job_runtime import (
+    JOB_STATUS_DEAD,
+    JOB_STATUS_FAILED,
     JOB_STATUS_QUEUED,
     JOB_STATUS_RUNNING,
     enqueue,
@@ -129,9 +169,15 @@ class PreparationRefused(Exception):
 class PreparationStarted:
     job_id: uuid.UUID
     source_asset_id: uuid.UUID
-    #: False when an identical preparation was already queued — the client sees
-    #: the same job rather than a new charge. Reported so "already running" is
-    #: distinguishable from "just started" in logs and tests.
+    #: Did THIS request start work? True for a fresh insert and for a retry that
+    #: re-opened a dead job; False when an identical preparation had already been
+    #: paid for and nothing new was started.
+    #:
+    #: Deliberately not "a row was inserted". A revived job is not a new row, but
+    #: reporting it as `created=False` would tell the client the same thing as
+    #: "your duplicate was swallowed" — the precise misreport that let a dead job
+    #: masquerade as live work. What a caller can act on is whether something is
+    #: running now.
     created: bool
     profile_status: str
 
@@ -225,19 +271,82 @@ class PrepareAvatar:
             max_attempts=MAX_ATTEMPTS,
         )
 
+        revived = False
+        if not created:
+            revived = await self._revive_if_terminal(job)
+        started = created or revived
+
+        # Only a preparation that is actually going to run may move the profile.
+        # A swallowed duplicate must not, or a `prepare` that started nothing
+        # would still reset the state the previous attempt left behind.
+        resumed = False
+        if started:
+            resumed = await AvatarLifecycle(self.session).begin_preparation(profile)
+
         # Closed vocabularies only: no object key, no URL, no person detail.
         logger.info(
             "avatar.preparation.enqueued",
             mode=mode.value,
             created=created,
+            revived=revived,
+            resumed=resumed,
             profile_status=profile.status,
         )
         return PreparationStarted(
             job_id=job.id,
             source_asset_id=source.id,
-            created=created,
+            created=started,
             profile_status=profile.status,
         )
+
+    async def _revive_if_terminal(self, job: AsyncJob) -> bool:
+        """Re-open a preparation that died, so a retry is not a silent no-op.
+
+        Guarded three ways, because this is the one place that moves a job
+        *backwards* out of a terminal state:
+
+        - **Only a terminal failure.** `succeeded` is excluded, which is what
+          keeps acceptance 2 true: a repeated `prepare` after a success still
+          returns the existing job and buys nothing.
+        - **Only under a conditional UPDATE.** The `status IN (dead, failed)`
+          predicate is re-evaluated by Postgres under the row lock, so of two
+          concurrent retries exactly one gets `rowcount == 1` and the other is
+          told plainly that it started nothing. Reading the status in Python and
+          then writing would be the check-then-act race this avoids.
+        - **`attempts` resets, `last_error` does not.** The retry is user-
+          initiated, so it gets the full attempt budget rather than inheriting an
+          exhausted one; the previous failure's error stays on the row until the
+          next attempt overwrites it, because it is the only record of why the
+          user is retrying at all.
+        """
+        if job.status not in (JOB_STATUS_DEAD, JOB_STATUS_FAILED):
+            return False
+        now = datetime.now(UTC)
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(AsyncJob)
+                .where(
+                    AsyncJob.id == job.id,
+                    AsyncJob.status.in_((JOB_STATUS_DEAD, JOB_STATUS_FAILED)),
+                )
+                .values(
+                    status=JOB_STATUS_QUEUED,
+                    attempts=0,
+                    next_run_at=now,
+                    lease_expires_at=None,
+                    updated_at=now,
+                )
+            ),
+        )
+        if result.rowcount != 1:
+            return False
+        # The row was updated behind the ORM's back; without this the identity
+        # map keeps serving the terminal status to anything that reads `job`
+        # later in this request.
+        await self.session.refresh(job)
+        logger.info("avatar.preparation.revived", job_id=str(job.id))
+        return True
 
     @staticmethod
     def _assert_mode_allowed(profile: AvatarProfile, mode: PreparationMode) -> None:
@@ -258,6 +367,18 @@ class PrepareAvatar:
         `disabled` is prepare-able: contract §4.1 lists `disabled → preparing`
         ("user re-enables via new consent"), and a fresh consent is exactly what
         `record_consent` clears `disabled_at` for.
+
+        **`candidate` is prepare-able too, and that is the retry path.** It is
+        the state `fail_preparation` leaves behind — "the profile showing
+        `candidate` again is what makes a retry available" — so refusing it here
+        made that promise false: the retry never reached the enqueue. It is also
+        the state a user sits in with a *fresh* offer they have not consented to,
+        and that case must still be refused. The two are told apart by evidence
+        rather than by status: whether a consented source actually exists, which
+        the `source is None` check immediately below answers with this same
+        `NO_CONSENTED_SOURCE` reason. Deciding it there rather than here is what
+        stops a genuine retry being refused with "no consented avatar source
+        material" while the consented photo is on file.
         """
         has_active_version = profile.active_version_id is not None
         if mode is PreparationMode.REPLACE and not has_active_version:
@@ -267,10 +388,11 @@ class PrepareAvatar:
         if mode is PreparationMode.PREPARE and profile.status not in (
             AvatarStatus.PREPARING.value,
             AvatarStatus.DISABLED.value,
+            AvatarStatus.CANDIDATE.value,
         ):
-            # `none` / `candidate` mean consent has not happened yet. Saying so
-            # as a distinct refusal keeps "you skipped consent" from being
-            # reported as "you already have an avatar".
+            # `none` means there is no material at all. Saying so as a distinct
+            # refusal keeps "you skipped consent" from being reported as "you
+            # already have an avatar".
             raise PreparationRefused(PreparationRefusal.NO_CONSENTED_SOURCE)
 
     async def _latest_consented_source(self, user_id: uuid.UUID) -> AvatarSourceAsset | None:

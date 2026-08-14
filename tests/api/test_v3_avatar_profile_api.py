@@ -570,6 +570,65 @@ async def test_prepare_returns_the_job_and_a_second_call_conflicts(
     ) == 1
 
 
+async def test_a_user_whose_preparation_died_can_start_another_one(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dead end, from where the user actually stands.
+
+    Their preparation ran out of attempts, so the profile is back to `candidate`
+    with the consent still on file. Before the fix this surface answered the
+    retry with `200 {"created": false}` and the id of a job that would never run
+    again — a success message for work that was not happening, recoverable only
+    by taking a new photograph. The worker-level test proves the retry reaches
+    `ready`; this proves the client is told the truth.
+    """
+    _enable(monkeypatch)
+    user_id, profile, asset = await _seed_candidate(db_session)
+    await client.post(
+        f"/v1/avatar-candidates/{asset.id}/consent",
+        json={"accept": True, "consent_version": CONSENT_COPY_V1},
+        headers=_headers(user_id),
+    )
+    first = await client.post("/v1/avatar-profile/prepare", headers=_headers(user_id))
+    job_id = uuid.UUID(first.json()["job_id"])
+
+    # What the worker leaves behind once the attempts are exhausted.
+    job = await db_session.get(AsyncJob, job_id)
+    assert job is not None
+    job.status = "dead"
+    job.attempts = job.max_attempts
+    job.last_error = "RuntimeError"
+    await db_session.flush()
+    await AvatarLifecycle(db_session).fail_preparation(profile)
+
+    before = await client.get("/v1/avatar-profile", headers=_headers(user_id))
+    assert before.json()["status"] == AvatarStatus.CANDIDATE.value
+    # Declared rather than discovered: the consented photo is no longer
+    # *pending*, so the frozen `candidate` block is null even though the status
+    # is `candidate`. The affordance in this state is retry (`prepare`), not a
+    # second consent — V3-014 owns rendering it. See the notes' open items.
+    assert before.json()["candidate"] is None
+    assert before.json()["consent"]["version"] == CONSENT_COPY_V1
+
+    retry = await client.post("/v1/avatar-profile/prepare", headers=_headers(user_id))
+
+    assert retry.status_code == 200
+    body = retry.json()
+    assert body["created"] is True
+    assert body["job_id"] == str(job_id), "the same row is re-opened, not a second one"
+    assert body["status"] == AvatarStatus.PREPARING.value
+    after = await client.get("/v1/avatar-profile", headers=_headers(user_id))
+    assert after.json()["status"] == AvatarStatus.PREPARING.value
+    await db_session.refresh(job)
+    assert job.status == "queued"
+    assert job.attempts == 0
+    assert await db_session.scalar(
+        sa.select(sa.func.count())
+        .select_from(AsyncJob)
+        .where(AsyncJob.job_type == PREPARATION_JOB_TYPE)
+    ) == 1
+
+
 async def test_prepare_without_consent_is_a_conflict(
     client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:

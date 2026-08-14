@@ -18,7 +18,12 @@ the profile back to `candidate` (contract §4.1) so the user can retry; a
 `replace` failure does nothing at all, because the profile is still `ready` on
 its previous version and that is precisely the guarantee — see
 `AvatarLifecycle.fail_preparation`. The rollback runs on its own session *after*
-the failure, so it survives the rollback of the transaction that failed.
+the failure, so it survives the rollback of the transaction that failed, and
+**only once the job is out of attempts**: `mark_failed` returns the job to
+`queued` with backoff while retries remain, and rolling the profile back then
+would show `candidate` — no material on offer, none of it true — with real work
+still queued behind it. The retry itself is `PrepareAvatar`, which re-opens the
+dead row rather than colliding with it.
 
 **Ordering: storage first, rows second.** The canonical renders are uploaded
 before the version row is written. The reverse order can produce a `ready`
@@ -48,6 +53,7 @@ from app.infrastructure.persistence.models.avatar import AvatarProfile, AvatarVe
 from app.infrastructure.persistence.repositories.avatar_repo import AvatarLifecycle
 from app.infrastructure.persistence.session import AsyncSessionLocal
 from app.infrastructure.workers.job_runtime import (
+    JOB_STATUS_DEAD,
     claim_one,
     mark_failed,
     mark_succeeded,
@@ -163,19 +169,26 @@ async def _process_one(job: Any, *, preparation: AvatarPreparationPort | None = 
         except Exception as exc:
             logger.exception("avatar.preparation.failed", error_type=type(exc).__name__)
             async with AsyncSessionLocal() as session:
-                await mark_failed(
+                outcome = await mark_failed(
                     session, job.id, claimed_attempt=job.attempts, error=type(exc).__name__
                 )
                 await session.commit()
+            # Only a TERMINAL failure rolls the profile back. `mark_failed`
+            # returns `queued` while attempts remain (the job is coming back
+            # after backoff) and `None` when this finalizer is stale — in both
+            # cases work is still pending or owned by someone else, and moving
+            # the profile to `candidate` would advertise material that is not on
+            # offer, then reach `ready` through an edge §4.1 does not list.
             # Rolled back on a separate session, after the failure, so it is not
             # lost with the transaction that failed. A `replace` failure is a
             # no-op here by design (see `fail_preparation`).
-            async with AsyncSessionLocal() as session:
-                profile = await session.get(AvatarProfile, profile_id)
-                if profile is not None and profile.user_id == user_id:
-                    moved = await AvatarLifecycle(session).fail_preparation(profile)
-                    await session.commit()
-                    logger.info("avatar.preparation.rolled_back", moved=moved)
+            if outcome == JOB_STATUS_DEAD:
+                async with AsyncSessionLocal() as session:
+                    profile = await session.get(AvatarProfile, profile_id)
+                    if profile is not None and profile.user_id == user_id:
+                        moved = await AvatarLifecycle(session).fail_preparation(profile)
+                        await session.commit()
+                        logger.info("avatar.preparation.rolled_back", moved=moved)
     finally:
         structlog.contextvars.unbind_contextvars("correlation_id", "job_id", "user_id")
 
