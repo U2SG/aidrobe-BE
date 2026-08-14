@@ -137,10 +137,16 @@ async def test_an_ootd_upload_survives_a_failing_enqueue(
     assert response.json()["ootd_image_url"] == INTERNAL_URL
     # The load-bearing half: the photo is really persisted, and the session is
     # still usable enough to prove it.
-    db_session.expire_all()
-    reloaded = await db_session.get(WearHistory, history.id)
-    assert reloaded is not None
-    assert reloaded.ootd_image_url == INTERNAL_URL
+    #
+    # Read back with a plain awaited column select rather than
+    # `expire_all()` + attribute access: expiring an ORM object makes the next
+    # attribute read a lazy refresh, which is illegal IO under asyncio (the
+    # trap V3-003 recorded). A column select proves the same thing — the value
+    # is in the database, and the session still works — without that hazard.
+    persisted = await db_session.scalar(
+        select(WearHistory.ootd_image_url).where(WearHistory.id == history.id)
+    )
+    assert persisted == INTERNAL_URL
     assert await _avatar_jobs(db_session) == []
 
 
@@ -260,7 +266,18 @@ async def _confirm_items(app: object, task_id: uuid.UUID, user_id: uuid.UUID) ->
         response = await client.post(
             f"/v1/import-tasks/{task_id}/confirm-items",
             headers={"X-User-Id": str(user_id)},
-            json={"items": [{"temp_item_id": "t1", "title": "Shirt", "category": "top"}]},
+            json={
+                "items": [
+                    {
+                        "temp_item_id": "t1",
+                        "title": "Shirt",
+                        "category": "top",
+                        # Required by ConfirmItemInput; omitting it is a 422, not
+                        # a detection problem.
+                        "color_main": "white",
+                    }
+                ]
+            },
         )
     return response.status_code
 
