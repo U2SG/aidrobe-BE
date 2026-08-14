@@ -296,6 +296,33 @@ class Settings(BaseSettings):
     # so flipping it back is a clean rollback.
     ENABLE_V3_PURCHASE_DECISION: bool = False
 
+    # V3 P0 avatar (docs/v3-p0-contract.md §2, §4). Gates the
+    # /v1/avatar-profile* and /v1/avatar-candidates/* surfaces — none of which
+    # exist yet (V3-011 is persistence only; V3-012 detects candidates and
+    # V3-013 adds the endpoints). Profiles, source assets and versions persist
+    # regardless of the flag, so flipping it back is a clean rollback.
+    # NOTE: contract §2 rule 5 also makes ENABLE_V3_STATIC_TRYON=true with this
+    # flag false a startup error. That clause is deliberately absent from
+    # `validate_feature_dependencies` below because ENABLE_V3_STATIC_TRYON does
+    # not exist yet — the combination is unreachable. It lands with that flag.
+    ENABLE_V3_AVATAR: bool = False
+
+    # --- Avatar retention (V3-011 human gate) ---------------------------
+    # HUMAN GATE: the final durations require privacy approval before
+    # production enablement; these defaults are placeholders, and the rule the
+    # gate constrains is that the code must read *configurable* values rather
+    # than hard-code a number (see app/application/avatar/retention.py, which
+    # is the only place these are interpreted).
+    #
+    # Source photos are the sensitive input, kept minimum-necessary: 30d
+    # matches the existing `aidrobe-private` bucket policy for try-on body
+    # images in app/config/retention.yaml, so the two do not contradict each
+    # other. Retired avatar versions are derived, cheap to regenerate while a
+    # consented source still exists, and are kept only long enough for a
+    # `replace` to be reversible.
+    AVATAR_SOURCE_RETENTION_DAYS: int = 30
+    AVATAR_RETIRED_VERSION_RETENTION_DAYS: int = 30
+
     # V4 M19 — PDF / magazine multi-page style ingest. When False, POST
     # /v1/style/sources returns 503 (kill switch). The parent row is still
     # persisted regardless; only the async rasterize/ingest is gated so a bad

@@ -22,6 +22,10 @@ from app.application.users.storage_purge import (
     enqueue_storage_purge,
 )
 from app.common.enums import (
+    AvatarConsentStatus,
+    AvatarQualityStatus,
+    AvatarSourceType,
+    AvatarStatus,
     Category,
     ItemStatus,
     PurchaseCandidateSource,
@@ -29,6 +33,11 @@ from app.common.enums import (
 )
 from app.config.settings import Settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
+from app.infrastructure.persistence.models.avatar import (
+    AvatarProfile,
+    AvatarSourceAsset,
+    AvatarVersion,
+)
 from app.infrastructure.persistence.models.purchase_decision import PurchaseCandidate
 from app.infrastructure.persistence.models.style import UserStyleProfile
 from app.infrastructure.persistence.models.user import User
@@ -158,6 +167,39 @@ async def _seed_user_with_images(
                 status=PurchaseCandidateStatus.PARSED.value,
             )
         )
+        # V3-011 — avatar material: the most sensitive blobs the product holds.
+        # Both the person photo and the canonical renders derived from it are
+        # bare object keys with no URL column.
+        avatar_profile_id = uuid.uuid4()
+        s.add(
+            AvatarProfile(
+                id=avatar_profile_id,
+                user_id=user_id,
+                status=AvatarStatus.CANDIDATE.value,
+            )
+        )
+        s.add(
+            AvatarSourceAsset(
+                user_id=user_id,
+                source_type=AvatarSourceType.CAMERA_CAPTURE.value,
+                source_object_key=f"users/{user_id}/avatar-src/a1/capture.jpg",
+                quality_status=AvatarQualityStatus.PASSED.value,
+                consent_status=AvatarConsentStatus.PENDING.value,
+            )
+        )
+        await s.flush()
+        s.add(
+            AvatarVersion(
+                avatar_profile_id=avatar_profile_id,
+                source_asset_ids=[],
+                provider="fake",
+                model_version="m1",
+                prompt_version="p1",
+                canonical_front_object_key=f"users/{user_id}/avatar-canonical/v1/front.png",
+                canonical_side_object_key=f"users/{user_id}/avatar-canonical/v1/side.png",
+                quality_status=AvatarQualityStatus.PASSED.value,
+            )
+        )
         await s.commit()
     return user_id, item_id
 
@@ -178,6 +220,13 @@ async def test_collect_keys_resolves_internal_and_skips_external(
     # V3-004 — an uploaded purchase-candidate screenshot. Row deletion cascades
     # via the FK, but without this the blob would be orphaned in object storage.
     assert f"users/{user_id}/purchase/p1/shot.jpg" in keys
+    # V3-011 — avatar material. Clear-data deliberately does NOT prefix-sweep,
+    # so anything missed here survives in storage after the API reports success
+    # and its key is gone from the database forever. Both the person photo and
+    # every canonical render must be collected.
+    assert f"users/{user_id}/avatar-src/a1/capture.jpg" in keys
+    assert f"users/{user_id}/avatar-canonical/v1/front.png" in keys
+    assert f"users/{user_id}/avatar-canonical/v1/side.png" in keys
     # A link-sourced candidate owns no internal object.
     assert not any("shop.example.com" in k for k in keys)
     # External CDN URL yields no key — we must never delete third-party objects.

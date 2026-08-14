@@ -6,6 +6,11 @@ from app.infrastructure.persistence.models.ask_conversation import (
 from app.infrastructure.persistence.models.ask_session import AskSession
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.audit_log import AuditLog
+from app.infrastructure.persistence.models.avatar import (
+    AvatarProfile,
+    AvatarSourceAsset,
+    AvatarVersion,
+)
 from app.infrastructure.persistence.models.base import Base
 from app.infrastructure.persistence.models.embedding import ItemEmbedding
 from app.infrastructure.persistence.models.fit import FitFeedback
@@ -42,6 +47,9 @@ __all__ = [
     "AskMessage",
     "AsyncJob",
     "AuditLog",
+    "AvatarProfile",
+    "AvatarSourceAsset",
+    "AvatarVersion",
     "Base",
     "OutfitVisualAsset",
     "DailyRecommendation",
