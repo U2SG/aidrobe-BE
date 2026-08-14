@@ -88,16 +88,33 @@ def test_the_v3_avatar_flag_defaults_off() -> None:
     assert _settings().ENABLE_V3_AVATAR is False
 
 
-def test_no_avatar_route_is_registered_yet() -> None:
-    """V3-011 is persistence only.
+def test_the_avatar_routes_are_registered_and_gated_elsewhere() -> None:
+    """V3-013 has landed the routes this test used to assert were absent.
 
-    Stated honestly, as V3-003 did for the same shape: because no avatar route
-    exists, this assertion would also hold with the flag ON. It is here to
-    catch an endpoint being smuggled in ahead of V3-013, which owns the
-    consent / prepare / replace / delete APIs and their 503-when-off gate.
+    The V3-011 version read `assert not [... "avatar" ...]` and said in its own
+    docstring that it existed "to catch an endpoint being smuggled in ahead of
+    V3-013, which owns the consent / prepare / replace / delete APIs and their
+    503-when-off gate". V3-013 is that feature, so the placeholder is being
+    *fulfilled* here rather than deleted: the successor assertion is that the
+    frozen §4.2 set is registered, no more and no less, which still catches a
+    seventh avatar surface appearing without review.
+
+    The assertion the old one was standing in for — that every surface answers
+    503 while `ENABLE_V3_AVATAR` is off — is real now that endpoints exist, and
+    lives at
+    `tests/api/test_v3_avatar_profile_api.py::test_every_surface_is_503_when_the_flag_is_off`.
+    It could not be written from here: with no route there was nothing to gate,
+    which is exactly the caveat V3-011 recorded (and V3-003 before it).
     """
     from app.main import create_app
 
     app: FastAPI = create_app()
     paths = {getattr(route, "path", "") for route in app.routes}
-    assert not [path for path in paths if "avatar" in path]
+
+    assert {path for path in paths if "avatar" in path} == {
+        "/v1/avatar-profile",
+        "/v1/avatar-candidates/{source_asset_id}/consent",
+        "/v1/avatar-profile/uploads",
+        "/v1/avatar-profile/prepare",
+        "/v1/avatar-profile/replace",
+    }

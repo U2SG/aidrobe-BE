@@ -368,6 +368,44 @@ class AvatarLifecycle:
         profile.disabled_at = None
         await self.session.flush()
 
+    async def begin_preparation(self, profile: AvatarProfile) -> bool:
+        """`candidate → preparing` — a retry after a preparation that failed.
+
+        The same frozen §4.1 edge `record_consent` uses; the difference is only
+        what re-enters it. Consent is already recorded (`fail_preparation`
+        deliberately does not revert it), so the user does not consent twice to
+        retry the photo they already agreed to — they re-enter preparation with
+        the consent that is already on file.
+
+        Without this, a retry accepted by `PrepareAvatar` would leave the profile
+        reading `candidate` while a job ran, and a later success would move it
+        `candidate → ready` — an edge §4.1 does not list. Worse, `candidate` with
+        no *pending* asset renders as a candidate block of null (the accepted
+        asset is no longer pending), i.e. the profile advertises material that is
+        not on offer while real work is in flight.
+
+        **Only `candidate` moves, and that bound is the safety property.** A
+        `ready` or `refresh_recommended` profile is where `replace` retries from,
+        and moving it to `preparing` would force `active_version_id` NULL through
+        the `active_version_matches_status` CHECK — taking the user's working
+        avatar away for the duration of a replacement that might fail, which is
+        the gap contract §4.2 forbids. `disabled` is deliberately left alone too:
+        the `(status='disabled') = (disabled_at IS NOT NULL)` CHECK means moving
+        it here would have to erase the revocation timestamp at enqueue time, so
+        a preparation that then failed would land the user in `candidate` with
+        their explicit revoke silently deleted. Leaving a disabled profile
+        disabled while it prepares is honest; see the V3-014 open item.
+
+        Returns whether the profile moved, like `offer_candidate` and
+        `fail_preparation`, so the caller logs what happened rather than what it
+        assumed.
+        """
+        if profile.status != AvatarStatus.CANDIDATE.value:
+            return False
+        profile.status = AvatarStatus.PREPARING.value
+        await self.session.flush()
+        return True
+
     async def activate_version(
         self,
         profile: AvatarProfile,
@@ -405,6 +443,46 @@ class AvatarLifecycle:
         profile.status = AvatarStatus.READY.value
         profile.disabled_at = None
         await self.session.flush()
+
+    async def fail_preparation(self, profile: AvatarProfile) -> bool:
+        """`preparing → candidate` — the preparation did not produce a version.
+
+        Contract §4.1 freezes this edge as "preparation fails; source stays
+        consentable", and V3-013's preparation worker is its only caller. Returns
+        whether the profile moved, for the same reason `offer_candidate` does:
+        the caller logs its outcome, and "no transition" reported as a rollback
+        would claim a state change that did not happen.
+
+        **"The preparation failed" means terminally.** The worker calls this only
+        when `mark_failed` dead-letters the job, never on an intermediate attempt
+        that is going to be retried: a transient blip that flipped the profile to
+        `candidate` while a retry sat queued would advertise material that is not
+        on offer, and the eventual success would then move `candidate → ready`,
+        an edge §4.1 does not list. While attempts remain, `preparing` is the
+        honest state — work really is pending. `begin_preparation` is the way
+        back once this has fired.
+
+        Only a `preparing` profile moves, and that is the whole safety property
+        of this method. A `replace` failure finds the profile still `ready` with
+        its previous version active — `record_consent` deliberately does not move
+        a profile that already has a live version — so this is a no-op there, and
+        the previous avatar stays exactly where it was. That is contract §4.2's
+        "replace failure keeps the previous version active ... there is never a
+        gap where a ready avatar silently disappears", and it holds here by
+        leaving the row alone rather than by any compensating write.
+
+        The accepted source asset is **not** reverted to `pending`. Consent is a
+        record of what the user agreed to, not a workflow slot: rewriting it
+        because our provider failed would falsify the audit trail that V3-013
+        acceptance 1 exists to protect, and `record_consent` refuses to re-decide
+        a decided asset anyway. The profile showing `candidate` again is what
+        makes a retry available.
+        """
+        if profile.status != AvatarStatus.PREPARING.value:
+            return False
+        profile.status = AvatarStatus.CANDIDATE.value
+        await self.session.flush()
+        return True
 
     async def disable(self, profile: AvatarProfile, *, now: datetime | None = None) -> None:
         """Revoke: `any → disabled` (contract §4.1).
