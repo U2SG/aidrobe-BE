@@ -42,6 +42,32 @@ def is_owned_object_key(object_key: str, user_id: uuid.UUID) -> bool:
     return object_key.startswith(f"users/{user_id}/") and ".." not in object_key
 
 
+#: V3-017 — where a static try-on render lands. Under the `users/<user_id>/`
+#: prefix `POST /v1/uploads/presign` already issues, so `is_owned_object_key`
+#: recognizes it and the account purge's `delete_prefix("users/<id>/")` catch-all
+#: sweeps it even if the row is gone (Phase E1 precedent, and the same choice
+#: `avatar_preparation_worker` made for canonical renders).
+_STATIC_PREVIEW_PREFIX = "tryon/static"
+
+
+def static_preview_object_key(user_id: uuid.UUID, asset_id: uuid.UUID) -> str:
+    """The one key a static try-on render for this asset can occupy.
+
+    Public and shared rather than private to the worker, because two callers
+    need the same answer and they must not disagree: the worker writes here,
+    and `DeleteAvatarProfile` sweeps here when `purge_derived=true` (contract
+    §4.2). The function is total — it answers for an asset whose render has not
+    happened yet — which is what lets the deletion path cover a row the worker
+    is rendering *right now*, where `outfit_visual_assets.object_key` is still
+    NULL but an object may exist a moment later.
+
+    Derived from the asset id alone, so it is stable across attempts: a retry
+    overwrites its own render instead of leaving the previous attempt's image
+    behind under a second key nothing references.
+    """
+    return f"users/{user_id}/{_STATIC_PREVIEW_PREFIX}/{asset_id}.png"
+
+
 def names_unresolvable_per_purpose_bucket(image_url: str | None, settings: Settings) -> bool:
     """Is this one of *our* objects in a bucket we deliberately cannot resolve?
 

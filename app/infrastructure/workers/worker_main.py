@@ -37,6 +37,10 @@ from app.infrastructure.workers.pdf_worker import drain_pdf_ingest_jobs
 from app.infrastructure.workers.recommendation_recompute_worker import (
     drain_recommendation_recompute_jobs,
 )
+from app.infrastructure.workers.static_tryon_worker import (
+    drain_static_tryon_jobs,
+    reconcile_dead_static_tryon_assets,
+)
 from app.infrastructure.workers.storage_purge_worker import drain_storage_purge_jobs
 from app.infrastructure.workers.style_learn_worker import learn_style_source
 from app.infrastructure.workers.user_export_worker import drain_user_export_jobs
@@ -95,10 +99,12 @@ class WorkerSettings:
         drain_avatar_candidate_jobs,
         drain_avatar_preparation_jobs,
         drain_avatar_purge_jobs,
+        drain_static_tryon_jobs,
         drain_import_jobs,
         recover_async_job_leases,
         reconcile_dead_outfit_board_assets,
         reconcile_dead_ootd_poster_assets,
+        reconcile_dead_static_tryon_assets,
         reconcile_dead_cutout_items,
         reconcile_dead_import_tasks,
     ]
@@ -142,6 +148,14 @@ class WorkerSettings:
             # it runs, since a dropped purge leaves person material in the
             # bucket after a deletion request.
             cron(drain_avatar_purge_jobs, second={45}, name="avatar_purge_drain"),
+            # V3-017 static try-on preview. A user is watching a spinner, so
+            # this drains on the 5s user-visible-generator cadence rather than
+            # the background one — same reasoning as avatar preparation.
+            cron(
+                drain_static_tryon_jobs,
+                second=set(range(0, 60, 5)),
+                name="static_tryon_drain",
+            ),
             cron(
                 drain_recommendation_recompute_jobs,
                 second=set(range(0, 60, 5)),
@@ -166,6 +180,14 @@ class WorkerSettings:
                 reconcile_dead_cutout_items,
                 minute={7, 22, 37, 52},
                 name="cutout_reconcile_dead_items",
+            ),
+            # V3-017. Offset from its siblings for the same reason they are
+            # offset from each other: four reconcilers firing on the same
+            # minute would contend for the same `async_jobs` scan.
+            cron(
+                reconcile_dead_static_tryon_assets,
+                minute={8, 23, 38, 53},
+                name="static_tryon_reconcile_dead_assets",
             ),
             cron(
                 reconcile_dead_import_tasks,

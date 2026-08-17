@@ -302,10 +302,26 @@ class Settings(BaseSettings):
     # V3-013 adds the endpoints). Profiles, source assets and versions persist
     # regardless of the flag, so flipping it back is a clean rollback.
     # NOTE: contract §2 rule 5 also makes ENABLE_V3_STATIC_TRYON=true with this
-    # flag false a startup error. That clause is deliberately absent from
-    # `validate_feature_dependencies` below because ENABLE_V3_STATIC_TRYON does
-    # not exist yet — the combination is unreachable. It lands with that flag.
+    # flag false a startup error. V3-017 adds that flag, so the clause now
+    # exists in `validate_feature_dependencies` below.
     ENABLE_V3_AVATAR: bool = False
+
+    # V3 P0 static try-on preview (docs/v3-p0-contract.md §2, §6). Gates the
+    # *new* preview surfaces only — V3-019 adds
+    # `POST /v1/wardrobe-decisions/{id}/visual-preview` and V3-018 the feedback
+    # endpoint. The existing M10 `GET /v1/outfit-visual-assets/{asset_id}` stays
+    # ungated no matter what this flag says: V2 outfit-board polling depends on
+    # it (contract §2 rollback rule 4, §1 additive-only rules).
+    #
+    # V3-017 is what this flag currently gates: `RequestStaticPreview` refuses
+    # before it reads anything, so no asset row is written, no quota is consumed
+    # and no `tryon` job is enqueued. Rollback rule 4 is deliberately asymmetric
+    # — jobs already in flight when the flag flips off finish or fail normally,
+    # because `static_tryon_worker` does not re-read the flag. Killing paid work
+    # that was already admitted would leave a user's asset stuck on `processing`
+    # forever, and the rows persist either way (rule 3), so flipping the flag
+    # back on restores function with no migration.
+    ENABLE_V3_STATIC_TRYON: bool = False
 
     # --- Avatar retention (V3-011 human gate) ---------------------------
     # HUMAN GATE: the final durations require privacy approval before
@@ -401,6 +417,15 @@ class Settings(BaseSettings):
         if self.ENABLE_PACKING_PLANNER and not self.ENABLE_PACKING_LIST:
             raise ValueError(
                 "ENABLE_PACKING_PLANNER requires ENABLE_PACKING_LIST"
+            )
+        # Contract §2 rule 5, verbatim. A static try-on renders the user's own
+        # avatar, so the preview surface cannot be enabled without the avatar
+        # lifecycle that produces (and lets the user revoke) the likeness it
+        # would render — with the avatar flag off there is no consent surface,
+        # no `ready` profile and therefore no legitimate input.
+        if self.ENABLE_V3_STATIC_TRYON and not self.ENABLE_V3_AVATAR:
+            raise ValueError(
+                "ENABLE_V3_STATIC_TRYON requires ENABLE_V3_AVATAR"
             )
         return self
 

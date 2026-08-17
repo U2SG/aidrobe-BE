@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,7 +24,20 @@ _TRYON_PROVENANCE_SQL = (
 
 class OutfitVisualAsset(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "outfit_visual_assets"
-    __table_args__ = (CheckConstraint(_TRYON_PROVENANCE_SQL, name="tryon_records_provenance"),)
+    __table_args__ = (
+        CheckConstraint(_TRYON_PROVENANCE_SQL, name="tryon_records_provenance"),
+        # V3-017 — contract §6.3's "same key ⇒ same asset, no regeneration",
+        # as a database guarantee rather than a rule the request path has to
+        # remember. Two concurrent preview requests for identical inputs race
+        # here and exactly one wins; the loser reads the winner back instead of
+        # paying for a second render (`RequestStaticPreview._insert_or_replay`).
+        #
+        # Nullable and non-partial, the `uq_wardrobe_decisions_candidate_id`
+        # precedent: every M10 row (`ootd_poster`, `outfit_board`) has no cache
+        # key at all, and Postgres unique indexes admit any number of NULLs, so
+        # the constraint applies to exactly the rows that have a key.
+        Index("uq_outfit_visual_assets_cache_key", "cache_key", unique=True),
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
@@ -50,6 +63,14 @@ class OutfitVisualAsset(UUIDPrimaryKeyMixin, Base):
     provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # V3-017 — `sha256(cache_key)` from contract §6.3, 64 hex chars. The
+    # *digest*, not the composed idempotency key: the `static_tryon:` prefix
+    # belongs on `async_jobs.idempotency_key`, and duplicating it in every row
+    # would spend 13 of the column's characters saying the same word.
+    #
+    # Internal, like the provenance triple above: no response shape reads it.
+    # NULL for every non-try-on asset — M10 rows are keyed by nothing.
+    cache_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

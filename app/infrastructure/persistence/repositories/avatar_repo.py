@@ -55,14 +55,15 @@ class AvatarDeletionPlan:
     transactional and not reversible — outside the DB transaction, so a
     rollback can never leave the rows intact but the images destroyed.
 
-    `purge_derived` is carried, not acted on. The frozen contract §4.2 makes it
-    a **required** query parameter with no default, and requiring it here means
-    V3-013 cannot forget to decide. Its actual effect — also deleting generated
-    try-on assets derived from an avatar version — needs the
-    `outfit_visual_assets → avatar_versions` link, which does not exist yet
-    (V3-018 adds `visual_type=static_tryon` and its avatar_version_id per
-    V3_SPEC §11.3). V3-013's acceptance 3 owns that behavior. Everything in
-    this plan is what V3-011 genuinely deletes today.
+    `purge_derived` is carried here and **acted on one layer up**, in
+    `DeleteAvatarProfile.execute`. The frozen contract §4.2 makes it a
+    **required** query parameter with no default, and requiring it here means
+    the caller cannot forget to decide. Its effect — also deleting the
+    `visual_type=static_tryon` rows V3-017 writes, and their objects — belongs
+    to the use case rather than to this repository, because it spans two tables
+    owned by two repositories; `outfit_visual_assets` is swept through
+    `SqlAlchemyOutfitVisualRepository.delete_static_tryon_for_user`. Everything
+    in *this* plan is what the avatar's own tables give up.
     """
 
     profile_disabled: bool
