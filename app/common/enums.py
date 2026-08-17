@@ -324,3 +324,34 @@ class AvatarQualityStatus(StrEnum):
     PENDING = "pending"
     PASSED = "passed"
     REJECTED = "rejected"
+
+
+# --- V3 P0 static try-on (docs/v3-p0-contract.md §6) ----------------------
+
+
+class VisualType(StrEnum):
+    """What kind of image an `outfit_visual_assets` row holds.
+
+    **A vocabulary, not a constraint.** Unlike the avatar enums above, this one
+    generates no CHECK on `outfit_visual_assets.visual_type`: the column is a
+    free `String(32)` that M10 rows already populate, and constraining it now
+    would be unrelated cleanup with real regression surface for no acceptance
+    criterion. What it *does* generate is the `tryon_records_provenance` CHECK,
+    so the literal that constraint tests against cannot drift from the literal
+    the application writes.
+
+    Two P0 values named by contract §6.3 are deliberately absent:
+
+    - `avatar_canonical` — V3-013 stores canonical renders as columns on
+      `avatar_versions` (`canonical_front_object_key`), not as rows in this
+      table, so no row ever carries it.
+    - `outfit_multiview` — "reserved for P1 and must not appear in P0
+      responses". A member here would be the first step of that drift.
+    """
+
+    #: M10 — the OOTD poster render.
+    OOTD_POSTER = "ootd_poster"
+    #: M10 — the flat-lay outfit board.
+    OUTFIT_BOARD = "outfit_board"
+    #: V3 P0 — a static try-on preview (contract §6.2).
+    STATIC_TRYON = "static_tryon"

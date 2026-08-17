@@ -14,6 +14,7 @@ from app.application.ports.embedding import EmbeddingPort
 from app.application.ports.image_cutout import ImageCutoutPort
 from app.application.ports.llm import LlmPort
 from app.application.ports.ocr import OcrPort
+from app.application.ports.static_tryon import StaticTryOnPort
 from app.application.ports.sts_token import StsTokenPort
 from app.application.ports.weather import WeatherPort
 from app.config.settings import get_settings
@@ -145,6 +146,34 @@ def avatar_preparation() -> AvatarPreparationPort:
     from app.infrastructure.vision.fake_avatar_preparation import FakeAvatarPreparation
 
     return FakeAvatarPreparation()
+
+
+def static_tryon() -> StaticTryOnPort:
+    """V3-016 — what renders a static try-on preview.
+
+    One adapter, and that is the P0 answer rather than a placeholder: contract
+    §6.4 restricts development and CI to fake/recorded adapters, and selecting a
+    production provider is this feature's explicit human gate ("Production
+    provider selection is out of scope"). `FakeStaticTryOn` is local and
+    deterministic, so no avatar render leaves the machine and no call is billed —
+    the same constraint `avatar_preparation` is written to.
+
+    No settings branch, for the same reason as `avatar_preparation`: there is
+    nothing to branch to, and a `STATIC_TRYON_PROVIDER` knob with one legal value
+    would advertise a choice the human gate has not been asked about yet.
+
+    **Callers ask the returned port for its `pipeline_identity`** rather than
+    reading adapter constants themselves — that is what keeps contract §6.3's
+    cache key naming the pipeline that will actually answer the job, without any
+    module above the infrastructure line importing an adapter (V3-016
+    acceptance 1). See `app/application/ports/static_tryon.py`.
+
+    Lazy-imported to match its siblings — selecting it must not pull PIL into an
+    app that never renders a preview.
+    """
+    from app.infrastructure.vision.fake_static_tryon import FakeStaticTryOn
+
+    return FakeStaticTryOn()
 
 
 def ocr_service() -> OcrPort:
