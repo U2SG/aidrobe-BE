@@ -81,6 +81,7 @@ class SqlAlchemyOutfitVisualRepository:
         error_code: str | None = None,
         error: str | None = None,
         object_key: str | None = None,
+        quality_signals: dict[str, object] | None = None,
     ) -> None:
         asset = await self.get_by_id(asset_id)
         if asset is None:
@@ -94,4 +95,6 @@ class SqlAlchemyOutfitVisualRepository:
             asset.error_code = error_code
         if error is not None:
             asset.error_message = error
+        if quality_signals is not None:
+            asset.quality_signals = quality_signals
         await self._session.flush()

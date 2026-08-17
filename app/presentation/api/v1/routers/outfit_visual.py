@@ -59,7 +59,10 @@ async def get_outfit_visual_asset(
     generation_status = asset.generation_status
     error_code = asset.error_code
 
-    if generation_status in ("queued", "processing"):
+    # `quality_check` is V3-018's §6.2 intermediate state: non-terminal, so a
+    # worker that dead-letters mid-gate must surface `failed` here exactly as
+    # it does from `processing` — a poller stops only on terminal states.
+    if generation_status in ("queued", "processing", "quality_check"):
         generation_status, error_code = await _resolve_pending_status(
             db, asset_id, generation_status, error_code, asset.created_at
         )

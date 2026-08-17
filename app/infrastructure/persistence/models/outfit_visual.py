@@ -71,6 +71,19 @@ class OutfitVisualAsset(UUIDPrimaryKeyMixin, Base):
     # Internal, like the provenance triple above: no response shape reads it.
     # NULL for every non-try-on asset — M10 rows are keyed by nothing.
     cache_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # V3-018 — the quality gate's record: verdict, per-check grades, neutral
+    # render measurements and the regeneration accounting (V3_SPEC §11.3's
+    # suggested `quality_signals`; `quality_status` is deliberately NOT a
+    # column — `generation_status` already distinguishes ready / failed /
+    # rejected_by_quality_gate, and a second column saying the same thing is
+    # the derived-column smell). Internal like the provenance triple: no
+    # response shape reads it (contract §6.2 freezes the GET shape without it);
+    # it exists for support and for the human-gated threshold review. Every
+    # payload written here has passed `validate_render_signals`, so it can
+    # carry no image data and no judgement about the person. NULL for every
+    # asset the gate never judged (all M10 rows, and V3-017 rows written
+    # before the gate existed).
+    quality_signals: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
