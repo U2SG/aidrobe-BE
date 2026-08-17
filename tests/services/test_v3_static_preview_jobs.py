@@ -42,6 +42,7 @@ import sqlalchemy as sa
 from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.application.avatar.delete_avatar import DeleteAvatarProfile
 from app.application.ports.static_tryon import (
     PipelineIdentity,
     StaticTryOnRequest,
@@ -76,6 +77,7 @@ from app.infrastructure.persistence.models.purchase_decision import (
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.repositories.avatar_repo import AvatarLifecycle
+from app.infrastructure.storage.object_key import static_preview_object_key
 from app.infrastructure.vision.fake_static_tryon import (
     MODEL_VERSION,
     PROMPT_VERSION,
@@ -129,6 +131,7 @@ class _FakeStorage:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
         self.read_keys: list[str] = []
+        self.deleted_keys: list[str] = []
 
     async def get_object(self, key: str) -> bytes:
         self.read_keys.append(key)
@@ -137,6 +140,12 @@ class _FakeStorage:
     async def put_object(self, key: str, data: bytes, content_type: str) -> str:
         self.objects[key] = data
         return f"https://storage.test/{key}"
+
+    async def delete_objects(self, keys: list[str]) -> None:
+        """Idempotent, like the real port: a missing key is a success."""
+        self.deleted_keys.extend(keys)
+        for key in keys:
+            self.objects.pop(key, None)
 
 
 class _ExplodingTryOn:
@@ -887,6 +896,61 @@ async def test_a_recovered_lease_stops_the_original_attempt_writing_ready(
     job = await _only_job(factory)
     assert job.status == JOB_STATUS_RUNNING, "the second claim still owns the job"
     assert job.attempts == 2
+
+
+async def test_a_render_finishing_after_the_avatar_purge_leaves_no_image(
+    factory: async_sessionmaker[AsyncSession],
+    storage: _FakeStorage,
+    renderer: FakeStaticTryOn,
+) -> None:
+    """Revocation must win the race against a render already in flight.
+
+    Contract §4.2: `DELETE /v1/avatar-profile?purge_derived=true` deletes the
+    generated try-on assets. A render that started before the delete and lands
+    after it is the one case the request-side sweep cannot see, because at sweep
+    time the object does not exist yet.
+
+    **The window is narrow and it is staged exactly.** A row deleted before
+    `_assert_identity_matches` is caught there and no object is ever written;
+    the only way to write an orphan is for the delete to land *after* that check
+    and before the finalizer. So the delete runs inside `put_object` — which is
+    the real long-running network call in that window, not an artificial hook.
+
+    The prospective key the purge job already carries covers the same window
+    from the other side (see `test_a_render_still_in_flight_is_swept_by_its_
+    prospective_key`). Both exist because a worker crash between `put_object`
+    and the finalizer would defeat this check alone, and a bucket write after
+    the purge job drained would defeat that one alone.
+    """
+    fixture = await _seed_preview_ready_user(factory)
+    requested = await _request(factory, fixture)
+    expected_key = static_preview_object_key(fixture.user_id, requested.asset_id)
+    original_put = storage.put_object
+
+    async def _purge_then_put(key: str, data: bytes, content_type: str) -> str:
+        # The genuine user action, through the real use case — not a hand-rolled
+        # DELETE — so this fails if the deletion path stops removing the row.
+        async with factory() as session:
+            await DeleteAvatarProfile(session).execute(
+                user_id=fixture.user_id, purge_derived=True
+            )
+            await session.commit()
+        return await original_put(key, data, content_type)
+
+    storage.put_object = _purge_then_put  # type: ignore[method-assign]
+
+    await drain_static_tryon_jobs(ctx=None)
+
+    assert expected_key not in storage.objects, (
+        "the render landed after the user revoked their avatar and was kept"
+    )
+    assert expected_key in storage.deleted_keys
+    assert await _assets(factory) == []
+    job = await _only_job(factory)
+    assert job.status != JOB_STATUS_SUCCEEDED, (
+        "a render whose asset was deleted did not succeed"
+    )
+    assert job.last_error == "asset_not_found"
 
 
 # --- acceptance 3: what burns a call and what does not ----------------------

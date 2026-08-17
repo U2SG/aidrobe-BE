@@ -76,6 +76,7 @@ from app.infrastructure.persistence.repositories.outfit_visual_repo import (
     SqlAlchemyOutfitVisualRepository,
 )
 from app.infrastructure.persistence.session import AsyncSessionLocal
+from app.infrastructure.storage.object_key import static_preview_object_key
 from app.infrastructure.workers.job_runtime import (
     JOB_STATUS_DEAD,
     claim_one,
@@ -91,18 +92,6 @@ MAX_DRAIN_PER_TICK = 5
 STATUS_PROCESSING = "processing"
 STATUS_READY = "ready"
 STATUS_FAILED = "failed"
-
-#: Renders live beside the user's other objects, under the prefix
-#: `POST /v1/uploads/presign` already issues, so `is_owned_object_key`
-#: recognizes them and the account purge's `delete_prefix("users/<id>/")`
-#: catch-all sweeps them even if the row is gone (Phase E1 precedent, and the
-#: same choice `avatar_preparation_worker` made for canonical renders).
-_PREVIEW_PREFIX = "tryon/static"
-
-
-def _preview_key(user_id: uuid.UUID, asset_id: uuid.UUID) -> str:
-    return f"users/{user_id}/{_PREVIEW_PREFIX}/{asset_id}.png"
-
 
 class _PermanentPayloadError(Exception):
     """A payload no retry can fix. Fails the job without quoting the value."""
@@ -199,7 +188,7 @@ async def _process_one(job: Any, *, port: StaticTryOnPort | None = None) -> None
             #    `ready` asset pointing at an object that does not exist, while
             #    this order's worst case is an orphaned object that the account
             #    prefix sweep reaches.
-            object_key = _preview_key(user_id, asset_id)
+            object_key = static_preview_object_key(user_id, asset_id)
             await storage.put_object(object_key, result.image, "image/png")
 
             # 5. Persist + finalize, fenced on this attempt's claim. If the
@@ -208,10 +197,36 @@ async def _process_one(job: Any, *, port: StaticTryOnPort | None = None) -> None
             #    owns the asset now, or oncall already sees the job as dead.
             async with AsyncSessionLocal() as session:
                 repo = SqlAlchemyOutfitVisualRepository(session)
+                # The row is re-read, not just written through. `update_status`
+                # is a silent no-op on a missing row, so without this a render
+                # that finished *after* `DELETE /v1/avatar-profile?purge_derived=
+                # true` swept the row would leave the PNG in the bucket with
+                # nothing pointing at it — a likeness the user revoked, kept.
+                # The purge also enqueues this exact key (it is derived from the
+                # asset id, so the sweep can name it before the render exists),
+                # so this closes the window from the other side and the two do
+                # not depend on each other's timing.
+                if await repo.get_by_id(asset_id) is None:
+                    # Idempotent by contract, so racing the purge's own delete
+                    # is a no-op rather than an error.
+                    await storage.delete_objects([object_key])
+                    await mark_failed(
+                        session, job.id, claimed_attempt=job.attempts, error="asset_not_found"
+                    )
+                    await session.commit()
+                    logger.warning("static_tryon.asset_deleted_discarding_render")
+                    return
                 await repo.update_status(asset_id, STATUS_READY, object_key=object_key)
                 ok = await mark_succeeded(session, job.id, claimed_attempt=job.attempts)
                 if not ok:
                     await session.rollback()
+                    # Deliberately NOT deleting the object here, unlike the
+                    # branch above. The key is derived from the asset id, so the
+                    # attempt that now owns this asset writes the *same* key —
+                    # deleting it would race that attempt into a `ready` row
+                    # pointing at nothing. An orphan is recoverable; a broken
+                    # `ready` row is not, and no row references this object
+                    # unless the new attempt succeeds and re-creates it.
                     logger.warning("static_tryon.lease_lost_discarding_completion")
                     return
                 await session.commit()

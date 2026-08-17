@@ -19,6 +19,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.avatar.delete_avatar import JOB_TYPE as PURGE_JOB_TYPE
@@ -41,7 +43,7 @@ from app.common.enums import (
     AvatarSourceType,
     AvatarStatus,
 )
-from app.config.settings import Settings
+from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.avatar import (
     AvatarProfile,
@@ -51,12 +53,16 @@ from app.infrastructure.persistence.models.avatar import (
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.repositories.avatar_repo import AvatarLifecycle
+from app.infrastructure.persistence.session import get_db_session
+from app.infrastructure.storage.object_key import static_preview_object_key
 from app.infrastructure.workers.job_runtime import (
     JOB_STATUS_DEAD,
     JOB_STATUS_QUEUED,
     JOB_STATUS_RUNNING,
     JOB_STATUS_SUCCEEDED,
 )
+from app.presentation.api.v1.routers import outfit_visual as visual_router
+from app.presentation.middlewares.exception_handler import setup_exception_handlers
 
 CONSENT_COPY_V1 = "avatar_consent_placeholder_v1"
 
@@ -696,37 +702,202 @@ async def test_purge_derived_is_recorded_on_both_branches(
         assert (job.payload or {})["purge_derived"] is purge_derived
 
 
-async def test_purge_derived_try_on_scope_is_empty_by_construction(
+# --- contract §4.2: the try-on scope of `purge_derived` --------------------
+#
+# These replace `test_purge_derived_try_on_scope_is_empty_by_construction`,
+# which asserted that `outfit_visual_assets` has no `avatar_version_id` column
+# as a tripwire for "someone made try-on assets reachable". V3-017 made them
+# reachable *without* adding that column, so the tripwire stayed green while its
+# stated premise ("nothing writes the V3 try-on visual type yet") became false —
+# a forcing function that cannot fire is worse than none, because it reads as
+# coverage. The replacement asserts the behavior on both branches, so neither
+# can regress silently.
+
+
+async def _seed_static_tryon_asset(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    rendered: bool = True,
+) -> OutfitVisualAsset:
+    """One try-on render for this user, as `RequestStaticPreview` writes them.
+
+    `provider` / `model_version` / `prompt_version` are not decoration: the
+    `tryon_records_provenance` CHECK refuses a `static_tryon` row without them
+    (V3-016), so a row seeded without them would fail to insert and the test
+    would never reach its assertions.
+
+    `rendered=False` is the in-flight shape — the worker has claimed the job but
+    `object_key` is still NULL.
+    """
+    asset = OutfitVisualAsset(
+        user_id=user_id,
+        visual_type="static_tryon",
+        generation_status="ready" if rendered else "processing",
+        object_key=f"users/{user_id}/tryon/static/rendered-{uuid.uuid4()}.png"
+        if rendered
+        else None,
+        provider="fake",
+        model_version="m1",
+        prompt_version="p1",
+        cache_key=uuid.uuid4().hex * 2,
+    )
+    session.add(asset)
+    await session.flush()
+    return asset
+
+
+def _build_visual_app(session: AsyncSession) -> FastAPI:
+    """The real `GET /v1/outfit-visual-assets/{asset_id}` over this session.
+
+    "No row" is not the claim contract §4.2 makes — the claim is that the render
+    can no longer be reached, and that endpoint is the only thing that signs one
+    (it is M10's, ungated by `ENABLE_V3_STATIC_TRYON`). Asserting through the
+    router is what makes "nothing signable" an observation rather than an
+    inference from a row count.
+    """
+    app = FastAPI()
+    setup_exception_handlers(app)
+
+    async def override_db() -> AsyncSession:
+        return session
+
+    app.dependency_overrides[get_db_session] = override_db
+    app.dependency_overrides[get_settings] = lambda: Settings(APP_ENV="dev")
+    app.include_router(visual_router.router)
+    return app
+
+
+async def _get_asset(session: AsyncSession, asset_id: uuid.UUID, user_id: uuid.UUID) -> int:
+    app = _build_visual_app(session)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        resp = await client.get(
+            f"/v1/outfit-visual-assets/{asset_id}", headers={"X-User-Id": str(user_id)}
+        )
+    return resp.status_code
+
+
+async def test_purge_derived_true_deletes_the_try_on_renders(
     db_session: AsyncSession,
 ) -> None:
-    """Why `purge_derived` has no try-on effect yet — asserted, not just claimed.
+    """Contract §4.2's frozen sentence, as behavior: no row, no object, no read.
 
-    Contract §4.2 scopes the parameter to "generated **try-on** assets derived
-    from any avatar version". No such asset can exist: `visual-preview` is not
-    implemented (V3-016/V3-017) and `outfit_visual_assets` has no column linking a
-    row to an avatar version — V3-011's `AvatarDeletionPlan` docstring assigned
-    that column to V3-018.
-
-    This asserts the *premise* rather than the behavior, so the day someone adds
-    the link this test fails and points at
-    `app/application/avatar/delete_avatar.py` instead of leaving a parameter that
-    silently does nothing. A behavioral test over a hand-seeded row would only
-    prove that a query compiles.
+    This is the revocation guarantee doing its job. A static try-on render is a
+    picture of the user's own face and body wearing a garment; a user who
+    deletes their avatar and asks for the derived assets to go too must not be
+    left with those images still signable through the M10 endpoint.
     """
-    columns = set(OutfitVisualAsset.__table__.c.keys())
+    user_id, profile, version, _source = await _ready_profile_with_material(db_session)
+    asset = await _seed_static_tryon_asset(db_session, user_id)
+    object_key = asset.object_key
+    asset_id = asset.id
 
-    assert "avatar_version_id" not in columns, (
-        "outfit_visual_assets now links to an avatar version — `purge_derived` "
-        "must start deleting those rows; see delete_avatar.py"
+    deleted = await DeleteAvatarProfile(db_session).execute(
+        user_id=user_id, purge_derived=True
     )
-    # And nothing writes the V3 try-on visual type yet, so there is nothing to
-    # find even without a link column.
-    existing = await db_session.scalar(
-        sa.select(sa.func.count())
-        .select_from(OutfitVisualAsset)
-        .where(OutfitVisualAsset.visual_type == "static_tryon")
+
+    # 1. No row.
+    assert await db_session.get(OutfitVisualAsset, asset_id) is None
+    assert deleted.deleted_derived_asset_count == 1
+    # 2. No object — scheduled through the same out-of-band sweep as the photos,
+    #    because object deletion is not transactional (see delete_avatar.py).
+    job = next(
+        j
+        for j in await _jobs(db_session, PURGE_JOB_TYPE)
+        if (j.payload or {}).get("avatar_profile_id") == str(profile.id)
     )
-    assert existing == 0
+    assert object_key in (job.payload or {})["object_keys"]
+    # 3. Nothing signable.
+    assert await _get_asset(db_session, asset_id, user_id) == 404
+
+
+async def test_purge_derived_false_keeps_the_try_on_renders(
+    db_session: AsyncSession,
+) -> None:
+    """The other branch, which is what makes the parameter mean anything.
+
+    `false` is not "we delete them anyway": the avatar goes, the renders stay,
+    and they stay *readable*. Without this twin the `true` test would also pass
+    against an implementation that swept them unconditionally, and contract
+    §4.2's required-no-default parameter would be decorative.
+    """
+    user_id, profile, version, _source = await _ready_profile_with_material(db_session)
+    asset = await _seed_static_tryon_asset(db_session, user_id)
+    object_key = asset.object_key
+    asset_id = asset.id
+
+    deleted = await DeleteAvatarProfile(db_session).execute(
+        user_id=user_id, purge_derived=False
+    )
+
+    assert deleted.deleted_derived_asset_count == 0
+    assert await db_session.get(OutfitVisualAsset, asset_id) is not None
+    job = next(
+        j
+        for j in await _jobs(db_session, PURGE_JOB_TYPE)
+        if (j.payload or {}).get("avatar_profile_id") == str(profile.id)
+    )
+    assert object_key not in (job.payload or {})["object_keys"]
+    assert await _get_asset(db_session, asset_id, user_id) == 200
+
+
+async def test_a_render_still_in_flight_is_swept_by_its_prospective_key(
+    db_session: AsyncSession,
+) -> None:
+    """The row the worker is rendering right now has no `object_key` yet.
+
+    Sweeping only the persisted keys would leave that PNG in the bucket: it is
+    written moments after this transaction commits, by a worker that started
+    before the delete. The key is derived from the asset id, so the purge can
+    name it before the object exists — and `delete_objects` treats a missing key
+    as success, so naming a render that never happens costs nothing.
+
+    `static_tryon_worker` also re-reads the row before finalizing, which closes
+    the window from the other side; neither mechanism relies on the other's
+    timing, because a crash between `put_object` and that re-read would defeat
+    the worker-side check alone.
+    """
+    user_id, profile, version, _source = await _ready_profile_with_material(db_session)
+    asset = await _seed_static_tryon_asset(db_session, user_id, rendered=False)
+    asset_id = asset.id
+    assert asset.object_key is None
+
+    await DeleteAvatarProfile(db_session).execute(user_id=user_id, purge_derived=True)
+
+    job = next(
+        j
+        for j in await _jobs(db_session, PURGE_JOB_TYPE)
+        if (j.payload or {}).get("avatar_profile_id") == str(profile.id)
+    )
+    assert static_preview_object_key(user_id, asset_id) in (job.payload or {})["object_keys"]
+
+
+async def test_purge_derived_leaves_other_visual_assets_alone(
+    db_session: AsyncSession,
+) -> None:
+    """The scope is try-on renders, not "everything this user ever generated".
+
+    `purge_derived` is scoped by `visual_type` rather than by user, so an OOTD
+    poster or an outfit board — neither of which is a picture of the user's
+    body — survives an avatar deletion. Deleting them would destroy unrelated
+    user content for the same reason `retained_object_keys` exists.
+    """
+    user_id, profile, version, _source = await _ready_profile_with_material(db_session)
+    board = OutfitVisualAsset(
+        user_id=user_id,
+        visual_type="outfit_board",
+        generation_status="completed",
+        object_key=f"users/{user_id}/boards/{uuid.uuid4()}.png",
+    )
+    db_session.add(board)
+    await db_session.flush()
+    board_id = board.id
+
+    await DeleteAvatarProfile(db_session).execute(user_id=user_id, purge_derived=True)
+
+    assert await db_session.get(OutfitVisualAsset, board_id) is not None
 
 
 async def test_deleting_twice_is_idempotent(db_session: AsyncSession) -> None:

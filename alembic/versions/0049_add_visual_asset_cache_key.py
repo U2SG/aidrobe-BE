@@ -24,11 +24,17 @@ choice, same reason, as `uq_wardrobe_decisions_candidate_id` (migration 0046).
 `String(64)` is the exact width of a SHA-256 hex digest, so the column cannot
 silently truncate a key into a collision with a different one.
 
-**Not added here, and by whom:** `avatar_version_id` is V3-018's (V3-011's
-`AvatarDeletionPlan` docstring assigned it, and
-`test_purge_derived_try_on_scope_is_empty_by_construction` asserts its absence).
-`quality_status` / `quality_signals` are V3-018's. `expires_at` reaching the
-response is V3-019's.
+**No `avatar_version_id` column, and why that is not a deferral.** Contract
+§4.2's `purge_derived=true` has to reach these rows, and it does — scoped by
+`user_id` + `visual_type`, which is the same set (one profile per user, every
+try-on render is of that avatar) and fails safe if a row ever loses its
+provenance. `RequestStaticPreview` already persists the version id inside
+`input_snapshot`, so the per-version linkage exists for anything that needs it
+without a column, an index or a `SET NULL`/`CASCADE` ordering hazard against the
+version rows the same transaction deletes. `quality_status` / `quality_signals`
+are V3-018's. `expires_at` reaching the response is V3-019's — and until then
+these renders have no per-row retention clock, which
+`app/application/avatar/delete_avatar.py` records.
 
 Revision ID: 0049_add_visual_asset_cache_key
 Revises: 0048_add_visual_asset_provenance

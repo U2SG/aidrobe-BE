@@ -14,10 +14,10 @@ according to policy." Both halves are here, and they are different halves:
   is the "schedules removal" half — and being a job, it retries, which matters
   because a lost purge leaks person material rather than merely losing a render.
 
-**What `purge_derived` actually governs today, stated plainly.** Contract §4.2
-makes it a required query parameter with no default: "`true` also deletes
-generated **try-on assets** derived from any avatar version." Two things follow,
-and the second is a declared limitation rather than a quiet gap:
+**What `purge_derived` governs, stated plainly.** Contract §4.2 makes it a
+required query parameter with no default: "`true` also deletes generated
+**try-on assets** derived from any avatar version." Two things follow, and the
+two branches are genuinely different:
 
 1. The avatar's own canonical renders (`avatar_versions.canonical_*_object_key`)
    are **not** try-on assets — they are the appearance reference itself, the
@@ -25,17 +25,40 @@ and the second is a declared limitation rather than a quiet gap:
    delete, `purge_derived` or not, because a user who deleted their avatar did
    not ask us to keep a generated likeness of themselves. They are derived
    assets and they are removed, which is what satisfies acceptance 3.
-2. Generated try-on previews cannot exist yet. `POST /v1/wardrobe-decisions/{id}/
-   visual-preview` is not implemented (V3-016/V3-017), no row is written with
-   `visual_type=static_tryon`, and `outfit_visual_assets` has no
-   `avatar_version_id` to join on — V3-011's `AvatarDeletionPlan` docstring
-   already assigned that column to V3-018. So `purge_derived` is recorded on the
-   purge job and carried into the response, and its try-on scope activates when
-   there is something in scope. `test_purge_derived_scope_is_empty_by_construction`
-   asserts the premise (no avatar link exists on that table) rather than
-   asserting the behavior, so the day V3-018 adds the column the test fails and
-   points a reader straight at this docstring instead of leaving a parameter that
-   silently does nothing.
+2. Generated try-on previews — `outfit_visual_assets` rows with
+   `visual_type=static_tryon` and their PNGs under `users/<id>/tryon/static/` —
+   are removed **only** when `purge_derived=true`. Rows go in the request
+   (`delete_static_tryon_for_user`), objects go to the same `avatar_purge` job
+   as the rest. `false` keeps them, which is the frozen contract: the parameter
+   has no default precisely so the user decides, and a delete that swept them
+   either way would make the parameter decorative.
+
+**This was previously deferred, and the deferral was wrong.** Until V3-017 there
+was no writer of `visual_type=static_tryon`, so the earlier version of this
+docstring said the scope was empty by construction and pointed at a test
+asserting `outfit_visual_assets` has no `avatar_version_id` column. V3-017 made
+the premise false without making that test fail — a column-shaped tripwire
+cannot see a new *writer* — so `purge_derived` would have shipped inert while
+the thing it governs finally existed. The tripwire is replaced by the behavioral
+pair in `tests/services/test_v3_avatar_lifecycle_apis.py` (`true` ⇒ no row, no
+object, nothing signable; `false` ⇒ the render survives), which cannot pass
+without the deletion actually happening.
+
+**A render in flight is covered too.** A row the worker is rendering right now
+has `object_key` still NULL, so the sweep names
+`static_preview_object_key(user_id, asset_id)` instead — the one key that render
+can occupy. `static_tryon_worker` closes the same window from its side by
+re-reading the row before it finalizes. Neither depends on the other's timing,
+which is the point: a crash between `put_object` and the finalize would defeat
+the worker-side check alone.
+
+**What is not solved here.** These renders still have no per-row retention clock
+(`outfit_visual_assets` has no `expires_at` column; §13.5's 30-day rule lives in
+`retention.yaml` against the `aidrobe-private` bucket and is not verified to
+reach this prefix in every storage configuration). A user who never deletes
+their avatar keeps them until the account purge. That is a V3-018/V3-019
+question about the asset's own lifecycle, not about revocation, and it is
+recorded rather than quietly fixed here.
 
 Deliberately **not** reinterpreted: an earlier draft of this feature had
 `purge_derived=false` retain the canonical renders on the
@@ -63,6 +86,10 @@ from app.infrastructure.persistence.repositories.avatar_repo import (
     AvatarDeletionPlan,
     AvatarLifecycle,
 )
+from app.infrastructure.persistence.repositories.outfit_visual_repo import (
+    SqlAlchemyOutfitVisualRepository,
+)
+from app.infrastructure.storage.object_key import static_preview_object_key
 from app.infrastructure.workers.job_runtime import enqueue
 
 logger = structlog.get_logger(__name__)
@@ -122,6 +149,11 @@ class AvatarDeleted:
     #: "purge scheduled" from "nothing to purge" without inspecting the queue.
     purge_job_id: uuid.UUID | None
     deleted_object_count: int
+    #: How many `static_tryon` rows `purge_derived=true` removed. Always 0 when
+    #: the flag was false. Not in any response shape (§4.2 freezes those); it
+    #: exists so the deletion's own log can say whether the derived scope was
+    #: non-empty without naming a single key.
+    deleted_derived_asset_count: int = 0
 
 
 class DeleteAvatarProfile:
@@ -150,6 +182,11 @@ class DeleteAvatarProfile:
         # delete their avatar — deleting it here would destroy unrelated user
         # content because it once happened to be a candidate.
         keys = list(plan.source_object_keys) + list(plan.canonical_object_keys)
+
+        derived_keys = (
+            await self._purge_static_tryon(user_id) if purge_derived else ()
+        )
+        keys.extend(derived_keys)
 
         purge_job_id: uuid.UUID | None = None
         if keys:
@@ -184,9 +221,28 @@ class DeleteAvatarProfile:
             purge_derived=purge_derived,
             owned_object_count=len(keys),
             retained_object_count=len(plan.retained_object_keys),
+            derived_asset_count=len(derived_keys),
         )
         return AvatarDeleted(
             plan=plan,
             purge_job_id=purge_job_id,
             deleted_object_count=len(keys),
+            deleted_derived_asset_count=len(derived_keys),
+        )
+
+    async def _purge_static_tryon(self, user_id: uuid.UUID) -> tuple[str, ...]:
+        """Delete the try-on renders and return the objects to sweep.
+
+        One key per deleted row, and never zero: a row whose render has not
+        landed yet has no `object_key`, but the worker can only ever write it to
+        `static_preview_object_key(user_id, asset_id)`, so that key is named
+        anyway. `delete_objects` treats a missing key as success, so naming a
+        render that never happened costs nothing — while *not* naming it would
+        leave a PNG written moments after this transaction commits.
+        """
+        rows = await SqlAlchemyOutfitVisualRepository(
+            self.session
+        ).delete_static_tryon_for_user(user_id)
+        return tuple(
+            key or static_preview_object_key(user_id, asset_id) for asset_id, key in rows
         )
