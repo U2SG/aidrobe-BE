@@ -180,6 +180,12 @@ async def test_the_existing_m10_write_paths_are_untouched(db_session: AsyncSessi
     were a blanket NOT NULL, every existing generation path would have to invent
     a `provider` for a render no provider produced — so it is scoped to
     `static_tryon` and this asserts the scope rather than trusting the SQL.
+
+    The `None` case is deliberate and is the one that needs a database to
+    settle: `visual_type` is nullable, and `NULL <> 'static_tryon'` evaluates to
+    NULL, not TRUE — a CHECK passes on NULL because NULL is not FALSE. So a
+    typeless row inserts, which is correct (it is not a try-on row) but is a
+    three-valued-logic detail no reading of the SQL should be trusted on.
     """
     user_id = await _seed_user(db_session)
 

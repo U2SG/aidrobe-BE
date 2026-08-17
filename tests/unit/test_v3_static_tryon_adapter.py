@@ -30,7 +30,10 @@ from app.application.ports.static_tryon import (
     StaticTryOnRequest,
     ViewRequirement,
 )
+from app.application.purchase.outfit_composition import FILL_ORDER
+from app.infrastructure.vision import fake_static_tryon
 from app.infrastructure.vision.fake_static_tryon import (
+    MAX_GARMENT_TILES,
     MODEL_VERSION,
     PREVIEW_SIZE,
     PROMPT_VERSION,
@@ -232,6 +235,38 @@ async def test_undecodable_bytes_raise_rather_than_returning_a_preview() -> None
     """
     with pytest.raises(UnidentifiedImageError):
         await FakeStaticTryOn().render(_request(avatar=b"not an image"))
+
+
+def test_the_strip_can_hold_every_garment_v3_006_can_compose() -> None:
+    """The capacity bound is unreachable, asserted against V3-006's vocabulary.
+
+    An outfit fills at most `len(FILL_ORDER)` slots, so a request carries at most
+    one candidate plus that many supporting garments. Checked here rather than
+    asserted in a comment, so widening `FILL_ORDER` past the strip's capacity
+    fails on the day it happens instead of turning previews into a truncation.
+    """
+    assert MAX_GARMENT_TILES >= 1 + len(FILL_ORDER)
+
+
+async def test_more_garments_than_the_strip_holds_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """And if it ever were reachable, it refuses rather than dropping one.
+
+    A preview that silently omitted a garment would still look like a complete
+    outfit, and V3-018 would attach a quality verdict to a picture of something
+    the user was not offered. Driven by shrinking the cap rather than by building
+    an outfit the domain cannot produce.
+    """
+    monkeypatch.setattr(fake_static_tryon, "MAX_GARMENT_TILES", 2)
+
+    with pytest.raises(ValueError, match="exceeds"):
+        await FakeStaticTryOn().render(
+            _request(
+                supporting=(
+                    _garment(GarmentSlot.LEGS, (40, 40, 60)),
+                    _garment(GarmentSlot.FEET, (240, 240, 230)),
+                )
+            )
+        )
 
 
 async def test_the_result_names_the_pipeline_that_produced_it() -> None:

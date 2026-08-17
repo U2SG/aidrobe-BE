@@ -58,6 +58,17 @@ PREVIEW_SIZE = (768, 1024)
 #: Edge of one square garment tile in the strip.
 _TILE = 160
 
+#: How many garments the strip can show. Declared rather than left implicit,
+#: because a renderer that quietly drops the item a decision is about is the
+#: failure V3-005's scan window was failed for — in the buy-encouraging
+#: direction there, in the "your shoes are not in the picture" direction here.
+#:
+#: The bound is provably unreachable rather than merely generous: V3-006 fills at
+#: most `len(FILL_ORDER)` = 4 slots, so a request carries at most 1 candidate + 4
+#: supporting garments, and `test_the_strip_can_hold_every_garment_v3_006_can_compose`
+#: asserts that against V3-006's own vocabulary instead of against this comment.
+MAX_GARMENT_TILES = PREVIEW_SIZE[1] // _TILE
+
 #: Flat neutral backdrop. Mid-grey rather than pure white or black so a preview
 #: is visibly a *generated asset* and not mistaken for a photograph.
 _BACKDROP = (128, 128, 128)
@@ -133,14 +144,20 @@ def _compose(request: StaticTryOnRequest) -> bytes:
     # so it occupies the top tile whatever slot it fills. The supporting items
     # follow in sorted order.
     garments = [request.candidate_garment, *sorted(request.supporting_garments, key=_sort_key)]
+    if len(garments) > MAX_GARMENT_TILES:
+        # Unreachable from V3-006 (see MAX_GARMENT_TILES). Raising rather than
+        # truncating is the point: a preview that silently omitted a garment
+        # would still look like a complete outfit, and V3-018 would then attach a
+        # quality verdict to a picture of something the user was not offered.
+        raise ValueError(
+            f"{len(garments)} garments exceeds the {MAX_GARMENT_TILES}-tile preview strip"
+        )
+
     for index, garment in enumerate(garments):
-        top = index * _TILE
-        if top + _TILE > PREVIEW_SIZE[1]:
-            # The strip is bounded by the canvas. V3-006 composes at most four
-            # slots, so six tiles is already generous headroom; silently running
-            # off the bottom would be worse than stopping.
-            break
-        canvas.paste(_fit(garment.image, (_TILE, _TILE), _PANEL), (PREVIEW_SIZE[0] - _TILE, top))
+        canvas.paste(
+            _fit(garment.image, (_TILE, _TILE), _PANEL),
+            (PREVIEW_SIZE[0] - _TILE, index * _TILE),
+        )
 
     buffer = io.BytesIO()
     # `optimize` keeps the encoding stable across runs for the same pixels.
