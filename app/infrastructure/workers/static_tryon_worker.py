@@ -106,6 +106,8 @@ from app.application.purchase.visual_quality_rules import (
     finalize_render_signals,
 )
 from app.bootstrap.container import object_storage, static_tryon, visual_quality_gate
+from app.common.analytics_emit import emit_v3_event
+from app.common.analytics_events import V3AnalyticsEventName, resolve_flow_id
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.avatar import AvatarVersion
@@ -141,6 +143,40 @@ STATUS_REJECTED = "rejected_by_quality_gate"
 #: a poller must converge to `failed` from there exactly as it does from
 #: `processing` (§6.2 says polling stops only on the three terminal states).
 PENDING_STATUSES = ("queued", STATUS_PROCESSING, STATUS_QUALITY_CHECK)
+
+
+def _emit_outcome(
+    user_id: uuid.UUID,
+    correlation_id: str | None,
+    generation_status: str,
+    retry_count: int,
+) -> None:
+    """V3-019 — `v3_preview_outcome`, once per generation, at the terminal state.
+
+    The analytics contract narrows this event to terminal states only (counting
+    intermediate polls would inflate every preview denominator), which is why it
+    is emitted here — where the terminal write happens — and never from the GET
+    endpoint. `flow_id` is required on the event: a render whose enqueue carried
+    no correlation id has nothing to join, so it is silently not emitted rather
+    than validated-and-dropped with a warning per render. `retry_count` is the
+    quality loop's regeneration count, clamped to the contract's 0..1 bound so
+    an explicitly raised `TRYON_QUALITY_MAX_AUTO_REGENERATIONS` cannot produce
+    an event the frozen validator rejects. Grades and counts only — no keys, no
+    URLs, no image bytes (contract §7).
+    """
+    flow_id = resolve_flow_id(correlation_id)
+    if flow_id is None:
+        return
+    emit_v3_event(
+        V3AnalyticsEventName.PREVIEW_OUTCOME.value,
+        {
+            "generation_status": generation_status,
+            "cache_hit": False,
+            "retry_count": min(max(retry_count, 0), 1),
+        },
+        user_id=user_id,
+        flow_id=flow_id,
+    )
 
 
 class _PermanentPayloadError(Exception):
@@ -321,7 +357,7 @@ async def _process_one(
             )
 
             if decision.verdict is RenderVerdict.HIDE:
-                await _finalize_rejected(job, asset_id, quality_signals)
+                await _finalize_rejected(job, asset_id, quality_signals, user_id=user_id)
                 return
 
             # 5. Storage first, row second — the `avatar_preparation_worker`
@@ -390,6 +426,7 @@ async def _process_one(
                 supporting_garment_count=len(garment_keys),
                 render_count=render_count,
             )
+            _emit_outcome(user_id, job.correlation_id, STATUS_READY, render_count - 1)
 
         except Exception as exc:
             logger.exception("static_tryon.failed", error_type=type(exc).__name__)
@@ -413,12 +450,13 @@ async def _process_one(
                         error=type(exc).__name__,
                     )
                     await session.commit()
+                _emit_outcome(user_id, job.correlation_id, STATUS_FAILED, 0)
     finally:
         structlog.contextvars.unbind_contextvars("correlation_id", "job_id", "asset_id")
 
 
 async def _finalize_rejected(
-    job: Any, asset_id: uuid.UUID, quality_signals: dict[str, Any]
+    job: Any, asset_id: uuid.UUID, quality_signals: dict[str, Any], *, user_id: uuid.UUID
 ) -> None:
     """Write `rejected_by_quality_gate` — a verdict, so the job *succeeds*.
 
@@ -459,6 +497,12 @@ async def _finalize_rejected(
         failed_checks=quality_signals.get("failed_checks", []),
         undetermined_checks=quality_signals.get("undetermined_checks", []),
         render_count=quality_signals.get("render_count"),
+    )
+    _emit_outcome(
+        user_id,
+        job.correlation_id,
+        STATUS_REJECTED,
+        int(quality_signals.get("render_count") or 1) - 1,
     )
 
 
@@ -582,7 +626,12 @@ async def reconcile_dead_static_tryon_assets(ctx: object = None) -> int:
     async with AsyncSessionLocal() as session:
         rows = (
             await session.execute(
-                select(AsyncJob.target_id, AsyncJob.last_error)
+                select(
+                    AsyncJob.target_id,
+                    AsyncJob.last_error,
+                    AsyncJob.correlation_id,
+                    OutfitVisualAsset.user_id,
+                )
                 .join(OutfitVisualAsset, OutfitVisualAsset.id == AsyncJob.target_id)
                 .where(
                     AsyncJob.job_type == JOB_TYPE,
@@ -598,7 +647,7 @@ async def reconcile_dead_static_tryon_assets(ctx: object = None) -> int:
         if not rows:
             return 0
         repo = SqlAlchemyOutfitVisualRepository(session)
-        for target_id, last_error in rows:
+        for target_id, last_error, _correlation_id, _asset_user_id in rows:
             await repo.update_status(
                 target_id,
                 STATUS_FAILED,
@@ -606,6 +655,12 @@ async def reconcile_dead_static_tryon_assets(ctx: object = None) -> int:
                 error=last_error or "job_dead_letter",
             )
         await session.commit()
+    # V3-019 — the crash-loop generation's terminal moment IS this write:
+    # `_process_one`'s failed-path emit never ran (the worker died mid-attempt
+    # and lease recovery dead-lettered the job), and pending rows are the only
+    # ones swept here, so this cannot double-emit with a path that already did.
+    for _target_id, _last_error, correlation_id, asset_user_id in rows:
+        _emit_outcome(asset_user_id, correlation_id, STATUS_FAILED, 0)
     logger.warning("static_tryon.reconciled_dead_assets", count=len(rows))
     return len(rows)
 

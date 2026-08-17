@@ -101,7 +101,9 @@ from tests.services.test_v3_static_preview_jobs import (
 
 #: The frozen §6.2 GET shape. Asserted as an exact key set so `quality_signals`
 #: (or anything else internal) growing into the response is a red test, not a
-#: contract amendment nobody wrote.
+#: contract amendment nobody wrote. `created_at`/`expires_at` are V3-019's
+#: ADDITIVE pair — §6.2 marks them additive, so admitting them here IS the
+#: written amendment, not a weakening.
 _FROZEN_RESPONSE_KEYS = {
     "asset_id",
     "generation_status",
@@ -109,6 +111,8 @@ _FROZEN_RESPONSE_KEYS = {
     "visual_type",
     "error_code",
     "error_message",
+    "created_at",
+    "expires_at",
 }
 
 

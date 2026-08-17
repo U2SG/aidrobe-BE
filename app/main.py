@@ -33,6 +33,7 @@ from app.presentation.api.v1.routers import (
     shopping,
     style,
     uploads,
+    visual_preview,
     wardrobe,
 )
 from app.presentation.middlewares.correlation import CorrelationIdMiddleware
@@ -108,6 +109,9 @@ def create_app() -> FastAPI:
     app.include_router(shopping.router)
     app.include_router(purchase_candidates.router)
     app.include_router(purchase_candidates.wardrobe_decisions_router)
+    # V3-019 — same path prefix, different flag: the preview surface is gated
+    # by ENABLE_V3_STATIC_TRYON (contract §2), not the decision flag.
+    app.include_router(visual_preview.router)
     app.include_router(avatar.router)
     app.include_router(admin.router)
     app.include_router(account.router)

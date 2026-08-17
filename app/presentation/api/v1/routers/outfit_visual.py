@@ -29,6 +29,15 @@ class OutfitVisualAssetResponse(BaseModel):
     visual_type: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    # V3-019 — contract §6.2's two ADDITIVE nullable fields, completing the
+    # frozen GET shape now that the try-on lifecycle is exposed. `expires_at`
+    # is always null in P0: the row has no retention clock (no column), and
+    # §13.5's 30-day bucket rule is storage configuration this response must
+    # not claim on the row's behalf — a stated null is honest, a computed
+    # timestamp would assert a purge nothing here verifies. V3-021's retention
+    # work owns making it real.
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -77,6 +86,8 @@ async def get_outfit_visual_asset(
         visual_type=asset.visual_type,
         error_code=error_code,
         error_message=asset.error_message,
+        created_at=asset.created_at,
+        expires_at=None,
     )
 
 

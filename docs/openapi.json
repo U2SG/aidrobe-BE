@@ -5434,6 +5434,103 @@
         }
       }
     },
+    "/v1/wardrobe-decisions/{decision_id}/visual-preview": {
+      "post": {
+        "tags": [
+          "visual-preview"
+        ],
+        "summary": "Request Visual Preview",
+        "operationId": "request_visual_preview_v1_wardrobe_decisions__decision_id__visual_preview_post",
+        "parameters": [
+          {
+            "name": "decision_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Decision Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VisualPreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VisualPreviewResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such decision for this user (a foreign decision answers 404, not 403)."
+          },
+          "409": {
+            "description": "`4091 STATE_CONFLICT`; `data.reason` is one of `avatar_not_ready`, `no_renderable_candidate`, `no_grounded_outfit`."
+          },
+          "429": {
+            "description": "Daily try-on call quota exhausted (`ENABLE_COST_GUARD`)."
+          },
+          "503": {
+            "description": "`ENABLE_V3_STATIC_TRYON` is off."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/avatar-profile": {
       "get": {
         "tags": [
@@ -10584,6 +10681,30 @@
               }
             ],
             "title": "Error Message"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
           }
         },
         "type": "object",
@@ -13843,6 +13964,57 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "VisualPreviewRequest": {
+        "properties": {
+          "view_type": {
+            "type": "string",
+            "const": "static_tryon",
+            "title": "View Type"
+          },
+          "concern": {
+            "type": "string",
+            "enum": [
+              "volume",
+              "color",
+              "length",
+              "overall"
+            ],
+            "title": "Concern"
+          },
+          "consent": {
+            "type": "boolean",
+            "const": true,
+            "title": "Consent"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "view_type",
+          "concern",
+          "consent"
+        ],
+        "title": "VisualPreviewRequest"
+      },
+      "VisualPreviewResponse": {
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Asset Id"
+          },
+          "generation_status": {
+            "type": "string",
+            "title": "Generation Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "asset_id",
+          "generation_status"
+        ],
+        "title": "VisualPreviewResponse"
       },
       "WardrobeDecisionResponse": {
         "properties": {
