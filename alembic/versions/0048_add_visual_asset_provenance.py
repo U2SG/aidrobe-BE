@@ -22,12 +22,15 @@ constraint inside V3-016 is a hand-seeded row in
 `tests/services/test_v3_static_tryon_provenance.py`, the same shape of declared
 limit V3-003 recorded for its flag-gating criterion.
 
-**Not added here, and by whom:** `avatar_version_id` is V3-018's — V3-011's
-`AvatarDeletionPlan` docstring assigned it and
-`test_purge_derived_try_on_scope_is_empty_by_construction` asserts its absence.
-A cache-key column and its unique index are V3-017's. `quality_status` /
-`quality_signals` are V3-018's. `created_at` / `expires_at` already exist on the
-row and reaching the *response* is V3-019's.
+**Not added here, and no longer owed to anyone:** an `avatar_version_id` column
+was reserved for V3-018 so that contract §4.2's `purge_derived` could reach
+try-on rows. V3-017 made that parameter effective without one — it scopes by
+`user_id` + `visual_type` (see `delete_static_tryon_for_user`) and keeps the
+per-version linkage in `input_snapshot`, which avoids a `CASCADE`/`SET NULL`
+ordering hazard against the version rows the same transaction deletes. A
+cache-key column and its unique index are V3-017's (migration 0049).
+`quality_status` / `quality_signals` are V3-018's. `created_at` / `expires_at`
+already exist on the row and reaching the *response* is V3-019's.
 
 Revision ID: 0048_add_visual_asset_provenance
 Revises: 0047_add_avatar_persistence

@@ -43,14 +43,57 @@ documented rule for call-count quotas ("failed retries don't burn quota").
 The DB aggregate has no side effect: it COUNTs `async_jobs` rows in
 `(succeeded, running)`, so a `dead` job counts zero and an admission that ends
 in a lost race costs nothing. That is not a weaker guarantee here, it is the
-rule the criterion names. What is given up is Redis's atomic admission, which is
-TOCTOU-leaky under concurrency — bounded in this specific case, because two
-racing requests for the *same* preview collide on the cache key and produce one
-job regardless, so over-admission needs N *distinct* decisions raced by one
-user inside one aggregate read.
+rule the criterion names.
+
+**What is given up, corrected.** An earlier version of this docstring said
+over-admission "needs N distinct decisions raced by one user inside one
+aggregate read". That was wrong, and understated the gap: `queued` is not one of
+the counted statuses, and it is a *persistent* state, not a momentary one. A job
+sits `queued` until a drain tick claims it (`MAX_DRAIN_PER_TICK=5`, cron-paced),
+so sequential requests for distinct decisions issued faster than the drain each
+count zero against `TRYON_DAILY_CALL_LIMIT` and are each admitted. No
+concurrency is required. This is `cost_guard`'s documented DB-path behaviour and
+the same shape as `cutout`'s, and it conforms to acceptance 3 — but the bound is
+"the drain keeps up", not "a read window is narrow", and only the second of
+those is something the request path controls.
+
+**Two open cost items for the production human gate**, recorded here because
+neither is an acceptance failure and neither should be discovered later:
+
+1. The over-admission above. Closing it means either an atomic reservation that
+   *refunds* on cache hit and on dead-letter (which Redis's `INCRBY` path does
+   not do today), or counting `queued` and accepting that a lost enqueue race
+   leaks a unit.
+2. A user-initiated revive re-opens a dead job and buys up to `MAX_ATTEMPTS`
+   more provider calls, and a dead job counts zero — so a persistently failing
+   render can be retried without bound by pressing the button. Charging the
+   revive (which `_revive` does) meters *the press*, not the retries behind it.
+   A per-(user, cache_key) revive cap is the fix; it is not implemented because
+   no acceptance criterion reaches it and the flag is off.
+
+Both gate turning `ENABLE_V3_STATIC_TRYON` on in production with a real,
+paid provider — which is a human gate regardless (V3-016).
 
 `ootd_poster` is not changed to match: it is another feature's module, its quota
 is a different bucket, and its trade-off was made with different criteria.
+
+**THE FROZEN REQUEST BODY IS NOT CONSUMED HERE, and V3-019 owns that.**
+Contract §6.1 freezes the `POST …/visual-preview` body as
+`{"view_type": "static_tryon", "concern": "volume|color|length|overall",
+"consent": true}`. `execute()` takes none of the three: V3-017 builds the
+pipeline, not the route, and there is no router or request schema in this
+feature at all (`openapi-unchanged.log` shows the artifact does not move).
+
+Written down rather than left implicit because two of the three are not
+decoration. `consent` is a per-request confirmation that this render of the
+user's likeness was asked for — it has no persisted counterpart anywhere in this
+module, so whoever adds the route must decide where it lands and must not treat
+the avatar-level consent (V3-013) as covering it. `concern` is the §6.1 enum
+(`volume|color|length|overall`), which contract §5.3 keeps *distinct* from the
+decision-level `concern` enum — V3-001's evaluator flagged that pair explicitly
+as two frozen enums that must not be unified. `view_type` is single-valued in
+P0, so this module hard-codes `VIEW_TYPE` into the cache key; a second view type
+makes it a request field and changes the key's components, not just its inputs.
 
 **Quota is checked AFTER the cache read and BEFORE the enqueue.** The order is
 load-bearing rather than incidental: checking first would refuse to show a user
