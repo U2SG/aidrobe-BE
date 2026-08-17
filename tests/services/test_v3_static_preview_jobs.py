@@ -828,15 +828,28 @@ async def test_a_recovered_lease_stops_the_original_attempt_writing_ready(
 
     The lease recovery happens *inside* `render()`, which is the genuine
     ordering rather than a shortcut: the worker really is mid-provider-call.
+
+    **One clock, threaded through both calls.** `recover_expired_leases` stamps
+    `next_run_at` with whatever `now` it is handed, so a sweep run on a fake
+    future clock schedules the job at that future time. Reclaiming with the
+    real clock then finds nothing to claim — the job looks an hour out — and
+    the test silently degrades into "the render raised", which exercises the
+    ordinary failure path instead of the fencing branch. So both calls read
+    `_LEASE_EXPIRY`, and the reclaim is asserted in the test body rather than
+    inside `render`: an assertion that fires inside the provider call would be
+    swallowed by the worker's `except Exception` and reported as a render
+    failure, hiding the fact that the test never staged what it claims to.
     """
     fixture = await _seed_preview_ready_user(factory)
     requested = await _request(factory, fixture)
+    lease_expiry = datetime.now(UTC) + timedelta(hours=1)
 
     class _SlowTryOn:
         """Renders, but the world moves on while it does."""
 
         def __init__(self, maker: async_sessionmaker[AsyncSession]) -> None:
             self.maker = maker
+            self.reclaimed_attempts: int | None = None
 
         @property
         def pipeline_identity(self) -> PipelineIdentity:
@@ -846,19 +859,24 @@ async def test_a_recovered_lease_stops_the_original_attempt_writing_ready(
 
         async def render(self, request: StaticTryOnRequest) -> StaticTryOnResult:
             async with self.maker() as session:
-                await recover_expired_leases(
-                    session, now=datetime.now(UTC) + timedelta(hours=1)
-                )
+                await recover_expired_leases(session, now=lease_expiry)
                 await session.commit()
             async with self.maker() as session:
-                reclaimed = await claim_one(session, [JOB_TYPE])
-            assert reclaimed is not None, "the sweep should have re-queued this job"
+                reclaimed = await claim_one(
+                    session, [JOB_TYPE], now=lease_expiry + timedelta(seconds=1)
+                )
+            self.reclaimed_attempts = None if reclaimed is None else reclaimed.attempts
             return await FakeStaticTryOn().render(request)
 
-    monkeypatch.setattr(static_tryon_worker, "static_tryon", lambda: _SlowTryOn(factory))
+    slow = _SlowTryOn(factory)
+    monkeypatch.setattr(static_tryon_worker, "static_tryon", lambda: slow)
 
     await drain_static_tryon_jobs(ctx=None)
 
+    assert slow.reclaimed_attempts == 2, (
+        "staging failed: the sweep did not re-queue the job into a second claim, "
+        "so the finalizer below was never actually stale"
+    )
     asset = await _asset(factory, requested.asset_id)
     assert asset.generation_status != STATUS_READY, (
         "a finalizer that lost its lease must not report the preview ready"
