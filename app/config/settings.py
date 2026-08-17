@@ -308,8 +308,9 @@ class Settings(BaseSettings):
 
     # V3 P0 static try-on preview (docs/v3-p0-contract.md §2, §6). Gates the
     # *new* preview surfaces only — V3-019 adds
-    # `POST /v1/wardrobe-decisions/{id}/visual-preview` and V3-018 the feedback
-    # endpoint. The existing M10 `GET /v1/outfit-visual-assets/{asset_id}` stays
+    # `POST /v1/wardrobe-decisions/{id}/visual-preview` and the feedback
+    # endpoint (V3-018 adds no route: the quality gate runs inside the worker).
+    # The existing M10 `GET /v1/outfit-visual-assets/{asset_id}` stays
     # ungated no matter what this flag says: V2 outfit-board polling depends on
     # it (contract §2 rollback rule 4, §1 additive-only rules).
     #
@@ -322,6 +323,17 @@ class Settings(BaseSettings):
     # forever, and the rows persist either way (rule 3), so flipping the flag
     # back on restores function with no migration.
     ENABLE_V3_STATIC_TRYON: bool = False
+
+    # V3-018 acceptance 3: "at most one automatic regeneration is attempted
+    # unless explicitly configured" — this is the explicit configuration. After
+    # a quality-gate HIDE the worker re-renders at most this many times before
+    # writing `rejected_by_quality_gate` (contract §6.3's "at most one model
+    # retry after a quality-gate failure"). 0 disables regeneration entirely;
+    # raising it is a deliberate operator decision that multiplies worst-case
+    # provider calls per job (1 + N), so it sits next to the flag it belongs to
+    # rather than in code. Technical retries (`MAX_ATTEMPTS`) are a separate
+    # budget over a separate signal — see request_static_preview.py.
+    TRYON_QUALITY_MAX_AUTO_REGENERATIONS: int = 1
 
     # --- Avatar retention (V3-011 human gate) ---------------------------
     # HUMAN GATE: the final durations require privacy approval before

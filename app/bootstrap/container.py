@@ -16,6 +16,7 @@ from app.application.ports.llm import LlmPort
 from app.application.ports.ocr import OcrPort
 from app.application.ports.static_tryon import StaticTryOnPort
 from app.application.ports.sts_token import StsTokenPort
+from app.application.ports.visual_quality_gate import VisualQualityGatePort
 from app.application.ports.weather import WeatherPort
 from app.config.settings import get_settings
 from app.infrastructure.cache.client import get_redis_client
@@ -174,6 +175,24 @@ def static_tryon() -> StaticTryOnPort:
     from app.infrastructure.vision.fake_static_tryon import FakeStaticTryOn
 
     return FakeStaticTryOn()
+
+
+def visual_quality_gate() -> VisualQualityGatePort:
+    """V3-018 — what decides whether a rendered preview may be shown.
+
+    One adapter, and that is the P0 answer for the same reason as
+    `static_tryon` above: this feature's human gate is "final visual quality
+    threshold requires benchmark review before production", so a knob offering
+    alternative checkers would advertise a choice that review has not been
+    asked about yet. `FakeVisualQualityGate` is local and deterministic; no
+    render leaves the machine and no call is billed.
+
+    Lazy-imported to match its siblings — selecting it must not pull PIL into
+    an app that never gates a render.
+    """
+    from app.infrastructure.vision.fake_visual_quality_gate import FakeVisualQualityGate
+
+    return FakeVisualQualityGate()
 
 
 def ocr_service() -> OcrPort:

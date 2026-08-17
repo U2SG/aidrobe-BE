@@ -5,14 +5,46 @@ Consumes `async_jobs` rows of type `tryon` enqueued by
 preview calls no provider; everything expensive happens here on its own
 `AsyncSessionLocal` session, the `avatar_preparation_worker` shape.
 
-**The lifecycle this worker implements stops one step short of contract §6.2,
-deliberately.** §6.2 freezes `queued → processing → quality_check → ready`; this
-worker runs `queued → processing → ready`. `quality_check` and
-`rejected_by_quality_gate` are V3-018's — they are states produced by a
-`VisualQualityGatePort` that does not exist yet, and inventing a state nothing
-can leave would be worse than not having it. V3-018 inserts the gate between
-`processing` and `ready`; the two writes this module makes to the read model are
-the seam it slots into.
+**The lifecycle this worker implements is contract §6.2's, complete since
+V3-018:** `queued → processing → quality_check → ready | failed |
+rejected_by_quality_gate`. After the render succeeds the row flips to
+`quality_check`, the `VisualQualityGatePort` measures the image, and
+`visual_quality_rules.evaluate_render` decides show or hide (V3_SPEC §14's
+"hide unreliable generations rather than returning every successful provider
+response"). On HIDE the worker re-renders at most
+`TRYON_QUALITY_MAX_AUTO_REGENERATIONS` times (default 1 — contract §6.3's "at
+most one model retry after a quality-gate failure") and then writes
+`rejected_by_quality_gate`.
+
+**Three properties of the rejected path worth stating plainly:**
+
+1. **A rejected render is never uploaded.** The gate runs on the bytes in
+   memory, before `put_object`, so a hidden image has no `object_key`, no
+   stored PNG and nothing `GET /v1/outfit-visual-assets/{asset_id}` could ever
+   sign — acceptance 2 ("low-quality output is not exposed through image_url")
+   is structural, not a read-time filter. `error_code` stays NULL: §6.2's
+   frozen shape says "null unless failed", and the degradation rule makes FE
+   render the rejection from `generation_status` alone.
+2. **A rejection is a *succeeded* job.** The worker did its work; the outcome
+   is a verdict, not an error. Marking it failed would hand the technical
+   retry budget (`MAX_ATTEMPTS`) to the quality loop and multiply paid calls —
+   and because the job is `succeeded`, `RequestStaticPreview._serve_cached`
+   will never revive it: the same key serves the same rejection from cache,
+   which is §6.3's "identical inputs never regenerate" applied to a render we
+   refused to show. A new prompt/model version composes a new key and gets a
+   fresh chance; that is the designed escape hatch.
+3. **A gate that *raises* is a technical failure, not a verdict.** The
+   exception rides the existing `mark_failed` path: retries, then dead-letter,
+   then `failed` on the row. Failing closed rather than open is the feature's
+   point — a gate outage must not mean "ship every render unchecked" — and
+   failing *technically* rather than writing `rejected_by_quality_gate` keeps
+   the rejected state meaning "a gate looked at this and said no".
+
+The persisted `quality_signals` (migration 0050) carry the verdict, the
+per-check grades, neutral render measurements and the regeneration accounting —
+every payload passes `validate_render_signals`, so no image data and no
+judgement about the person can reach the column or the log line (acceptance 4;
+contract §7).
 
 **Why the terminal word is `ready` and not M10's `completed`.** Contract §6.2
 names `ready` for V3 assets, and §1's additive-only rule forbids rewriting the
@@ -56,7 +88,7 @@ import uuid
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import exists, select, update
 
 from app.application.ports.static_tryon import (
     GarmentImage,
@@ -67,7 +99,14 @@ from app.application.ports.static_tryon import (
     StaticTryOnRequest,
     ViewRequirement,
 )
-from app.bootstrap.container import object_storage, static_tryon
+from app.application.ports.visual_quality_gate import VisualQualityGatePort
+from app.application.purchase.visual_quality_rules import (
+    RenderVerdict,
+    evaluate_render,
+    finalize_render_signals,
+)
+from app.bootstrap.container import object_storage, static_tryon, visual_quality_gate
+from app.config.settings import get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.avatar import AvatarVersion
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
@@ -79,6 +118,7 @@ from app.infrastructure.persistence.session import AsyncSessionLocal
 from app.infrastructure.storage.object_key import static_preview_object_key
 from app.infrastructure.workers.job_runtime import (
     JOB_STATUS_DEAD,
+    JOB_STATUS_RUNNING,
     claim_one,
     mark_failed,
     mark_succeeded,
@@ -90,14 +130,29 @@ JOB_TYPE = "tryon"
 MAX_DRAIN_PER_TICK = 5
 
 STATUS_PROCESSING = "processing"
+STATUS_QUALITY_CHECK = "quality_check"
 STATUS_READY = "ready"
 STATUS_FAILED = "failed"
+STATUS_REJECTED = "rejected_by_quality_gate"
+
+#: Every non-terminal `generation_status` a V3 try-on row can sit in. The
+#: dead-letter reconciler and the GET endpoint's read-time projection both key
+#: on this set: a worker crash mid-gate leaves the row on `quality_check`, and
+#: a poller must converge to `failed` from there exactly as it does from
+#: `processing` (§6.2 says polling stops only on the three terminal states).
+PENDING_STATUSES = ("queued", STATUS_PROCESSING, STATUS_QUALITY_CHECK)
+
 
 class _PermanentPayloadError(Exception):
     """A payload no retry can fix. Fails the job without quoting the value."""
 
 
-async def _process_one(job: Any, *, port: StaticTryOnPort | None = None) -> None:
+async def _process_one(
+    job: Any,
+    *,
+    port: StaticTryOnPort | None = None,
+    gate: VisualQualityGatePort | None = None,
+) -> None:
     payload: dict[str, Any] = job.payload or {}
     structlog.contextvars.bind_contextvars(
         correlation_id=job.correlation_id or "",
@@ -183,7 +238,93 @@ async def _process_one(job: Any, *, port: StaticTryOnPort | None = None) -> None
             #    identity and gets a correct render under it.
             await _assert_identity_matches(asset_id, result.identity)
 
-            # 4. Storage first, row second — the `avatar_preparation_worker`
+            # 4. The quality gate (V3-018), on the bytes in memory — BEFORE any
+            #    upload, so a hidden render never has an object to expose. The
+            #    row flips to `quality_check` first (§6.2's frozen intermediate
+            #    state; with a real vision-model gate this is the state a
+            #    poller sees while it runs), and stays there through a
+            #    regeneration — the frozen diagram has no backward transition
+            #    to `processing`, and inventing one would tell a poller the
+            #    gate had not happened yet.
+            #
+            #    FENCED on this attempt still owning the job, atomically in the
+            #    UPDATE's WHERE, unlike the step-1 `processing` write (which
+            #    happens on a claim milliseconds old). The render is the long
+            #    call, so the lease is most likely to have been recovered right
+            #    here — and an unfenced intermediate write from a disowned
+            #    attempt could land AFTER the new attempt's terminal write,
+            #    stranding a `succeeded` job's row on `quality_check` forever:
+            #    non-terminal, so pollers never stop, and invisible to the
+            #    dead-job reconciler, which only converges rows whose job is
+            #    dead. The terminal writes were always fenced (mark_succeeded /
+            #    mark_failed); this closes the same door for the intermediate
+            #    one, and a disowned attempt also stops paying for gate calls
+            #    and an upload whose finalize was already doomed.
+            async with AsyncSessionLocal() as session:
+                flipped = await session.scalar(
+                    update(OutfitVisualAsset)
+                    .where(
+                        OutfitVisualAsset.id == asset_id,
+                        exists().where(
+                            AsyncJob.id == job.id,
+                            AsyncJob.status == JOB_STATUS_RUNNING,
+                            AsyncJob.attempts == job.attempts,
+                        ),
+                    )
+                    .values(generation_status=STATUS_QUALITY_CHECK)
+                    .returning(OutfitVisualAsset.id)
+                )
+                await session.commit()
+            if flipped is None:
+                # Two ways to get here, told apart by re-reading the asset:
+                # the row was purged mid-render (same answer the ready path
+                # gives, minus the object cleanup — nothing was uploaded yet),
+                # or the lease was recovered and another attempt owns the job
+                # now, in which case this attempt must simply stop.
+                async with AsyncSessionLocal() as session:
+                    repo = SqlAlchemyOutfitVisualRepository(session)
+                    if await repo.get_by_id(asset_id) is None:
+                        await mark_failed(
+                            session,
+                            job.id,
+                            claimed_attempt=job.attempts,
+                            error="asset_not_found",
+                        )
+                        await session.commit()
+                        logger.warning("static_tryon.asset_deleted_discarding_render")
+                    else:
+                        logger.warning("static_tryon.lease_lost_skipping_quality_gate")
+                return
+
+            gate_port = gate if gate is not None else visual_quality_gate()
+            decision = evaluate_render(await gate_port.observe(result.image, request))
+            render_count = 1
+            # Acceptance 3: at most one automatic regeneration unless
+            # explicitly configured. Each pass re-renders and re-judges; with
+            # the deterministic P0 fake the second render is byte-identical
+            # and the loop exists for the stochastic provider the human gate
+            # may later select. The identity check is not re-run: `renderer`
+            # is one object for the whole execution, so a regeneration cannot
+            # come from a different pipeline than the first render.
+            regen_budget = get_settings().TRYON_QUALITY_MAX_AUTO_REGENERATIONS
+            while decision.verdict is RenderVerdict.HIDE and render_count <= regen_budget:
+                logger.info(
+                    "static_tryon.quality_regeneration",
+                    failed_checks=decision.signals.get("failed_checks", []),
+                    render_count=render_count,
+                )
+                result = await renderer.render(request)
+                decision = evaluate_render(await gate_port.observe(result.image, request))
+                render_count += 1
+            quality_signals = finalize_render_signals(
+                decision.signals, render_count=render_count, regen_budget=regen_budget
+            )
+
+            if decision.verdict is RenderVerdict.HIDE:
+                await _finalize_rejected(job, asset_id, quality_signals)
+                return
+
+            # 5. Storage first, row second — the `avatar_preparation_worker`
             #    ordering, for the same reason: the reverse can produce a
             #    `ready` asset pointing at an object that does not exist, while
             #    this order's worst case is an orphaned object that the account
@@ -191,7 +332,7 @@ async def _process_one(job: Any, *, port: StaticTryOnPort | None = None) -> None
             object_key = static_preview_object_key(user_id, asset_id)
             await storage.put_object(object_key, result.image, "image/png")
 
-            # 5. Persist + finalize, fenced on this attempt's claim. If the
+            # 6. Persist + finalize, fenced on this attempt's claim. If the
             #    lease was recovered while we were rendering, `mark_succeeded`
             #    returns False and we MUST NOT commit `ready`: another attempt
             #    owns the asset now, or oncall already sees the job as dead.
@@ -216,7 +357,12 @@ async def _process_one(job: Any, *, port: StaticTryOnPort | None = None) -> None
                     await session.commit()
                     logger.warning("static_tryon.asset_deleted_discarding_render")
                     return
-                await repo.update_status(asset_id, STATUS_READY, object_key=object_key)
+                await repo.update_status(
+                    asset_id,
+                    STATUS_READY,
+                    object_key=object_key,
+                    quality_signals=quality_signals,
+                )
                 ok = await mark_succeeded(session, job.id, claimed_attempt=job.attempts)
                 if not ok:
                     await session.rollback()
@@ -235,12 +381,14 @@ async def _process_one(job: Any, *, port: StaticTryOnPort | None = None) -> None
             # nothing about the person (contract §7). `provider` /
             # `model_version` are internal columns and this is an internal log,
             # not a response (contract §6.4) — the same boundary
-            # `avatar_preparation_worker` draws.
+            # `avatar_preparation_worker` draws. `render_count` says what the
+            # quality loop cost; the signals themselves are on the row.
             logger.info(
                 "static_tryon.completed",
                 provider=result.identity.provider,
                 model_version=result.identity.model_version,
                 supporting_garment_count=len(garment_keys),
+                render_count=render_count,
             )
 
         except Exception as exc:
@@ -267,6 +415,51 @@ async def _process_one(job: Any, *, port: StaticTryOnPort | None = None) -> None
                     await session.commit()
     finally:
         structlog.contextvars.unbind_contextvars("correlation_id", "job_id", "asset_id")
+
+
+async def _finalize_rejected(
+    job: Any, asset_id: uuid.UUID, quality_signals: dict[str, Any]
+) -> None:
+    """Write `rejected_by_quality_gate` — a verdict, so the job *succeeds*.
+
+    Mirrors the ready path's finalize discipline with nothing to upload:
+
+    - The row is re-read first. If `DELETE /v1/avatar-profile?purge_derived=
+      true` swept it while the gate was judging, there is nothing to write and
+      nothing was ever uploaded — `mark_failed(asset_not_found)`, the same
+      answer the ready path gives, and no storage cleanup because the rejected
+      path never created an object.
+    - `mark_succeeded` is fenced on this attempt's claim. If the lease was
+      recovered mid-gate, another attempt owns the asset now and this verdict
+      must not overwrite whatever that attempt concludes.
+    - `error_code` / `error_message` stay NULL — contract §6.2's frozen shape
+      says "null unless failed", and FE renders the rejection from
+      `generation_status` alone (the frozen degradation rule).
+    """
+    async with AsyncSessionLocal() as session:
+        repo = SqlAlchemyOutfitVisualRepository(session)
+        if await repo.get_by_id(asset_id) is None:
+            await mark_failed(
+                session, job.id, claimed_attempt=job.attempts, error="asset_not_found"
+            )
+            await session.commit()
+            logger.warning("static_tryon.asset_deleted_discarding_verdict")
+            return
+        await repo.update_status(asset_id, STATUS_REJECTED, quality_signals=quality_signals)
+        ok = await mark_succeeded(session, job.id, claimed_attempt=job.attempts)
+        if not ok:
+            await session.rollback()
+            logger.warning("static_tryon.lease_lost_discarding_verdict")
+            return
+        await session.commit()
+    # Grades and counts only — the same contract §7 boundary as the completed
+    # log. What failed is actionable for an operator; the image is not here.
+    logger.info(
+        "static_tryon.rejected_by_quality_gate",
+        failed_checks=quality_signals.get("failed_checks", []),
+        undetermined_checks=quality_signals.get("undetermined_checks", []),
+        render_count=quality_signals.get("render_count"),
+    )
 
 
 async def _assert_identity_matches(asset_id: uuid.UUID, identity: PipelineIdentity) -> None:
@@ -395,7 +588,10 @@ async def reconcile_dead_static_tryon_assets(ctx: object = None) -> int:
                     AsyncJob.job_type == JOB_TYPE,
                     AsyncJob.status == JOB_STATUS_DEAD,
                     AsyncJob.target_id.is_not(None),
-                    OutfitVisualAsset.generation_status.in_(("queued", STATUS_PROCESSING)),
+                    # `quality_check` included since V3-018: a worker that
+                    # crash-looped inside the gate leaves the row there, and it
+                    # must converge to `failed` exactly as `processing` does.
+                    OutfitVisualAsset.generation_status.in_(PENDING_STATUSES),
                 )
             )
         ).all()
