@@ -35,10 +35,12 @@ from __future__ import annotations
 
 import io
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
@@ -461,8 +463,10 @@ async def test_flag_off_answers_503_before_the_body_is_read(
 # --- the polling lifecycle (acceptance 3, BE half) ------------------------------
 
 
-@pytest.fixture
-def worker_env(postgres_url: str, monkeypatch: pytest.MonkeyPatch) -> _FakeStorage:
+@pytest_asyncio.fixture
+async def worker_env(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[_FakeStorage]:
     """The worker on its own engine (its sessions are module-level), plus the
     storage double — the test_v3_static_preview_jobs harness, minimally."""
     engine = create_async_engine(postgres_url, future=True)
@@ -470,33 +474,55 @@ def worker_env(postgres_url: str, monkeypatch: pytest.MonkeyPatch) -> _FakeStora
     monkeypatch.setattr(static_tryon_worker, "AsyncSessionLocal", maker)
     storage = _FakeStorage()
     monkeypatch.setattr(static_tryon_worker, "object_storage", lambda: storage)
-    return storage
+    try:
+        yield storage
+    finally:
+        await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def committed_session(postgres_url: str) -> AsyncIterator[AsyncSession]:
+    """A session whose `commit()` REALLY commits — the lifecycle tests need one.
+
+    conftest's `db_session` binds to a connection holding an open outer
+    transaction, so SQLAlchemy joins it and `commit()` only releases a
+    savepoint; the rows are rolled back at teardown and are never visible to
+    the worker draining on its own engine (`claim_one` finds nothing — this
+    file's first CI run failed exactly that way, 0 jobs drained). Rows
+    committed here are swept by conftest's `_truncate_between_tests`, the same
+    cleanup every separate-engine write already relies on.
+    """
+    engine = create_async_engine(postgres_url, future=True)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        yield session
+    await engine.dispose()
 
 
 async def test_polling_reaches_ready_with_a_url_and_the_additive_timestamps(
-    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, worker_env: _FakeStorage
+    committed_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, worker_env: _FakeStorage
 ) -> None:
     """POST → drain → GET is `ready`: `image_url` present, `created_at`
     populated, `expires_at` null (the §6.2 additive pair, stated honestly —
     no retention clock exists on the row in P0)."""
     _set_flag(monkeypatch, enabled=True)
     user_id = uuid.uuid4()
-    decision_id = await _seed_decision(db_session, user_id)
-    app = _build_app(db_session)
+    decision_id = await _seed_decision(committed_session, user_id)
+    app = _build_app(committed_session)
 
     async with _client(app) as client:
         created = await _post_preview(client, decision_id, user_id)
         assert created.status_code == 200, created.text
         asset_id = created.json()["asset_id"]
-        # The worker runs on its own engine, so the request's writes must be
+        # The worker drains on its own engine, so the request's writes must be
         # committed to be claimable — in production get_db_session commits on
-        # request exit; the test override hands back the raw session.
-        await db_session.commit()
+        # request exit; here the test commits the overridden session itself.
+        await committed_session.commit()
 
         drained = await static_tryon_worker.drain_static_tryon_jobs()
         assert drained == 1
 
-        db_session.expire_all()
+        committed_session.expire_all()
         polled = await client.get(f"/v1/outfit-visual-assets/{asset_id}", headers={"X-User-Id": str(user_id)})
 
     assert polled.status_code == 200
@@ -508,7 +534,7 @@ async def test_polling_reaches_ready_with_a_url_and_the_additive_timestamps(
 
 
 async def test_a_rejected_render_polls_as_rejected_with_nothing_to_show(
-    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, worker_env: _FakeStorage
+    committed_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, worker_env: _FakeStorage
 ) -> None:
     """The explicit quality fallback: `rejected_by_quality_gate` with
     `image_url` null AND `error_code` null — §6.2's frozen shape, which is what
@@ -516,18 +542,18 @@ async def test_a_rejected_render_polls_as_rejected_with_nothing_to_show(
     _set_flag(monkeypatch, enabled=True)
     monkeypatch.setattr(static_tryon_worker, "visual_quality_gate", lambda: _RejectingGate())
     user_id = uuid.uuid4()
-    decision_id = await _seed_decision(db_session, user_id)
-    app = _build_app(db_session)
+    decision_id = await _seed_decision(committed_session, user_id)
+    app = _build_app(committed_session)
 
     async with _client(app) as client:
         created = await _post_preview(client, decision_id, user_id)
         asset_id = created.json()["asset_id"]
-        await db_session.commit()
+        await committed_session.commit()
 
         drained = await static_tryon_worker.drain_static_tryon_jobs()
         assert drained == 1
 
-        db_session.expire_all()
+        committed_session.expire_all()
         polled = await client.get(f"/v1/outfit-visual-assets/{asset_id}", headers={"X-User-Id": str(user_id)})
 
     body = polled.json()
@@ -537,22 +563,24 @@ async def test_a_rejected_render_polls_as_rejected_with_nothing_to_show(
 
 
 async def test_the_m10_get_stays_ungated_when_the_preview_flag_is_off(
-    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, worker_env: _FakeStorage
+    committed_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, worker_env: _FakeStorage
 ) -> None:
     """Contract §2 rollback rule 4: cached assets remain readable via the
     ungated GET after the flag flips off — flag state never affects that GET."""
     _set_flag(monkeypatch, enabled=True)
     user_id = uuid.uuid4()
-    decision_id = await _seed_decision(db_session, user_id)
-    app = _build_app(db_session)
+    decision_id = await _seed_decision(committed_session, user_id)
+    app = _build_app(committed_session)
 
     async with _client(app) as client:
         created = await _post_preview(client, decision_id, user_id)
         asset_id = created.json()["asset_id"]
-        await static_tryon_worker.drain_static_tryon_jobs()
+        await committed_session.commit()
+        drained = await static_tryon_worker.drain_static_tryon_jobs()
+        assert drained == 1
 
         _set_flag(monkeypatch, enabled=False)
-        db_session.expire_all()
+        committed_session.expire_all()
         gated = await _post_preview(client, decision_id, user_id)
         polled = await client.get(f"/v1/outfit-visual-assets/{asset_id}", headers={"X-User-Id": str(user_id)})
 
@@ -565,7 +593,7 @@ async def test_the_m10_get_stays_ungated_when_the_preview_flag_is_off(
 
 
 async def test_a_terminal_cache_hit_emits_the_outcome_it_served(
-    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, worker_env: _FakeStorage
+    committed_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, worker_env: _FakeStorage
 ) -> None:
     """`v3_preview_outcome` with `cache_hit: true` — emitted by the router only
     when the served asset is already terminal and this request started nothing;
@@ -578,16 +606,18 @@ async def test_a_terminal_cache_hit_emits_the_outcome_it_served(
         lambda name, fields, **kw: emitted.append((name, dict(fields))) or True,
     )
     user_id = uuid.uuid4()
-    decision_id = await _seed_decision(db_session, user_id)
-    app = _build_app(db_session)
+    decision_id = await _seed_decision(committed_session, user_id)
+    app = _build_app(committed_session)
     flow_id = str(uuid.uuid4())
 
     async with _client(app) as client:
         await _post_preview(client, decision_id, user_id, correlation_id=flow_id)
         assert emitted == []  # queued is not an outcome
 
-        await static_tryon_worker.drain_static_tryon_jobs()
-        db_session.expire_all()
+        await committed_session.commit()
+        drained = await static_tryon_worker.drain_static_tryon_jobs()
+        assert drained == 1
+        committed_session.expire_all()
 
         await _post_preview(client, decision_id, user_id, correlation_id=flow_id)
 

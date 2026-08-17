@@ -247,6 +247,11 @@ async def test_the_public_asset_endpoint_does_not_serve_the_pipeline(
         "visual_type",
         "error_code",
         "error_message",
+        # V3-019 — contract §6.2's ADDITIVE nullable pair. Growing the frozen
+        # set is a contract amendment, not a weakening: the leak claim below
+        # is carried by the substring check, not by key count.
+        "created_at",
+        "expires_at",
     }
     # Not just "the keys are absent" — the value must not appear anywhere in the
     # serialized payload either, so a nested or renamed field cannot carry it
