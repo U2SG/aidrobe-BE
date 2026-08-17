@@ -24,15 +24,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import Settings
 from app.infrastructure.persistence.session import get_db_session
 from app.main import create_app
-from app.presentation.api.v1.routers import purchase_candidates
+from app.presentation.api.v1.routers import purchase_candidates, visual_preview
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
 
 V3_DECISION_PREFIXES = ("/v1/purchase-candidates", "/v1/wardrobe-decisions")
 
 # Surfaces the contract freezes but no shipped feature owns yet. Listed so that
 # adding one without its own feature is visible here rather than silent.
-# V3-008 shipped the last §5.1 surface, so the list is empty until a later
-# contract section (e.g. §6 static try-on) freezes new decision-prefix routes.
+# V3-019 shipped §6.1's `POST …/visual-preview` (gated by ENABLE_V3_STATIC_TRYON,
+# not the decision flag — the generic 503 test below covers it because BOTH
+# flags are off in the Settings it builds). §6.1's feedback endpoint is not
+# under these prefixes and is owned by V3-020.
 NOT_YET_IMPLEMENTED: tuple[str, ...] = ()
 
 
@@ -59,6 +61,9 @@ def test_v3_candidate_routes_are_registered() -> None:
     assert "/v1/purchase-candidates/{candidate_id}/decision" in paths
     # V3-008 — the snapshot replay surface, the last of the four §5.1 routes.
     assert "/v1/wardrobe-decisions/{decision_id}" in paths
+    # V3-019 — §6.1's preview create surface, so the generic gate test below
+    # cannot silently stop covering it.
+    assert "/v1/wardrobe-decisions/{decision_id}/visual-preview" in paths
 
 
 def test_later_features_have_not_been_pulled_forward() -> None:
@@ -71,10 +76,17 @@ def test_later_features_have_not_been_pulled_forward() -> None:
 async def test_every_v3_decision_route_is_503_when_the_flag_is_off(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, method: str
 ) -> None:
+    # Both V3 flags off — the preview route (V3-019) gates on
+    # ENABLE_V3_STATIC_TRYON, which Settings() also defaults to False.
     monkeypatch.setattr(
         purchase_candidates,
         "get_settings",
         lambda: Settings(APP_ENV="dev", ENABLE_V3_PURCHASE_DECISION=False),
+    )
+    monkeypatch.setattr(
+        visual_preview,
+        "get_settings",
+        lambda: Settings(APP_ENV="dev", ENABLE_V3_STATIC_TRYON=False),
     )
     app = FastAPI()
     setup_exception_handlers(app)
@@ -86,6 +98,7 @@ async def test_every_v3_decision_route_is_503_when_the_flag_is_off(
     app.dependency_overrides[get_db_session] = _db
     app.include_router(purchase_candidates.router)
     app.include_router(purchase_candidates.wardrobe_decisions_router)
+    app.include_router(visual_preview.router)
 
     checked = 0
     transport = ASGITransport(app=app)

@@ -218,6 +218,19 @@ class PreviewRefused(Exception):
         self.reason = reason
 
 
+def _quality_retry_count(asset: OutfitVisualAsset) -> int:
+    """Regenerations the asset's render cost, from V3-018's accounting.
+
+    ``render_count`` counts renders (1 = no regeneration); rows that predate
+    the gate, or never rendered, carry no signals and cost no retries.
+    """
+    signals = asset.quality_signals or {}
+    render_count = signals.get("render_count")
+    if not isinstance(render_count, int) or render_count < 1:
+        return 0
+    return render_count - 1
+
+
 @dataclass(frozen=True)
 class PreviewRequested:
     asset_id: uuid.UUID
@@ -230,6 +243,12 @@ class PreviewRequested:
     #: `PreparationStarted.created` records: a revived job is not a new row, but
     #: reporting it as a cache hit would tell the client its retry was swallowed.
     created: bool
+    #: How many quality-gate regenerations the served asset's render cost
+    #: (V3-018's `quality_signals.render_count` minus the first render), or 0
+    #: when no render has happened or the signals predate the gate. Carried for
+    #: V3-019's `v3_preview_outcome` cache-hit emission, which must report the
+    #: original generation's retry accounting without a second query.
+    quality_retry_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -265,6 +284,7 @@ class RequestStaticPreview:
         user_id: uuid.UUID,
         decision_id: uuid.UUID,
         correlation_id: str | None = None,
+        consent_confirmed: bool = False,
     ) -> PreviewRequested:
         if not self.settings.ENABLE_V3_STATIC_TRYON:
             # First, before anything is read. Flag off means no row, no quota
@@ -299,6 +319,7 @@ class RequestStaticPreview:
             user_id=user_id,
             decision_id=decision_id,
             correlation_id=correlation_id,
+            consent_confirmed=consent_confirmed,
         )
 
     # --- Reads ------------------------------------------------------------
@@ -478,6 +499,7 @@ class RequestStaticPreview:
                 asset_id=asset.id,
                 generation_status=asset.generation_status,
                 created=False,
+                quality_retry_count=_quality_retry_count(asset),
             )
 
         assert job is not None  # narrowed by `revivable`
@@ -513,6 +535,7 @@ class RequestStaticPreview:
         user_id: uuid.UUID,
         decision_id: uuid.UUID,
         correlation_id: str | None,
+        consent_confirmed: bool = False,
     ) -> PreviewRequested:
         """Insert the asset + its job, or lose the race and read the winner.
 
@@ -536,6 +559,13 @@ class RequestStaticPreview:
             "garments": [
                 {"item_id": str(item_id), "slot": slot} for item_id, slot in inputs.garments
             ],
+            # V3-019 — the per-request consent from contract §6.1's frozen body,
+            # persisted so the attestation that THIS render of the user's
+            # likeness was asked for outlives the request. Distinct from
+            # V3-013's avatar-level consent, which authorizes keeping the
+            # reference, not any particular use of it (the V3-017 handoff).
+            # False only on writers that predate the route.
+            "consent_confirmed": consent_confirmed,
         }
         asset = OutfitVisualAsset(
             user_id=user_id,
