@@ -174,12 +174,47 @@ async def test_no_single_opaque_score_is_exposed(db_session: AsyncSession) -> No
     assert not any("score" in name or "quality" in name for name in row)
 
 
-async def test_the_grouped_rows_are_printable_evidence(db_session: AsyncSession) -> None:
-    """The `per-version metric query result` evidence item.
+#: The complete result table this query must produce for the seed above —
+#: `.agent-artifacts/v3-024/metric-query-result.md` quotes it verbatim.
+#:
+#: Written out in full rather than spot-checked because it IS the feature's
+#: `per-version metric query result` evidence item: a green check shows no
+#: numbers (CI runs `pytest -q`, which swallows stdout on a pass), so the
+#: numbers have to live somewhere CI actually verifies. Here, every cell is
+#: under assertion — the table is either exactly this or the check is red.
+EXPECTED_ROWS = [
+    {
+        "provider": PROVIDER,
+        "model_version": MODEL,
+        "prompt_version": "p0-static-1",
+        "total": 4,
+        "looks_like_me": 1,
+        "not_like_me": 2,
+        "garment_wrong": 1,
+        "looks_like_me_rate": 0.25,
+        "not_like_me_rate": 0.5,
+        "garment_wrong_rate": 0.25,
+    },
+    {
+        "provider": PROVIDER,
+        "model_version": MODEL,
+        "prompt_version": "p0-static-2",
+        "total": 4,
+        "looks_like_me": 3,
+        "not_like_me": 0,
+        "garment_wrong": 1,
+        "looks_like_me_rate": 0.75,
+        "not_like_me_rate": 0.0,
+        "garment_wrong_rate": 0.25,
+    },
+]
 
-    Printed rather than only asserted: a green check does not show numbers, and
-    the criterion is about what an evaluator can read. The CI log for this test
-    is the artefact.
+
+async def test_the_whole_result_table_is_pinned(db_session: AsyncSession) -> None:
+    """The `per-version metric query result` evidence item, cell by cell.
+
+    Also prints it, which only shows up under `-s` — the assertion is the
+    part that holds in CI.
     """
     user_id = await _seed_user(db_session)
     await _seed_two_prompt_versions(db_session, user_id)
@@ -191,7 +226,9 @@ async def test_the_grouped_rows_are_printable_evidence(db_session: AsyncSession)
         print(json.dumps(row, sort_keys=True))
     print(f"=== rows={len(rows)} ===")
 
-    assert len(rows) == 2
+    # Ordered, not just set-equal: `order_by` on the provenance triple is what
+    # makes the table stable enough to quote as evidence.
+    assert rows == EXPECTED_ROWS
 
 
 def test_a_version_with_no_verdicts_yet_rates_zero_rather_than_raising() -> None:
