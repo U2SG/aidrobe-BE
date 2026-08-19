@@ -33,6 +33,7 @@ from app.presentation.api.v1.routers import (
     shopping,
     style,
     uploads,
+    visual_feedback,
     visual_preview,
     wardrobe,
 )
@@ -112,6 +113,11 @@ def create_app() -> FastAPI:
     # V3-019 — same path prefix, different flag: the preview surface is gated
     # by ENABLE_V3_STATIC_TRYON (contract §2), not the decision flag.
     app.include_router(visual_preview.router)
+    # V3-024 — §6.1's feedback POST shares `outfit_visual`'s prefix but not its
+    # gating: the M10 GET stays ungated, this one is behind
+    # ENABLE_V3_STATIC_TRYON. Hence a separate router, included after the M10
+    # one so the ungated GET keeps its registration order.
+    app.include_router(visual_feedback.router)
     app.include_router(avatar.router)
     app.include_router(admin.router)
     app.include_router(account.router)
