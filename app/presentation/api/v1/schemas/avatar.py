@@ -35,7 +35,13 @@ class AvatarActiveVersionModel(BaseModel):
 
 
 class AvatarCandidateModel(BaseModel):
-    """`candidate` — null unless status is candidate."""
+    """`candidate` — material awaiting a consent decision; null while preparing.
+
+    Not restricted to `status=candidate`: a revoked or already-ready profile can
+    carry one too, which is what makes §4.1's `disabled → preparing` re-enable
+    and §4.2's `replace` from a new photo reachable. `_render_profile` carries
+    the full rationale.
+    """
 
     source_asset_id: str
     source_type: str

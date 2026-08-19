@@ -123,6 +123,21 @@ succeeds), `preparing→candidate` (preparation fails; source stays consentable)
 | `POST /v1/avatar-profile/replace` | Prepare a new version; atomic swap on success. |
 | `DELETE /v1/avatar-profile?purge_derived=<bool>` | Disable and delete. `purge_derived` is **required** (no default): `true` also deletes generated try-on assets derived from any avatar version. |
 
+**The two `purge_derived` values are V3_SPEC §15's two Profile controls** (V3-021
+clarification; no shape change). §15 requires Profile to offer 停止用于生成 and
+删除形象参考及派生结果 as separate controls, and the difference between them is
+exactly what this parameter decides — only the second item names 派生结果:
+
+| §15 Profile control | Call | Effect |
+|---|---|---|
+| 停止用于生成 (disable / revoke) | `?purge_derived=false` | Profile → `disabled`; version and source-asset rows deleted, their objects purged out of band. New generation is refused immediately (`avatar_not_ready`). Previews already generated stay readable, so past decisions keep their evidence (§4.3). |
+| 删除形象参考及派生结果 (delete) | `?purge_derived=true` | The above **plus** the `static_tryon` assets and their objects. |
+
+Both branches delete the source photo, so both are followed by `status=disabled`
+with no material — which is why re-setup goes through a new photo and a new
+consent, not through an undo. That is the frozen `disabled → preparing` edge, and
+§4.2's `candidate` block is what makes it reachable (see below).
+
 `GET /v1/avatar-profile` response (frozen shape):
 
 ```jsonc
@@ -133,7 +148,8 @@ succeeds), `preparing→candidate` (preparation fails; source stays consentable)
     "created_at": "ts",
     "canonical_front_url": "signed-url"
   },
-  "candidate": {                 // null unless status is candidate
+  "candidate": {                 // null unless material awaits a consent
+                                 // decision; null while status is preparing
     "source_asset_id": "uuid",
     "source_type": "ootd_photo|outfit_import|user_upload|camera_capture",
     "preview_url": "signed-url"
@@ -154,6 +170,30 @@ re-prompted (V3_SPEC §7.3). `accept=true` requires the consent copy version in
 Conflict rules: `prepare`/`replace` while a preparation job is running ⇒
 `4091 STATE_CONFLICT`. `replace` failure keeps the previous version active —
 there is never a gap where a ready avatar silently disappears.
+
+**When `candidate` is populated** (V3-021 clarification; the block's *shape* is
+unchanged and no new endpoint or state edge is introduced). It reports whatever
+material is awaiting a consent decision — `quality_status=passed` and
+`consent_status=pending` — for every status except `preparing`. Restricting it to
+`status=candidate` made two frozen paths unreachable from any client, because in
+both of them the profile deliberately does not move to `candidate`:
+
+- **`disabled → preparing`** ("user re-enables via new consent"). A
+  user-initiated preview request assesses a new photo for a revoked profile and
+  leaves the status at `disabled` — there is no `disabled → candidate` edge, and
+  moving would erase the revocation timestamp. The material qualified and its
+  `source_asset_id` was known; nothing could read it.
+- **`replace` from a new photo.** A profile with a live version stays `ready`
+  through a new consent on purpose, so a working avatar is not withdrawn for a
+  preparation that might fail.
+
+`preparing` reports null because a second preparation is refused by the conflict
+rule above, so a consent taken there could not be acted on.
+
+Reporting the block is not prompting with it: the passive candidate sheet still
+gates on `status=candidate` (V3_SPEC §7.3 — no repeated asking), so a `ready` or
+`disabled` profile is never nagged. Only surfaces the user opened themselves —
+Profile's avatar controls (V3-021) and the on-demand setup (V3-015) — read it.
 
 ### 4.3 Consent boundaries (frozen minimums)
 

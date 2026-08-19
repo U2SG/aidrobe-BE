@@ -158,11 +158,40 @@ async def _render_profile(
     contract says so explicitly, and a 404 here would make "no avatar yet"
     indistinguishable from an error on FE's optional, self-hiding entry.
 
-    The three optional blocks are populated strictly by status, matching the
-    frozen comments (`active_version` unless ready/refresh_recommended,
-    `candidate` unless candidate, `consent` until first consent). That is the same
-    rule the `active_version_matches_status` CHECK enforces in the database, so
-    the response cannot disagree with the row.
+    `active_version` and `consent` are populated strictly by status, matching the
+    frozen comments (`active_version` unless ready/refresh_recommended, `consent`
+    until first consent). That is the same rule the
+    `active_version_matches_status` CHECK enforces in the database, so the
+    response cannot disagree with the row.
+
+    **`candidate` is populated by the material, not by the status (V3-021).** It
+    used to require `status == candidate`, and that hid two frozen paths from
+    every client:
+
+    - §4.1's `disabled → preparing`, "user re-enables via new consent". A
+      `PREVIEW_REQUEST` detection deliberately assesses a new photo for a
+      revoked profile and deliberately leaves the status at `disabled`
+      (`detect_candidate`: there is no `disabled → candidate` edge, and moving
+      would erase the revocation tombstone). The material qualified, its id was
+      known, and nothing could read it — so the frozen re-enable edge had no
+      path and V3-015 shipped a `revoked` dead end that said so.
+    - §4.2's `replace` from a *new* photo. `record_consent` keeps a profile with
+      a live version at `ready` on purpose, so the working avatar is not taken
+      away for a preparation that might fail; the same blindness applied.
+
+    So the rule is now "is there material awaiting your decision", which is what
+    the block has always *meant* — `_candidate_asset` has only ever matched
+    `quality_status=passed` + `consent_status=pending`, i.e. exactly that. Two
+    consequences, both deliberate:
+
+    - **`preparing` still reports null.** §4.2's conflict rule refuses a second
+      preparation, so a consent taken there could not be acted on. This also
+      keeps the extra read out of a status that clients poll.
+    - **Widening what is *reported* is not widening what is *prompted*.** The
+      passive V3-014 sheet gates on `status === 'candidate'`
+      (`isPromptableCandidate`), so a `ready` or `disabled` profile is still
+      never nagged — V3_SPEC §7.3. Only the surfaces the user themselves opened
+      read this block.
     """
     if profile is None:
         return AvatarProfileResponse(status=AvatarStatus.NONE.value)
@@ -180,7 +209,7 @@ async def _render_profile(
             )
 
     candidate: AvatarCandidateModel | None = None
-    if profile.status == AvatarStatus.CANDIDATE.value:
+    if profile.status != AvatarStatus.PREPARING.value:
         asset = await _candidate_asset(session, user_id)
         if asset is not None:
             candidate = AvatarCandidateModel(
@@ -201,12 +230,15 @@ async def _render_profile(
 
 
 async def _candidate_asset(session: AsyncSession, user_id: uuid.UUID) -> AvatarSourceAsset | None:
-    """The material a `candidate` profile is offering.
+    """The material awaiting this user's consent decision, whatever the status.
 
     Newest passed-and-undecided asset. Ordered by `created_at, id` so a user with
     two qualified photos is always shown the same one — an offer that changed
     between two GETs would let a client consent to a different photo than the one
     it displayed.
+
+    The predicate is unchanged by V3-021: `passed` + `pending` was always the
+    definition of "awaiting a decision". Only the caller's status guard moved.
     """
     from app.common.enums import AvatarConsentStatus, AvatarQualityStatus
 
