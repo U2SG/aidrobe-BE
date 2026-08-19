@@ -864,5 +864,233 @@ async def test_after_deletion_the_profile_reads_as_disabled(
     body = (await client.get("/v1/avatar-profile", headers=_headers(user_id))).json()
 
     assert body["status"] == AvatarStatus.DISABLED.value
+    # Still null after V3-021 widened *when* the block is populated, and for the
+    # reason the widening is safe: a deletion removes every source-asset row, so
+    # there is no material awaiting a decision. Offering one back would need a
+    # new photo — see `test_a_revoked_profile_offers_new_material_for_re_consent`.
     assert body["candidate"] is None
     assert body["active_version"] is None
+
+
+# --- V3-021: the Profile management surface --------------------------------
+#
+# What the four §15 Profile controls need from this API, and the one thing they
+# could not get. `view` is the GET above; `disable` and `delete` are the DELETE
+# above under its two `purge_derived` values (contract §4.2's V3-021
+# clarification table). `replace` and the re-enable after a `disable` both have
+# to consent to NEW material — and the frozen `candidate` block was the only
+# channel that could carry its id, while being gated on a status neither path
+# reaches. These pin the widened rule in both directions.
+
+
+async def _seed_pending_material(
+    session: AsyncSession, user_id: uuid.UUID, *, name: str = "reshoot"
+) -> AvatarSourceAsset:
+    """A newly assessed photo: qualified, nobody has decided about it yet.
+
+    This is the row `avatar_candidate_worker` leaves behind for a
+    `PREVIEW_REQUEST` on a profile that is not `none`: `offer_candidate` returns
+    False there, so the profile does not move and the material simply waits.
+    """
+    asset = AvatarSourceAsset(
+        user_id=user_id,
+        source_type=AvatarSourceType.USER_UPLOAD.value,
+        source_object_key=f"users/{user_id}/avatar/{name}.jpg",
+        quality_status=AvatarQualityStatus.PASSED.value,
+        consent_status=AvatarConsentStatus.PENDING.value,
+    )
+    session.add(asset)
+    await session.flush()
+    return asset
+
+
+async def _make_ready(
+    session: AsyncSession,
+    profile: AvatarProfile,
+    asset: AvatarSourceAsset,
+    user_id: uuid.UUID,
+) -> AvatarVersion:
+    lifecycle = AvatarLifecycle(session)
+    await lifecycle.record_consent(profile, asset, accept=True, consent_version=CONSENT_COPY_V1)
+    version = AvatarVersion(
+        avatar_profile_id=profile.id,
+        source_asset_ids=[str(asset.id)],
+        provider="fake",
+        model_version="m1",
+        prompt_version="p1",
+        canonical_front_object_key=f"users/{user_id}/avatar/canonical/front.png",
+    )
+    session.add(version)
+    await session.flush()
+    await lifecycle.activate_version(profile, version)
+    return version
+
+
+async def test_a_revoked_profile_offers_new_material_for_re_consent(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The frozen `disabled → preparing` edge finally has a client-visible path.
+
+    This was the shape of the dead end: the profile is `disabled` (correctly —
+    §4.1 has no `disabled → candidate` edge, and moving would erase the
+    revocation timestamp), the newly assessed photo is `passed` + `pending`, and
+    the GET reported `candidate: null`. The one id a client could POST consent
+    against was the one it had no way to learn.
+    """
+    _enable(monkeypatch)
+    user_id, profile, asset = await _seed_candidate(db_session)
+    await _make_ready(db_session, profile, asset, user_id)
+    await client.request(
+        "DELETE", "/v1/avatar-profile?purge_derived=false", headers=_headers(user_id)
+    )
+    reshoot = await _seed_pending_material(db_session, user_id)
+
+    body = (await client.get("/v1/avatar-profile", headers=_headers(user_id))).json()
+
+    # The tombstone is intact: the widening reports material, it does not reverse
+    # a revocation.
+    assert body["status"] == AvatarStatus.DISABLED.value
+    assert body["active_version"] is None
+    assert body["candidate"]["source_asset_id"] == str(reshoot.id)
+    assert body["candidate"]["source_type"] == AvatarSourceType.USER_UPLOAD.value
+
+
+async def test_re_enabling_after_stopping_generation_starts_real_work(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """View → stop → re-consent → prepare, over the wire, on one profile.
+
+    The last two assertions are the ones a status-only test would miss.
+    `prepare`'s idempotency key is (profile, source photo, pipeline), so
+    re-preparing the ORIGINAL photo after a revoke collides with the job that
+    already succeeded — `enqueue` is `ON CONFLICT DO NOTHING` and
+    `_revive_if_terminal` refuses a `succeeded` row — and the caller gets a 200
+    carrying a job id that will never run again. A different photo is what makes
+    the key differ, which is why re-setup goes through consent and not through an
+    undo button.
+    """
+    _enable(monkeypatch)
+    user_id, profile, asset = await _seed_candidate(db_session)
+    await _make_ready(db_session, profile, asset, user_id)
+    first = await client.post("/v1/avatar-profile/replace", headers=_headers(user_id))
+    first_job_id = first.json()["job_id"]
+    await db_session.execute(
+        sa.update(AsyncJob)
+        .where(AsyncJob.id == uuid.UUID(first_job_id))
+        .values(status="succeeded")
+    )
+
+    await client.request(
+        "DELETE", "/v1/avatar-profile?purge_derived=false", headers=_headers(user_id)
+    )
+    reshoot = await _seed_pending_material(db_session, user_id)
+    offered = (await client.get("/v1/avatar-profile", headers=_headers(user_id))).json()
+
+    consent = await client.post(
+        f"/v1/avatar-candidates/{offered['candidate']['source_asset_id']}/consent",
+        json={"accept": True, "consent_version": CONSENT_COPY_V1},
+        headers=_headers(user_id),
+    )
+    prepared = await client.post("/v1/avatar-profile/prepare", headers=_headers(user_id))
+
+    assert consent.status_code == 200
+    # `record_consent` clears `disabled_at` and moves the profile in one write,
+    # which is what keeps the `(status='disabled') = (disabled_at IS NOT NULL)`
+    # CHECK satisfied.
+    assert consent.json()["status"] == AvatarStatus.PREPARING.value
+    assert prepared.status_code == 200
+    assert prepared.json()["source_asset_id"] == str(reshoot.id)
+    assert prepared.json()["created"] is True, "a re-enable that enqueues nothing is the dead end"
+    assert prepared.json()["job_id"] != first_job_id
+
+
+async def test_a_ready_profile_offers_new_material_without_giving_up_its_version(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `replace`-from-a-new-photo half of the same widening.
+
+    Both blocks are populated at once, and that combination is the point: the
+    live version keeps answering `canonical_front_url` while the replacement
+    material waits for a decision, so there is never a gap where a ready avatar
+    disappears (contract §4.2).
+    """
+    _enable(monkeypatch)
+    user_id, profile, asset = await _seed_candidate(db_session)
+    version = await _make_ready(db_session, profile, asset, user_id)
+    reshoot = await _seed_pending_material(db_session, user_id)
+
+    body = (await client.get("/v1/avatar-profile", headers=_headers(user_id))).json()
+
+    assert body["status"] == AvatarStatus.READY.value
+    assert body["active_version"]["id"] == str(version.id)
+    assert body["candidate"]["source_asset_id"] == str(reshoot.id)
+
+
+async def test_material_is_not_offered_while_a_preparation_runs(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`preparing` is the one status the widening deliberately leaves out.
+
+    Contract §4.2 refuses a second preparation with `4091`, so a consent taken
+    here could not be acted on — an offer the user cannot use is worse than no
+    offer. Asserted together with that refusal, so the two halves cannot drift.
+    """
+    _enable(monkeypatch)
+    user_id, profile, asset = await _seed_candidate(db_session)
+    await client.post(
+        f"/v1/avatar-candidates/{asset.id}/consent",
+        json={"accept": True, "consent_version": CONSENT_COPY_V1},
+        headers=_headers(user_id),
+    )
+    await client.post("/v1/avatar-profile/prepare", headers=_headers(user_id))
+    await _seed_pending_material(db_session, user_id)
+
+    body = (await client.get("/v1/avatar-profile", headers=_headers(user_id))).json()
+    second = await client.post("/v1/avatar-profile/prepare", headers=_headers(user_id))
+
+    assert body["status"] == AvatarStatus.PREPARING.value
+    assert body["candidate"] is None
+    assert second.status_code == 409
+
+
+async def test_neither_delete_branch_leaves_a_signable_avatar_url(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Acceptance 3 at the read surface, for both §15 controls.
+
+    The purge job removes the objects out of band, so the property that must hold
+    the instant the DELETE returns is that no read path can still NAME them: the
+    version and source-asset rows are gone, and `resolve_render_url` is only ever
+    called with a key taken from one of those rows. Asserted over the whole
+    serialized body rather than field by field, so a later additive field cannot
+    reintroduce a signed URL without failing here — and with a before-picture, so
+    the assertion cannot pass because nothing was ever signable.
+
+    The `consent` block deliberately survives. It carries a copy version and a
+    timestamp and no reference to any object, and it is the record of what the
+    user agreed to — deleting the material must not delete the audit trail
+    (contract §4.3).
+    """
+    _enable(monkeypatch)
+    for purge_derived in ("false", "true"):
+        user_id, profile, asset = await _seed_candidate(db_session)
+        await _make_ready(db_session, profile, asset, user_id)
+        before = await client.get("/v1/avatar-profile", headers=_headers(user_id))
+        assert before.json()["active_version"]["canonical_front_url"].startswith("http"), (
+            "the before-picture must carry a real signed URL"
+        )
+
+        await client.request(
+            "DELETE",
+            f"/v1/avatar-profile?purge_derived={purge_derived}",
+            headers=_headers(user_id),
+        )
+
+        after = await client.get("/v1/avatar-profile", headers=_headers(user_id))
+
+        assert after.status_code == 200
+        assert "http" not in after.text
+        assert after.json()["status"] == AvatarStatus.DISABLED.value
+        assert after.json()["active_version"] is None
+        assert after.json()["candidate"] is None
+        assert after.json()["consent"]["version"] == CONSENT_COPY_V1

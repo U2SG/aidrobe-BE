@@ -1257,6 +1257,40 @@ async def test_a_user_without_a_ready_avatar_is_refused(
     assert await _jobs(factory) == []
 
 
+async def test_both_profile_controls_block_a_new_preview_immediately(
+    factory: async_sessionmaker[AsyncSession], storage: _FakeStorage, renderer: FakeStaticTryOn
+) -> None:
+    """V3-021 acceptance 2, the backend half: revoke and delete both stop generation.
+
+    The test above reaches the tombstone by calling `disable` directly. This one
+    goes through `DeleteAvatarProfile` — the use case both §15 Profile controls
+    call, under each `purge_derived` value — because the two controls must agree
+    on this and only one of them was ever exercised against the preview surface.
+    `purge_derived=false` is the interesting branch: it keeps the renders the user
+    already has (contract §4.3, "existing decisions remain readable"), so nothing
+    about the *existing* assets can be what makes a new request fail.
+
+    Immediately means in the same request that answered the DELETE, not after the
+    purge job drains: `_active_avatar_version` reads the profile row, which the
+    deletion disabled synchronously.
+    """
+    for purge_derived in (False, True):
+        fixture = await _seed_preview_ready_user(factory)
+        async with factory() as session:
+            deleted = await DeleteAvatarProfile(session).execute(
+                user_id=fixture.user_id, purge_derived=purge_derived
+            )
+            await session.commit()
+        assert deleted.plan.profile_disabled
+
+        with pytest.raises(PreviewRefused) as refused:
+            await _request(factory, fixture)
+
+        assert refused.value.reason is PreviewRefusal.AVATAR_NOT_READY
+        assert await _assets(factory) == []
+        assert await _jobs(factory) == []
+
+
 async def test_another_users_decision_is_not_found_rather_than_forbidden(
     factory: async_sessionmaker[AsyncSession], storage: _FakeStorage, renderer: FakeStaticTryOn
 ) -> None:

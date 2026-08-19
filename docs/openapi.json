@@ -7864,7 +7864,7 @@
           "source_type"
         ],
         "title": "AvatarCandidateModel",
-        "description": "`candidate` — null unless status is candidate."
+        "description": "`candidate` — material awaiting a consent decision; null while preparing.\n\nNot restricted to `status=candidate`: a revoked or already-ready profile can\ncarry one too, which is what makes §4.1's `disabled → preparing` re-enable\nand §4.2's `replace` from a new photo reachable. `_render_profile` carries\nthe full rationale."
       },
       "AvatarConsentModel": {
         "properties": {
