@@ -185,8 +185,15 @@ async def _render_profile(
     consequences, both deliberate:
 
     - **`preparing` still reports null.** §4.2's conflict rule refuses a second
-      preparation, so a consent taken there could not be acted on. This also
-      keeps the extra read out of a status that clients poll.
+      preparation, so a consent taken there could not be acted on, and an offer
+      the user cannot use is worse than no offer.
+    - **The cost, stated rather than waved away.** Every non-`preparing` profile
+      read now costs one extra indexed lookup on `avatar_source_assets`, where
+      before only a `candidate` profile paid it — and the profile GET *is* polled
+      (V3-015's setup screen, every 1.5s for up to 10 attempts, precisely while
+      the status is `none` or `disabled`). That is the query this widening exists
+      to answer, so it is the poll doing its job rather than overhead the
+      exclusion of `preparing` could avoid.
     - **Widening what is *reported* is not widening what is *prompted*.** The
       passive V3-014 sheet gates on `status === 'candidate'`
       (`isPromptableCandidate`), so a `ready` or `disabled` profile is still
