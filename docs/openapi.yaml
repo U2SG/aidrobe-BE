@@ -3242,6 +3242,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/outfit-visual-assets/{asset_id}/feedback:
+    post:
+      tags:
+      - visual-preview
+      summary: Record Preview Feedback
+      operationId: record_preview_feedback_v1_outfit_visual_assets__asset_id__feedback_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Asset Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreviewFeedbackRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreviewFeedbackResponse'
+        '404':
+          description: No static try-on render with this id belongs to this user.
+            A foreign asset, a missing asset and the caller's own non-try-on asset
+            are indistinguishable here (contract §3).
+        '422':
+          description: Verdict or aspect outside the frozen vocabulary, or an extra
+            field.
+        '503':
+          description: '`ENABLE_V3_STATIC_TRYON` is off.'
   /v1/avatar-profile:
     get:
       tags:
@@ -6977,6 +7029,125 @@ components:
       - file_url
       - object_key
       title: PresignUploadResponse
+    PreviewFeedbackRequest:
+      properties:
+        verdict:
+          type: string
+          enum:
+          - looks_like_me
+          - not_like_me
+          - garment_wrong
+          title: Verdict
+        aspects:
+          anyOf:
+          - items:
+              type: string
+              enum:
+              - face
+              - body_ratio
+              - garment_fit
+              - color
+              - other
+            type: array
+            maxItems: 5
+          - type: 'null'
+          title: Aspects
+      additionalProperties: false
+      type: object
+      required:
+      - verdict
+      title: PreviewFeedbackRequest
+      description: 'Contract §6.1''s frozen feedback body, verbatim.
+
+
+        ``{"verdict": "looks_like_me|not_like_me|garment_wrong", "aspects": [...]}``
+
+        with ``aspects`` optional. V3-020 sends `{"verdict": "…"}` with the key
+
+        **absent**, and that is the shape this must keep accepting.
+
+
+        ``extra="forbid"`` is the V3-019 precedent applied to the same threat: the
+
+        contract froze two fields, so a client attaching a comment, a score or a
+
+        provider hint is rejected with 422 rather than having it silently dropped.
+
+        It matters more here than on the create surface, because this endpoint is
+
+        the one place a free-text field would be tempting — and
+
+        docs/v3-analytics-events.md §5 rules free text out of this signal entirely.
+
+
+        ``aspects`` is capped at the size of its own vocabulary: five distinct
+
+        values exist, so a longer list is either duplicates (normalized away
+
+        server-side) or an attempt to make the field carry volume. Duplicates are
+
+        accepted and deduplicated rather than rejected — the client is describing
+
+        one render, not submitting a set.'
+    PreviewFeedbackResponse:
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          title: Asset Id
+        verdict:
+          type: string
+          enum:
+          - looks_like_me
+          - not_like_me
+          - garment_wrong
+          title: Verdict
+        aspects:
+          anyOf:
+          - items:
+              type: string
+              enum:
+              - face
+              - body_ratio
+              - garment_fit
+              - color
+              - other
+            type: array
+          - type: 'null'
+          title: Aspects
+        recorded_at:
+          type: string
+          format: date-time
+          title: Recorded At
+      type: object
+      required:
+      - asset_id
+      - verdict
+      - recorded_at
+      title: PreviewFeedbackResponse
+      description: 'What was recorded, echoed back — and nothing else.
+
+
+        Contract §6.1 froze the request body but no response shape, so this is the
+
+        minimum that lets a client confirm the stored state after a conflicting
+
+        resubmission (`verdict` is the *stored* one, which is the submitted one
+
+        under last-write-wins). It carries no `provider`, `model_version` or
+
+        `prompt_version`: §6.4 keeps that provenance internal, and this endpoint''s
+
+        whole purpose is feeding an evaluation the user must not be able to read
+
+        the pipeline identity out of.
+
+
+        `recorded_at` is the row''s `updated_at`, so an identical resubmission
+
+        returns the *original* timestamp — the observable difference between a
+
+        no-op and a change of mind.'
     PurchaseCandidateResponse:
       properties:
         id:

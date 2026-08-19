@@ -355,3 +355,44 @@ class VisualType(StrEnum):
     OUTFIT_BOARD = "outfit_board"
     #: V3 P0 — a static try-on preview (contract §6.2).
     STATIC_TRYON = "static_tryon"
+
+
+class PreviewFeedbackVerdict(StrEnum):
+    """Contract §6.1's frozen fidelity verdict — three states, no score.
+
+    The vocabulary is adopted verbatim from V3-020's immutable acceptance
+    criteria (the same authority order §6.1 states for the decision enums), and
+    `aidrobe-FE/src/api/previewFeedbackMapping.ts` already sends these literals
+    on the wire. It answers exactly one question — *did this render show me, in
+    this garment* — and deliberately splits the two ways it can fail, because
+    they point at different fixes: `not_like_me` is an identity/avatar problem
+    and `garment_wrong` is a garment-rendering problem. Collapsing them into a
+    single "bad" would make V3_SPEC §20's first kill criterion uncomputable.
+
+    There is no positive/negative *score* here and none may be derived: §20's
+    metrics are per-verdict rates, kept as inspectable dimensions.
+    """
+
+    LOOKS_LIKE_ME = "looks_like_me"
+    NOT_LIKE_ME = "not_like_me"
+    GARMENT_WRONG = "garment_wrong"
+
+
+class PreviewFeedbackAspect(StrEnum):
+    """Optional detail on *what* missed (contract §6.1's `aspects`).
+
+    A closed five-value list of render attributes the user can point at. Note
+    what it is not: `garment_fit` is the user saying the clothing looked wrong
+    **on the render**, which is a rendering complaint about an image — it is
+    never a size, fit or body claim about the person (V3_SPEC §21), and nothing
+    reads it as one. `other` exists so a user who means none of the four is not
+    pushed into the closest wrong box, and free text is deliberately absent
+    (docs/v3-analytics-events.md §5: an open value space defeats every
+    guarantee above it).
+    """
+
+    FACE = "face"
+    BODY_RATIO = "body_ratio"
+    GARMENT_FIT = "garment_fit"
+    COLOR = "color"
+    OTHER = "other"

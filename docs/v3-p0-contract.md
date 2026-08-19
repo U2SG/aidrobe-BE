@@ -357,6 +357,40 @@ Feedback body: `{"verdict": "looks_like_me|not_like_me|garment_wrong",
 "aspects": ["face","body_ratio","garment_fit","color","other"]}` (aspects
 optional).
 
+As implemented in V3-024 (clarifications, no change to the frozen body):
+
+- The endpoint answers **HTTP 200** on every accepted submission, including a
+  repeat — the first tap and an identical re-tap describe the same recorded
+  state, so a 201/200 split would make a retry look like a different outcome.
+  Success shape (not previously frozen, so this is the definition):
+  `{"asset_id": "uuid", "verdict": "…", "aspects": [...] | null,
+  "recorded_at": "ts"}`. It deliberately carries **no** `provider` /
+  `model_version` / `prompt_version` — §6.4 keeps that provenance internal, and
+  the evaluation joins it server-side instead.
+- `aspects` omitted and `aspects: []` stay distinct: "did not elaborate" is not
+  "chose nothing". Submitted aspects are sorted and deduplicated server-side,
+  so re-tap order can never register as a change of answer. Any value outside
+  the two vocabularies — or any extra field, including a free-text comment — is
+  **422** (`extra="forbid"`, the §5.2/V3-019 precedent).
+- **404, three ways, one answer**: a missing asset, another user's asset, and
+  the caller's own non-`static_tryon` asset are indistinguishable on the wire.
+  The first two are §3's no-existence-leak rule; the third keeps this from
+  becoming a generic image-feedback endpoint. `GET /v1/outfit-visual-assets/
+  {asset_id}` stays ungated (§2) — only this POST is behind
+  `ENABLE_V3_STATIC_TRYON`, which answers **503** when off, before the body is
+  inspected.
+- **One verdict per render, last write wins.** `static_preview_feedback` is
+  unique on `asset_id`, and the write is an upsert onto it: an identical
+  resubmission writes nothing at all (same row id, same `recorded_at`), and a
+  *conflicting* resubmission replaces the stored verdict and moves
+  `recorded_at`. This is §6.1's "either explicitly rejected or deterministically
+  replace according to one documented rule" — replace is the rule, chosen
+  because the client surface is fire-and-forget, so a rejection would be
+  invisible to a user who believes their new answer was recorded.
+- The BE emits **no** analytics event here. `v3_preview_feedback` is owned by
+  **fe** (`docs/v3-analytics-events.md` §2), and a second emit would
+  double-count every rate that reads it.
+
 ### 6.3 Idempotency, cache and cost (frozen)
 
 - Strong cache key:

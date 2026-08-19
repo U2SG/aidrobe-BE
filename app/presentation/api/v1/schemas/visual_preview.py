@@ -27,15 +27,27 @@ The success response is §6.1's frozen pair. A cache hit returns the existing
 asset with whatever ``generation_status`` it already reached (possibly
 ``ready``); a fresh request returns ``queued``. The client cannot tell a
 revived retry from a fresh enqueue, and does not need to — both mean "poll".
+
+V3-024 adds §6.1's feedback pair at the bottom of this file; its own reasoning
+is in `PreviewFeedbackRequest`.
 """
 
 import uuid
+from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 #: Contract §6.1's preview-concern vocabulary — distinct from §5.3's.
 PreviewConcern = Literal["volume", "color", "length", "overall"]
+
+#: Contract §6.1's frozen feedback vocabularies. Spelled as `Literal`s rather
+#: than built from `PreviewFeedbackVerdict` / `PreviewFeedbackAspect` so the
+#: generated OpenAPI carries a plain string enum FE can read without a
+#: component indirection — `tests/unit/test_v3_preview_feedback_contract.py`
+#: asserts each one still equals its enum, so the convenience cannot drift.
+PreviewVerdict = Literal["looks_like_me", "not_like_me", "garment_wrong"]
+PreviewAspect = Literal["face", "body_ratio", "garment_fit", "color", "other"]
 
 
 class VisualPreviewRequest(BaseModel):
@@ -54,3 +66,52 @@ class VisualPreviewRequest(BaseModel):
 class VisualPreviewResponse(BaseModel):
     asset_id: uuid.UUID
     generation_status: str
+
+
+class PreviewFeedbackRequest(BaseModel):
+    """Contract §6.1's frozen feedback body, verbatim.
+
+    ``{"verdict": "looks_like_me|not_like_me|garment_wrong", "aspects": [...]}``
+    with ``aspects`` optional. V3-020 sends `{"verdict": "…"}` with the key
+    **absent**, and that is the shape this must keep accepting.
+
+    ``extra="forbid"`` is the V3-019 precedent applied to the same threat: the
+    contract froze two fields, so a client attaching a comment, a score or a
+    provider hint is rejected with 422 rather than having it silently dropped.
+    It matters more here than on the create surface, because this endpoint is
+    the one place a free-text field would be tempting — and
+    docs/v3-analytics-events.md §5 rules free text out of this signal entirely.
+
+    ``aspects`` is capped at the size of its own vocabulary: five distinct
+    values exist, so a longer list is either duplicates (normalized away
+    server-side) or an attempt to make the field carry volume. Duplicates are
+    accepted and deduplicated rather than rejected — the client is describing
+    one render, not submitting a set.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    verdict: PreviewVerdict
+    aspects: list[PreviewAspect] | None = Field(default=None, max_length=5)
+
+
+class PreviewFeedbackResponse(BaseModel):
+    """What was recorded, echoed back — and nothing else.
+
+    Contract §6.1 froze the request body but no response shape, so this is the
+    minimum that lets a client confirm the stored state after a conflicting
+    resubmission (`verdict` is the *stored* one, which is the submitted one
+    under last-write-wins). It carries no `provider`, `model_version` or
+    `prompt_version`: §6.4 keeps that provenance internal, and this endpoint's
+    whole purpose is feeding an evaluation the user must not be able to read
+    the pipeline identity out of.
+
+    `recorded_at` is the row's `updated_at`, so an identical resubmission
+    returns the *original* timestamp — the observable difference between a
+    no-op and a change of mind.
+    """
+
+    asset_id: uuid.UUID
+    verdict: PreviewVerdict
+    aspects: list[PreviewAspect] | None = None
+    recorded_at: datetime
