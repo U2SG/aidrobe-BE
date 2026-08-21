@@ -32,7 +32,12 @@ than left to reviewer discipline:
   generations *by useful decisions*, so more generations for the same decisions
   looks **worse**, not better.
 - `generations_per_useful_decision` counts only `cache_hit=false` outcomes plus
-  retries, because a cache hit costs nothing.
+  the retries **on those same rows**, because a cache hit costs nothing. That
+  scope is stated explicitly in the metric definition: a cache hit carries the
+  *original* asset's `retry_count` (correctly — the field describes the asset's
+  history), so summing retries across all outcomes would re-charge one paid
+  regeneration on every free cache read and inflate the very ratio the cost gate
+  reads.
 
 ## 2. Panels
 

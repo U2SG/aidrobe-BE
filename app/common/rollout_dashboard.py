@@ -458,8 +458,16 @@ READINESS_GATES: tuple[ReadinessGate, ...] = (
         ),
         blocker=(
             "Proven: the decision SURVIVES a failure. Not proven: that failures do not depress the "
-            "completion rate in the field. decision_completion_rate segmented by preview outcome "
-            "answers it and needs data."
+            "completion rate in the field. The declared metric for that is "
+            "fallback_decision_retention_rate on the preview_usefulness panel, which joins "
+            "v3_preview_viewed[result=fallback] to v3_decision_action on flow_id and needs data. "
+            "Stated precisely, because it bounds what this dashboard can answer: the "
+            "decision_completion panel CANNOT be segmented by preview outcome — its own events "
+            "(v3_decision_started/completed/action) carry no generation_status, and declaring "
+            "such a segment would fail test_every_segment_by_field_resolves_within_its_panel. A "
+            "true completion-rate-with-failure vs without comparison therefore needs a "
+            "cross-panel flow join that no single panel declares; the retention rate is the "
+            "honest single-panel answer."
         ),
         human_gate="telemetry_sink",
     ),
@@ -611,11 +619,16 @@ SEED_STUDY_QUESTIONS: tuple[SeedStudyQuestion, ...] = (
         supporting_metric="preview_request_rate",
     ),
     SeedStudyQuestion(
-        question="Does the preview change or confirm a purchase decision?",
+        question="Does the preview change or confirm a purchase decision, and does the user say it helped?",
         what_to_observe=(
-            "A decision stated before the preview and restated after it, so a reversal or a "
-            "hardened confirmation is observed rather than self-reported. Entertainment with no "
-            "decision movement is kill criterion 3."
+            "Two things, recorded separately, because they discharge two different thresholds. "
+            "(a) A decision stated before the preview and restated after it, so a reversal or a "
+            "hardened confirmation is OBSERVED rather than self-reported; entertainment with no "
+            "decision movement is kill criterion 3. (b) A direct question afterwards — did seeing "
+            "it make you more or less confident about buying this, or about wearing it — because "
+            "the confidence threshold is a STATED preference and observed behavior cannot stand "
+            "in for it. Recording only (a) would let a completed study promote the confidence "
+            "gate without ever collecting what its statement asks for."
         ),
         discharges=(
             "Most users say the preview increased their purchase or wearing confidence.",
