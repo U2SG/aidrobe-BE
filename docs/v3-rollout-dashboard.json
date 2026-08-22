@@ -1,0 +1,511 @@
+{
+  "contract": "aidrobe-v3-rollout-dashboard",
+  "schema_version": 1,
+  "source_contract": "aidrobe-v3-analytics-events",
+  "source_schema_version": 1,
+  "required_dimensions": [
+    "decision_completion",
+    "preview_usefulness",
+    "repeat_use",
+    "hidden_quality_rate",
+    "latency",
+    "cost_per_useful_decision"
+  ],
+  "panels": {
+    "decision_completion": {
+      "question": "Do users who start a purchase judgment finish one, and does it change what they do?",
+      "headline_metric": "decision_completion_rate",
+      "supporting_metrics": [
+        "decision_action_rate",
+        "existing_item_alternative_rate"
+      ],
+      "segment_by": [
+        "platform",
+        "source_type",
+        "visual_need"
+      ],
+      "spec_ref": "V3_SPEC \u00a718 Phase 2; \u00a719 experience"
+    },
+    "preview_usefulness": {
+      "question": "After seeing a preview, does the user act on the decision \u2014 and when the preview cannot be shown, does the decision still carry them?",
+      "headline_metric": "post_preview_decision_action_rate",
+      "supporting_metrics": [
+        "preview_request_rate",
+        "fallback_decision_retention_rate"
+      ],
+      "segment_by": [
+        "platform",
+        "concern",
+        "avatar_status"
+      ],
+      "spec_ref": "V3_SPEC \u00a719 product value; \u00a720.3; \u00a720.5"
+    },
+    "repeat_use": {
+      "question": "Do users come back to the decision flow on another day?",
+      "headline_metric": "repeat_use_rate",
+      "supporting_metrics": [],
+      "segment_by": [
+        "platform",
+        "source_type"
+      ],
+      "spec_ref": "V3_SPEC \u00a718 Phase 2; \u00a719 product value"
+    },
+    "hidden_quality_rate": {
+      "question": "How often is a generated preview withheld from the user, and is that the quality gate working or the provider failing?",
+      "headline_metric": "preview_hidden_rate",
+      "supporting_metrics": [],
+      "segment_by": [
+        "platform",
+        "generation_status"
+      ],
+      "spec_ref": "V3_SPEC \u00a719 visual; \u00a720.2; \u00a720.9"
+    },
+    "latency": {
+      "question": "How long does a decision take, and does asking for a preview slow it down?",
+      "headline_metric": "time_to_decision_seconds",
+      "supporting_metrics": [],
+      "segment_by": [
+        "platform",
+        "visual_need"
+      ],
+      "spec_ref": "V3_SPEC \u00a718 Phase 2; \u00a720.5"
+    },
+    "cost_per_useful_decision": {
+      "question": "What does one decision that actually changed behavior cost in paid generations?",
+      "headline_metric": "generations_per_useful_decision",
+      "supporting_metrics": [
+        "preview_cache_hit_rate"
+      ],
+      "segment_by": [
+        "platform",
+        "cache_hit"
+      ],
+      "spec_ref": "V3_SPEC \u00a719 cost; \u00a720.7"
+    },
+    "visual_trust": {
+      "question": "Do users recognize themselves, and do they say the garment came out wrong?",
+      "headline_metric": "identity_fidelity_rate",
+      "supporting_metrics": [
+        "garment_fidelity_complaint_rate"
+      ],
+      "segment_by": [
+        "platform",
+        "verdict"
+      ],
+      "spec_ref": "V3_SPEC \u00a719 visual; \u00a720.1; \u00a720.2"
+    },
+    "consent_cost": {
+      "question": "Does asking for a photo cost us decisions, and who agrees to it?",
+      "headline_metric": "consent_prompt_completion_delta",
+      "supporting_metrics": [
+        "consent_acceptance_rate"
+      ],
+      "segment_by": [
+        "platform",
+        "context",
+        "source_type"
+      ],
+      "spec_ref": "V3_SPEC \u00a719 experience; \u00a720.4"
+    }
+  },
+  "cost_model": {
+    "formula": "cost_per_useful_decision = generations_per_useful_decision * unit_price_per_generation",
+    "generation_metric": "generations_per_useful_decision",
+    "unit_price_per_generation": null,
+    "currency": null,
+    "human_gate": "provider_choice"
+  },
+  "kill_criteria": {
+    "1": {
+      "coverage": "metric",
+      "reason": null,
+      "metrics": [
+        "identity_fidelity_rate"
+      ],
+      "panels": [
+        "visual_trust"
+      ]
+    },
+    "2": {
+      "coverage": "metric",
+      "reason": null,
+      "metrics": [
+        "garment_fidelity_complaint_rate",
+        "preview_hidden_rate"
+      ],
+      "panels": [
+        "hidden_quality_rate",
+        "visual_trust"
+      ]
+    },
+    "3": {
+      "coverage": "metric",
+      "reason": null,
+      "metrics": [
+        "decision_action_rate",
+        "existing_item_alternative_rate",
+        "post_preview_decision_action_rate",
+        "repeat_use_rate"
+      ],
+      "panels": [
+        "decision_completion",
+        "preview_usefulness",
+        "repeat_use"
+      ]
+    },
+    "4": {
+      "coverage": "metric",
+      "reason": null,
+      "metrics": [
+        "consent_acceptance_rate",
+        "consent_prompt_completion_delta"
+      ],
+      "panels": [
+        "consent_cost"
+      ]
+    },
+    "5": {
+      "coverage": "metric",
+      "reason": null,
+      "metrics": [
+        "decision_completion_rate",
+        "fallback_decision_retention_rate",
+        "preview_request_rate",
+        "time_to_decision_seconds"
+      ],
+      "panels": [
+        "decision_completion",
+        "latency",
+        "preview_usefulness"
+      ]
+    },
+    "6": {
+      "coverage": "qualitative",
+      "reason": "Users mistaking the preview for a size guarantee is a comprehension failure; only moderated sessions and support/review reports can detect it.",
+      "metrics": [],
+      "panels": []
+    },
+    "7": {
+      "coverage": "metric",
+      "reason": null,
+      "metrics": [
+        "generations_per_useful_decision",
+        "preview_cache_hit_rate"
+      ],
+      "panels": [
+        "cost_per_useful_decision"
+      ]
+    },
+    "8": {
+      "coverage": "qualitative",
+      "reason": "Being clearly worse than comparable products a user has already seen is a relative judgment with no in-app referent; requires benchmark review.",
+      "metrics": [],
+      "panels": []
+    },
+    "9": {
+      "coverage": "metric",
+      "reason": null,
+      "metrics": [
+        "preview_hidden_rate"
+      ],
+      "panels": [
+        "hidden_quality_rate"
+      ]
+    },
+    "10": {
+      "coverage": "qualitative",
+      "reason": "Sacrificing Today and import-to-first-outfit is a program-allocation judgment, not a user-behavior signal in this contract.",
+      "metrics": [],
+      "panels": []
+    }
+  },
+  "pipeline_prerequisites": [
+    {
+      "requirement": "A frozen event contract shared by both repos.",
+      "met": true,
+      "detail": "V3-002: 11 events, a 5-field envelope and 15 metrics, byte-identical in aidrobe-BE and aidrobe-FE.",
+      "human_gate": null
+    },
+    {
+      "requirement": "An emitter for every event, on the side the contract declares as owner.",
+      "met": true,
+      "detail": "All 11 events are emitted: the 4 be-owned ones through app/common/analytics_emit.py, the 7 fe-owned ones through trackV3. Asserted by the emitter-coverage tests on both sides.",
+      "human_gate": null
+    },
+    {
+      "requirement": "A sink that persists emitted events somewhere queryable.",
+      "met": false,
+      "detail": "BE emits through structlog into application logs \u2014 no schema, no retention guarantee, not queryable as events. FE never calls setAnalyticsDispatcher, so the 7 fe-owned events reach a __DEV__ console.log and nothing at all in a release build. This is the single reason the dashboard has no numbers, and it is the largest one.",
+      "human_gate": "telemetry_sink"
+    },
+    {
+      "requirement": "V3 flags enabled for a cohort, so events are produced at all.",
+      "met": false,
+      "detail": "All three ENABLE_V3_* flags are False in committed configuration on both sides. This prerequisite is deliberately unmet \u2014 V3-023 acceptance 3 requires it.",
+      "human_gate": "flag_enablement"
+    }
+  ],
+  "readiness_gates": [
+    {
+      "group": "visual",
+      "statement": "The internal quality gate passes at a rate that can be operated stably.",
+      "status": "mechanism_only",
+      "evidence": [
+        "V3-018 implemented the gate and the no-result fallback",
+        "tests/api/test_v3_e2e_journeys.py::test_a_quality_rejection_never_erases_the_decision"
+      ],
+      "blocker": "The pass RATE is a property of a real provider's output. Every run so far used the fake adapter, which composites a stub instead of generating, so no rate observed here predicts a production one.",
+      "human_gate": "provider_choice"
+    },
+    {
+      "group": "visual",
+      "statement": "Most seed users say the render basically looks like them.",
+      "status": "unverified",
+      "evidence": [],
+      "blocker": "Needs real photos, a real provider and seed users. identity_fidelity_rate is defined and has no data.",
+      "human_gate": "seed_cohort"
+    },
+    {
+      "group": "visual",
+      "statement": "Most seed users find garment color and overall silhouette believable.",
+      "status": "unverified",
+      "evidence": [],
+      "blocker": "Same as above; garment_fidelity_complaint_rate is defined and has no data.",
+      "human_gate": "seed_cohort"
+    },
+    {
+      "group": "visual",
+      "statement": "Obvious body beautification, age drift or garment deformation is very rare.",
+      "status": "unverified",
+      "evidence": [],
+      "blocker": "No metric can carry this \u2014 the contract forbids body inferences as event fields by design, so it is a benchmark-review judgment on real provider output.",
+      "human_gate": "provider_choice"
+    },
+    {
+      "group": "experience",
+      "statement": "An avatar-ready user reaches a preview with at most one extra explicit action.",
+      "status": "verified",
+      "evidence": [
+        "tests/api/test_v3_e2e_journeys.py::test_an_avatar_ready_user_reaches_a_cached_preview_with_one_action",
+        "V3-022 FE driver shot 06 \u2014 one tap, render on screen, decision still under it"
+      ],
+      "blocker": null,
+      "human_gate": null
+    },
+    {
+      "group": "experience",
+      "statement": "A user with no avatar still completes the purchase judgment in full.",
+      "status": "verified",
+      "evidence": [
+        "tests/api/test_v3_e2e_journeys.py::test_a_user_with_no_avatar_completes_a_useful_decision",
+        "V3-022 FE driver shots 01-02 \u2014 zero assets, zero try-on jobs, setup offered not required"
+      ],
+      "blocker": null,
+      "human_gate": null
+    },
+    {
+      "group": "experience",
+      "statement": "A failed preview does not reduce decision-flow completion.",
+      "status": "mechanism_only",
+      "evidence": [
+        "tests/api/test_v3_e2e_journeys.py::test_a_provider_failure_never_erases_the_decision",
+        "V3-022 FE driver shots 03/04/05 \u2014 byte-identical frames across failure, rejection and unknown status"
+      ],
+      "blocker": "Proven: the decision SURVIVES a failure. Not proven: that failures do not depress the completion rate in the field. The declared metric for that is fallback_decision_retention_rate on the preview_usefulness panel, which joins v3_preview_viewed[result=fallback] to v3_decision_action on flow_id and needs data. Stated precisely, because it bounds what this dashboard can answer: the decision_completion panel CANNOT be segmented by preview outcome \u2014 its own events (v3_decision_started/completed/action) carry no generation_status, and declaring such a segment would fail test_every_segment_by_field_resolves_within_its_panel. A true completion-rate-with-failure vs without comparison therefore needs a cross-panel flow join that no single panel declares; the retention rate is the honest single-panel answer.",
+      "human_gate": "telemetry_sink"
+    },
+    {
+      "group": "experience",
+      "statement": "The user clearly understands this is not a size guarantee.",
+      "status": "mechanism_only",
+      "evidence": [
+        "V3-020 renders the \u00a722 boundary sentence on every preview",
+        "V3_SPEC \u00a721 forbids a fit score, and none is implemented"
+      ],
+      "blocker": "Shipping the sentence is not evidence of comprehension. \u00a720.6 is qualitative-only by V3-002's own declaration: only moderated sessions or support reports can detect this.",
+      "human_gate": "seed_cohort"
+    },
+    {
+      "group": "product_value",
+      "statement": "Most users say the preview increased their purchase or wearing confidence.",
+      "status": "unverified",
+      "evidence": [],
+      "blocker": "A stated-preference question no in-app event answers. Needs the Phase 1 qualitative study.",
+      "human_gate": "seed_cohort"
+    },
+    {
+      "group": "product_value",
+      "statement": "It confirms, changes or vetoes a decision rather than being merely entertaining.",
+      "status": "unverified",
+      "evidence": [],
+      "blocker": "post_preview_decision_action_rate is defined precisely for this and has no data. This is the metric \u00a720.3 would be killed on.",
+      "human_gate": "telemetry_sink"
+    },
+    {
+      "group": "product_value",
+      "statement": "Users find it more helpful than single-garment try-on on shopping platforms.",
+      "status": "unverified",
+      "evidence": [],
+      "blocker": "\u00a720.8 is qualitative-only by V3-002's declaration: a relative judgment with no in-app referent. Needs benchmark review against products the user has already seen.",
+      "human_gate": "seed_cohort"
+    },
+    {
+      "group": "product_value",
+      "statement": "There is observable intent to use it again.",
+      "status": "unverified",
+      "evidence": [],
+      "blocker": "repeat_use_rate is defined and has no data.",
+      "human_gate": "telemetry_sink"
+    },
+    {
+      "group": "cost",
+      "statement": "The cache hits effectively for a repeated garment/avatar combination.",
+      "status": "verified",
+      "evidence": [
+        "tests/api/test_v3_e2e_journeys.py::test_an_avatar_ready_user_reaches_a_cached_preview_with_one_action \u2014 a second create POST returns the same asset_id and adds no job row",
+        "V3-017 idempotent async jobs keyed on a stable combination key"
+      ],
+      "blocker": null,
+      "human_gate": null
+    },
+    {
+      "group": "cost",
+      "statement": "The static-image pass rate and the cost per useful decision are inside budget.",
+      "status": "unverified",
+      "evidence": [],
+      "blocker": "Two missing inputs, not one: there is no provider price (so COST_MODEL's unit price is null) and no budget to compare against.",
+      "human_gate": "spending_budget"
+    },
+    {
+      "group": "cost",
+      "statement": "Video or multi-view is not a P0 prerequisite.",
+      "status": "verified",
+      "evidence": [
+        "V3_SPEC \u00a721 defers 360\u00b0 video and multi-preview menus",
+        "No feature in feature_list.json implements either; the try-on port is static-only (V3-016)"
+      ],
+      "blocker": null,
+      "human_gate": null
+    }
+  ],
+  "seed_study": [
+    {
+      "question": "Do users understand how this differs from single-garment try-on on a shopping platform?",
+      "what_to_observe": "Unprompted, whether the user describes it as a whole-outfit judgment against their own wardrobe rather than as a garment fitting \u2014 and whether they read the \u00a722 boundary sentence as a caveat or as a size promise.",
+      "discharges": [
+        "Users find it more helpful than single-garment try-on on shopping platforms.",
+        "The user clearly understands this is not a size guarantee."
+      ],
+      "supporting_metric": null,
+      "spec_ref": "V3_SPEC \u00a718 Phase 1"
+    },
+    {
+      "question": "Are users willing to authorize a photo, and where do they stop?",
+      "what_to_observe": "The point at which a user declines: the ask itself, the consent copy, or the photo capture. Declining is a valid outcome \u2014 the no-avatar path must stay complete.",
+      "discharges": [],
+      "supporting_metric": "consent_acceptance_rate",
+      "spec_ref": "V3_SPEC \u00a718 Phase 1"
+    },
+    {
+      "question": "At which moment do users most want the preview?",
+      "what_to_observe": "Where in the flow the user asks for it unprompted, and whether they ever want it BEFORE reading the text decision \u2014 which would contradict the on-demand design.",
+      "discharges": [],
+      "supporting_metric": "preview_request_rate",
+      "spec_ref": "V3_SPEC \u00a718 Phase 1"
+    },
+    {
+      "question": "Does the preview change or confirm a purchase decision, and does the user say it helped?",
+      "what_to_observe": "Two things, recorded separately, because they discharge two different thresholds. (a) A decision stated before the preview and restated after it, so a reversal or a hardened confirmation is OBSERVED rather than self-reported; entertainment with no decision movement is kill criterion 3. (b) A direct question afterwards \u2014 did seeing it make you more or less confident about buying this, or about wearing it \u2014 because the confidence threshold is a STATED preference and observed behavior cannot stand in for it. Recording only (a) would let a completed study promote the confidence gate without ever collecting what its statement asks for.",
+      "discharges": [
+        "Most users say the preview increased their purchase or wearing confidence.",
+        "It confirms, changes or vetoes a decision rather than being merely entertaining."
+      ],
+      "supporting_metric": "post_preview_decision_action_rate",
+      "spec_ref": "V3_SPEC \u00a718 Phase 1"
+    },
+    {
+      "question": "Which distortions destroy trust immediately?",
+      "what_to_observe": "The first thing the user names as wrong, and whether they keep using the render after saying it. Ranked failure modes are what a provider choice is actually made on.",
+      "discharges": [
+        "Most seed users say the render basically looks like them.",
+        "Most seed users find garment color and overall silhouette believable."
+      ],
+      "supporting_metric": "garment_fidelity_complaint_rate",
+      "spec_ref": "V3_SPEC \u00a718 Phase 1"
+    }
+  ],
+  "open_human_gates": {
+    "fit_accuracy_claim": {
+      "decision": "Whether any size or fit accuracy claim may ever be made.",
+      "why_human": "V3_SPEC \u00a721 forbids a pseudo-precise fit score and \u00a720.6 treats a size misunderstanding as a kill criterion. The default answer is no.",
+      "blocks": [
+        "visual_trust"
+      ]
+    },
+    "flag_enablement": {
+      "decision": "Turning ENABLE_V3_PURCHASE_DECISION / ENABLE_V3_AVATAR / ENABLE_V3_STATIC_TRYON on in production.",
+      "why_human": "The rollout itself. All three stay off in committed configuration.",
+      "blocks": [
+        "decision_completion",
+        "preview_usefulness",
+        "repeat_use",
+        "hidden_quality_rate",
+        "latency",
+        "cost_per_useful_decision",
+        "visual_trust",
+        "consent_cost"
+      ]
+    },
+    "privacy_copy": {
+      "decision": "The final photo-consent and privacy wording shown before a photo is used.",
+      "why_human": "Legally operative user-facing text.",
+      "blocks": [
+        "consent_cost"
+      ]
+    },
+    "provider_choice": {
+      "decision": "Which production static try-on provider to use, and at what per-generation price.",
+      "why_human": "Spend and a third-party data processor. Development has only ever run the fake adapter.",
+      "blocks": [
+        "cost_per_useful_decision",
+        "visual_trust",
+        "hidden_quality_rate"
+      ]
+    },
+    "retention_reduction": {
+      "decision": "Any destructive migration or reduction of the photo/render retention policy.",
+      "why_human": "Irreversible and privacy-relevant.",
+      "blocks": []
+    },
+    "seed_cohort": {
+      "decision": "Whether to recruit Phase 1 seed users and process their real photos.",
+      "why_human": "Development loops are forbidden from sending real user photos to a provider (workspace CLAUDE.md), so the first real-photo run is a human decision.",
+      "blocks": [
+        "visual_trust",
+        "preview_usefulness",
+        "repeat_use"
+      ]
+    },
+    "spending_budget": {
+      "decision": "The per-user and per-day generation budget, and the ceiling that stops a rollout.",
+      "why_human": "A budget is a business commitment; the cost guard can enforce one but must not invent it.",
+      "blocks": [
+        "cost_per_useful_decision"
+      ]
+    },
+    "telemetry_sink": {
+      "decision": "Which analytics sink receives V3 events, with what retention.",
+      "why_human": "A third-party processor for behavioral data, plus a retention period with privacy consequences. Until it is chosen, every panel on this dashboard is empty.",
+      "blocks": [
+        "decision_completion",
+        "preview_usefulness",
+        "repeat_use",
+        "hidden_quality_rate",
+        "latency",
+        "cost_per_useful_decision",
+        "visual_trust",
+        "consent_cost"
+      ]
+    }
+  }
+}

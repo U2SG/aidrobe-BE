@@ -512,7 +512,7 @@
       ]
     },
     "generations_per_useful_decision": {
-      "definition": "count(v3_preview_outcome[cache_hit=false]) + sum(retry_count), divided by count(flows with both v3_decision_completed and v3_decision_action). Paid generations per decision that actually changed behavior \u2014 the cost ratio that matters, deliberately not generations per user.",
+      "definition": "count(v3_preview_outcome[cache_hit=false]) + sum(retry_count OVER THOSE SAME cache_hit=false rows), divided by count(flows with both v3_decision_completed and v3_decision_action). Paid generations per decision that actually changed behavior \u2014 the cost ratio that matters, deliberately not generations per user. The retry scope is stated explicitly because a cache hit carries the ORIGINAL asset's retry_count (see routers/visual_preview.py::_emit_cache_hit_outcome, which is correct \u2014 the field describes the asset's history): summing retry_count over ALL outcomes would re-charge one paid regeneration on every free cache read, inflating this ratio and the cost gate derived from it.",
       "events": [
         "v3_preview_outcome",
         "v3_decision_completed",
