@@ -286,18 +286,37 @@ async def reserve(
     durable accounting record and the revive cap reads it, so it must exist
     whether or not anyone is enforcing a daily number today.
 
-    Idempotent on `reservation_key`. A replay of the same purchase returns the
-    existing reservation with `created=False` and consumes nothing — which is
-    also what a duplicate concurrent request sees once the lock releases, and
-    the reason `created` must be checked before `release`: releasing a
-    reservation this call did not create would refund the request that won.
+    Idempotent on `(reservation_key, usage_day)`. A replay of the same purchase
+    returns the existing reservation with `created=False` and consumes nothing —
+    which is also what a duplicate concurrent request sees once the lock
+    releases, and the reason `created` must be checked before `release`:
+    releasing a reservation this call did not create would refund the request
+    that won.
+
+    **The day is part of the key**, because the budget is daily and the unit of
+    purchase is therefore "this generation, on this day". Keyed on the string
+    alone, the ledger could hold at most one row per generation *ever*, so a
+    later day's request for the same key would replay a settled row and consume
+    nothing — which makes `usage_day` decorative for that key rather than the
+    thing the budget is drawn against.
+
+    Whether that replay can buy an actual provider call today is narrower, and
+    worth stating rather than overselling: the same key is reachable again only
+    when the asset is gone (V3-011's retention sweep drops derived renders on a
+    clock the avatar version outlives), and the enqueue would then still be
+    absorbed by `job_runtime.enqueue`'s own lifetime idempotency on the same key
+    — so nothing is rendered and nothing is spent. It becomes a free paid render
+    the moment anything reaps old `async_jobs` rows, which nothing does yet. The
+    day is in the key because daily uniqueness is what a daily budget means, not
+    because a live exploit was found.
     """
     day = _today()
     await _lock_bucket(session, user_id, job_type, day)
 
     existing = await session.scalar(
         select(PaidGenerationReservation).where(
-            PaidGenerationReservation.reservation_key == reservation_key
+            PaidGenerationReservation.reservation_key == reservation_key,
+            PaidGenerationReservation.usage_day == day,
         )
     )
     if existing is not None:

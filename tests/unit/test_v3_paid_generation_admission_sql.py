@@ -157,6 +157,28 @@ def test_reserve_takes_the_lock_before_it_reads_or_writes() -> None:
     assert lock_at < source.index("reservation_key =="), "idempotency read before lock"
 
 
+def test_the_idempotency_read_is_scoped_to_the_day() -> None:
+    """A later day's request for the same key must be a purchase, not a replay.
+
+    Keyed on the string alone the ledger holds at most one row per generation
+    ever, which makes `usage_day` decorative for that key instead of the thing
+    the daily budget is drawn against. The read and the unique index have to
+    agree on this or the insert raises 23505 across days.
+    """
+    source = inspect.getsource(admission.reserve)
+    read_at = source.index("reservation_key ==")
+    assert "PaidGenerationReservation.usage_day == day" in source[read_at:], (
+        "the idempotency read must filter on the day as well as the key"
+    )
+    # And the database agrees, or the insert would raise 23505 across days.
+    unique = {
+        tuple(column.name for column in index.columns)
+        for index in PaidGenerationReservation.__table__.indexes
+        if index.unique
+    }
+    assert unique == {("reservation_key", "usage_day")}
+
+
 def test_reserve_does_not_absorb_a_duplicate_key() -> None:
     """Inside the bucket lock a duplicate reservation_key cannot be a race.
 
@@ -318,11 +340,13 @@ def test_indexes_match_the_model(monkeypatch: Any) -> None:
         for index in PaidGenerationReservation.__table__.indexes
     }
     assert migrated == modelled
-    # One row per unit of purchase — the database's statement of it.
+    # One row per unit of purchase, and the unit includes the day: budgets are
+    # daily, so the same key on a later day must be a new purchase rather than a
+    # free replay of a settled row.
     assert (
         "uq_paid_generation_reservations_reservation_key",
         TABLE,
-        ("reservation_key",),
+        ("reservation_key", "usage_day"),
         True,
     ) in migrated
 

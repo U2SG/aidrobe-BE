@@ -120,12 +120,14 @@ def upgrade() -> None:
         TABLE,
         ["target_id"],
     )
-    # One row per unit of purchase. A duplicate means the admission lock's
-    # namespace is wrong, so it must surface as 23505 rather than be absorbed.
+    # One row per unit of purchase, and the unit is (what, which day): budgets
+    # are daily, so the same key on a later day is a new purchase, not a replay.
+    # A duplicate within one day means the admission lock's namespace is wrong,
+    # so it must surface as 23505 rather than be absorbed.
     op.create_index(
         "uq_paid_generation_reservations_reservation_key",
         TABLE,
-        ["reservation_key"],
+        ["reservation_key", "usage_day"],
         unique=True,
     )
 

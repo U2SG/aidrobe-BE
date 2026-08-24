@@ -26,14 +26,23 @@ live-session adapter must be able to reserve through the same table. Render
 provenance already lives on `outfit_visual_assets` (V3-016) and is joined when
 an evaluation needs it.
 
-**`reservation_key` is the unit of purchase, and it is unique.** For a first
-admission it is the job's idempotency key — contract §6.3's
+**`reservation_key` + `usage_day` is the unit of purchase, and it is unique.**
+For a first admission the key is the job's idempotency key — contract §6.3's
 `static_tryon:{sha256(cache_key)}` — so the reservation, the asset and the job
 are 1:1 by construction. For revive *n* it is that key plus `#revive:{n}`, so
-each press is its own row and a replayed request cannot double-charge. The
-unique index is the database's statement of that, not a hint: two rows for one
-purchase would mean the admission lock's namespace is wrong, which is a bug and
-must surface as `23505` rather than be swallowed by an `ON CONFLICT`.
+each press is its own row and a replayed request cannot double-charge.
+
+The **day** is part of it because the budget is daily: the unit is "this
+generation, on this day". Keyed on the string alone the table could hold at most
+one row per generation *ever*, so a later day's request for the same key would
+replay a settled row and consume nothing — which would make `usage_day`
+decorative for that key rather than the thing the budget is drawn against. See
+`paid_generation_admission.reserve` for how narrow the *paid* consequence is
+today, stated there rather than oversold here.
+
+The unique index is the database's statement of that, not a hint: two rows for
+one purchase would mean the admission lock's namespace is wrong, which is a bug
+and must surface as `23505` rather than be swallowed by an `ON CONFLICT`.
 
 **`outcome IS NULL` means held.** See `PaidGenerationOutcome` for why the state
 machine is one column, and `ck_paid_generation_reservations_settled_pairing`
@@ -142,9 +151,12 @@ class PaidGenerationReservation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ),
         # The revive-cap read, and the settlement sweep's join key.
         Index("ix_paid_generation_reservations_target_id", "target_id"),
+        # One row per unit of purchase, and the unit is (what, which day) —
+        # see `reservation_key` above.
         Index(
             "uq_paid_generation_reservations_reservation_key",
             "reservation_key",
+            "usage_day",
             unique=True,
         ),
     )

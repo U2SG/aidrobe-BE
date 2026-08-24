@@ -386,6 +386,53 @@ async def test_another_days_spend_does_not_bind_today(
     assert await _counted(factory, fixture.user_id) == 1, "yesterday's row is not today's spend"
 
 
+async def test_the_same_key_on_a_later_day_is_a_purchase_not_a_free_replay(
+    factory: async_sessionmaker[AsyncSession],
+    storage: object,
+    renderer: FakeStaticTryOn,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Idempotency is scoped to the day, and this is the case that needs it.
+
+    The same inputs compose the same cache key forever, so they compose the same
+    `reservation_key` forever. If the ledger read ignored the day, a later day's
+    request would find the settled row, report `created=False` and take nothing —
+    the day's budget would never register a generation whose key had been used
+    before, which makes `usage_day` decorative for that key.
+
+    Staged the way it becomes reachable: V3-011's retention sweep drops derived
+    renders on a clock the avatar version outlives, so the asset can be gone
+    while its key is unchanged. The reservation is re-dated to an explicit past
+    day rather than by moving any clock. Stated precisely, because the docstring
+    of `reserve` does the same: today the re-enqueue would still be absorbed by
+    `job_runtime.enqueue`'s lifetime idempotency, so no provider call follows.
+    What is asserted here is the ledger's arithmetic, which is what a daily
+    budget is.
+    """
+    _use_quota(monkeypatch, limit=1)
+    fixture = await _seed_preview_ready_user(factory)
+    await _request(factory, fixture)
+    await drain_static_tryon_jobs(ctx=None)
+    async with factory() as session:
+        await session.execute(
+            sa.update(PaidGenerationReservation).values(usage_day=date(2026, 8, 1))
+        )
+        await session.execute(sa.delete(OutfitVisualAsset))
+        await session.commit()
+    assert await _counted(factory, fixture.user_id) == 0, "yesterday's unit is not today's"
+
+    again = await _request(factory, fixture)
+
+    assert again.created is True, "this request started work rather than replaying"
+    reservations = await _reservations(factory)
+    assert len(reservations) == 2, "today's render was charged rather than replayed"
+    today = [row for row in reservations if row.usage_day == datetime.now(UTC).date()]
+    assert len(today) == 1
+    assert today[0].outcome is None
+    assert today[0].revive_index == 0
+    assert await _counted(factory, fixture.user_id) == 1
+
+
 # --- retries and revives are bounded --------------------------------------
 
 
