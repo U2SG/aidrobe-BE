@@ -90,6 +90,7 @@ from typing import Any
 import structlog
 from sqlalchemy import exists, select, update
 
+from app.application.paid_generation_admission import settle_terminal_reservations
 from app.application.ports.static_tryon import (
     GarmentImage,
     GarmentSlot,
@@ -665,6 +666,27 @@ async def reconcile_dead_static_tryon_assets(ctx: object = None) -> int:
     return len(rows)
 
 
+async def reconcile_static_tryon_reservations(ctx: object = None) -> int:
+    """V3-026 acceptance 7 — settle reservations whose work has finished.
+
+    A thin session wrapper; the policy is `paid_generation_admission
+    .settle_terminal_reservations`, which derives each outcome from the job's
+    status joined to the asset's `generation_status` rather than from anything a
+    worker remembered to write. That is why a crashed or dead-lettered
+    generation cannot leave budget permanently held: the sweep needs nothing
+    from the process that died.
+
+    Registered as its own cron AND called at the tail of the drain below, so
+    accounting converges within the tick that produced the terminal state
+    instead of at the next cron boundary. Both entry points are idempotent —
+    the sweep only ever matches `outcome IS NULL`.
+    """
+    async with AsyncSessionLocal() as session:
+        settled = await settle_terminal_reservations(session, job_type=JOB_TYPE)
+        await session.commit()
+    return settled
+
+
 async def drain_static_tryon_jobs(ctx: object = None) -> int:
     processed = 0
     for _ in range(MAX_DRAIN_PER_TICK):
@@ -676,4 +698,8 @@ async def drain_static_tryon_jobs(ctx: object = None) -> int:
         processed += 1
     if processed:
         logger.info("static_tryon.drain_completed", processed=processed)
+        # Every terminal state this tick produced is settled here, so the next
+        # request sees the budget a failed render freed (V3-017 acceptance 3)
+        # rather than waiting on the reconcile cron.
+        await reconcile_static_tryon_reservations()
     return processed

@@ -335,6 +335,23 @@ class Settings(BaseSettings):
     # budget over a separate signal — see request_static_preview.py.
     TRYON_QUALITY_MAX_AUTO_REGENERATIONS: int = 1
 
+    # V3-026 acceptance 5: how many times ONE generation may be re-bought after
+    # it died. A dead render is retryable on purpose (V3-013's precedent — a
+    # permanent cache-key tombstone is worse), but without a cap "press preview
+    # again" buys another `MAX_ATTEMPTS` provider calls every time, forever,
+    # against a provider that fails every time. This is the bound V3-017's own
+    # docstring named as the fix and recorded as unowned.
+    #
+    # Deliberately NOT gated by ENABLE_COST_GUARD: the daily limits below are a
+    # spending policy someone configures, this is a safety bound, and a
+    # deployment with the guard off must not be the one where the loop is
+    # unbounded. Worst case per generation is therefore
+    # (1 + TRYON_MAX_REVIVES) × MAX_ATTEMPTS attempts, each of which may itself
+    # regenerate TRYON_QUALITY_MAX_AUTO_REGENERATIONS times.
+    # 0 makes a dead preview permanently unretryable — allowed, and a
+    # deliberately harsh choice rather than the default.
+    TRYON_MAX_REVIVES: int = 2
+
     # --- Avatar retention (V3-011 human gate) ---------------------------
     # HUMAN GATE: the final durations require privacy approval before
     # production enablement; these defaults are placeholders, and the rule the

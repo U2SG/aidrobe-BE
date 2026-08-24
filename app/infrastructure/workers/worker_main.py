@@ -40,6 +40,7 @@ from app.infrastructure.workers.recommendation_recompute_worker import (
 from app.infrastructure.workers.static_tryon_worker import (
     drain_static_tryon_jobs,
     reconcile_dead_static_tryon_assets,
+    reconcile_static_tryon_reservations,
 )
 from app.infrastructure.workers.storage_purge_worker import drain_storage_purge_jobs
 from app.infrastructure.workers.style_learn_worker import learn_style_source
@@ -105,6 +106,7 @@ class WorkerSettings:
         reconcile_dead_outfit_board_assets,
         reconcile_dead_ootd_poster_assets,
         reconcile_dead_static_tryon_assets,
+        reconcile_static_tryon_reservations,
         reconcile_dead_cutout_items,
         reconcile_dead_import_tasks,
     ]
@@ -193,6 +195,18 @@ class WorkerSettings:
                 reconcile_dead_import_tasks,
                 minute={8, 23, 38, 53},
                 name="import_reconcile_dead_tasks",
+            ),
+            # V3-026. The drain already settles what it finished, so this is the
+            # backstop for the case the drain cannot cover: a worker that died
+            # mid-attempt and whose job was dead-lettered by lease recovery, not
+            # by a drain tick. Offset by a minute from the dead-asset sweep so
+            # the two do not scan `async_jobs` together, and scheduled after it
+            # so a reservation settles against an asset state that has already
+            # converged.
+            cron(
+                reconcile_static_tryon_reservations,
+                minute={9, 24, 39, 54},
+                name="static_tryon_reconcile_reservations",
             ),
             # Purge cadence is hourly: grace boundary is days, so finer-grain
             # ticking just wastes claim_one queries.

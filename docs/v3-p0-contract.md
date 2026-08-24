@@ -358,6 +358,14 @@ open-ended styling state in P0 (V3_SPEC §12). Responses:
 - Cache hit (see 6.3) ⇒ 200 with the existing asset, `generation_status`
   possibly already `ready`. Identical inputs never regenerate.
 - Otherwise ⇒ 200 `{"asset_id": "uuid", "generation_status": "queued"}`.
+- **Amended by V3-026 (additive, no new top-level code):** a refused admission
+  ⇒ `4091 STATE_CONFLICT` at HTTP 429, with `data.reason` distinguishing
+  `daily_budget_exhausted` (the per-user daily budget is spent; clears
+  tomorrow) from `retry_budget_exhausted` (this generation has used its bounded
+  retry allowance and will not be attempted again). FE must tell them apart
+  because only one is a "come back later"; an unrecognized 429 reason degrades
+  to the daily treatment, which under-promises finality rather than over-
+  promising it.
 
 ### 6.2 `generation_status` lifecycle (frozen enum)
 
@@ -441,6 +449,17 @@ As implemented in V3-024 (clarifications, no change to the frozen body):
 - Automatic retry: **at most one** model retry after a quality-gate failure,
   then `rejected_by_quality_gate`. Generation runs under the existing
   `ENABLE_COST_GUARD` per-user-per-day quota mechanism.
+- **Amended by V3-026:** that quota is admitted through a durable reservation
+  taken before the job can become runnable, so a queued generation counts as
+  paid usage (it did not before) and rapid sequential or concurrent requests
+  cannot exceed the configured budget. Three budgets, deliberately distinct and
+  named where they are enforced: the per-user **daily** budget
+  (`ENABLE_COST_GUARD`), the **technical** attempt budget inside one admitted
+  generation (`MAX_ATTEMPTS`), and the **revive** budget per generation
+  (`TRYON_MAX_REVIVES`, unconditional — a safety bound, not a spending policy).
+  A user-initiated revive is a new purchase and is refused once its allowance is
+  spent. Internal accounting keeps a technical failure distinguishable from a
+  quality-gate rejection; neither reaches a response (see 6.4).
 - `visual_type` values added in P0: `static_tryon`, `avatar_canonical`
   (`outfit_multiview` is reserved for P1 and must not appear in P0 responses).
 
