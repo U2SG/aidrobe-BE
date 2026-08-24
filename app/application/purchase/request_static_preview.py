@@ -28,51 +28,54 @@ second set of rules; the suggested codes are named at each member.
    `idempotency_key`, and §6.3 derives that key from the same digest, so the
    asset and its job are 1:1 by construction rather than by convention.
 
-**QUOTA: the DB-aggregate path, deliberately, and this diverges from a sibling.**
+**QUOTA: an atomic reservation, since V3-026, and this diverges from a sibling.**
 
-`ootd_posters.py:82` passes `redis_client` to `assert_within_quota`; this does
-not, and the reason is acceptance 3 ("Failed calls do not burn call quota
-according to established cost-guard rules"). The Redis path is an *irrevocable
-reservation*: `INCRBY` at admission, rolled back only when the guard itself
-refuses. Nothing refunds it when the work later fails, and nothing refunds it
-when the admission turns out not to create work at all. Under Redis both a
-dead-lettered render and a cache hit would permanently consume a unit of a
-5-per-day budget — which contradicts acceptance 3 *and* `cost_guard`'s own
-documented rule for call-count quotas ("failed retries don't burn quota").
+`ootd_posters.py:82` passes `redis_client` to `assert_within_quota`; this module
+calls neither. Both of the alternatives were rejected for reasons that still
+hold:
 
-The DB aggregate has no side effect: it COUNTs `async_jobs` rows in
-`(succeeded, running)`, so a `dead` job counts zero and an admission that ends
-in a lost race costs nothing. That is not a weaker guarantee here, it is the
-rule the criterion names.
+- The **Redis `INCRBY`** path is an *irrevocable* reservation, rolled back only
+  when the guard itself refuses. Nothing refunds it when the work later fails,
+  which would make a dead-lettered render permanently consume a unit of a
+  5-per-day budget — contradicting V3-017 acceptance 3 and `cost_guard`'s own
+  documented rule for call-count quotas. It is also not durable: the counter
+  drains on a TTL, so nothing can be reconciled after a crash.
+- The **DB aggregate** (`COUNT` over `async_jobs` in `succeeded`/`running`) has
+  no side effect, but it cannot count a `queued` generation at all — and
+  `queued` is a *persistent* state, not a momentary one. A job sits there until
+  a drain tick claims it (`MAX_DRAIN_PER_TICK=5`, cron-paced), so sequential
+  requests issued faster than the drain each counted zero and were each
+  admitted, with no concurrency required. The bound was "the drain keeps up",
+  which is not something the request path controls.
 
-**What is given up, corrected.** An earlier version of this docstring said
-over-admission "needs N distinct decisions raced by one user inside one
-aggregate read". That was wrong, and understated the gap: `queued` is not one of
-the counted statuses, and it is a *persistent* state, not a momentary one. A job
-sits `queued` until a drain tick claims it (`MAX_DRAIN_PER_TICK=5`, cron-paced),
-so sequential requests for distinct decisions issued faster than the drain each
-count zero against `TRYON_DAILY_CALL_LIMIT` and are each admitted. No
-concurrency is required. This is `cost_guard`'s documented DB-path behaviour and
-the same shape as `cutout`'s, and it conforms to acceptance 3 — but the bound is
-"the drain keeps up", not "a read window is narrow", and only the second of
-those is something the request path controls.
+V3-026 replaces both with `paid_generation_admission`: one ledger row per unit
+of purchase, taken inside a `pg_advisory_xact_lock` on
+`(user_id, job_type, day)`, held from the moment of admission, settled from the
+terminal truth that already exists on the job and the asset. That module's
+docstring owns the design; what matters here is the *order*, below, and the two
+things this module is responsible for getting right.
 
-**Two open cost items for the production human gate**, recorded here because
-neither is an acceptance failure and neither should be discovered later:
+1. **A cache hit never reaches the admission module.** It is checked first and
+   returns before any reservation exists (see "Quota is checked AFTER the cache
+   read", below).
+2. **A revive is a fresh purchase and a bounded one.** It takes its own
+   reservation (`revive_index >= 1`) *and* is refused by
+   `assert_revive_budget` once `TRYON_MAX_REVIVES` presses have been admitted
+   for the same generation. Before V3-026 a dead job counted zero and stayed
+   revivable, so pressing preview against a persistently failing provider
+   bought another `MAX_ATTEMPTS` of provider calls each time, without bound.
+   Charging the press meters the press; the cap is what bounds the loop.
 
-1. The over-admission above. Closing it means either an atomic reservation that
-   *refunds* on cache hit and on dead-letter (which Redis's `INCRBY` path does
-   not do today), or counting `queued` and accepting that a lost enqueue race
-   leaks a unit.
-2. A user-initiated revive re-opens a dead job and buys up to `MAX_ATTEMPTS`
-   more provider calls, and a dead job counts zero — so a persistently failing
-   render can be retried without bound by pressing the button. Charging the
-   revive (which `_revive` does) meters *the press*, not the retries behind it.
-   A per-(user, cache_key) revive cap is the fix; it is not implemented because
-   no acceptance criterion reaches it and the flag is off.
-
-Both gate turning `ENABLE_V3_STATIC_TRYON` on in production with a real,
-paid provider — which is a human gate regardless (V3-016).
+**One limit stated plainly, because it is a policy decision and not an
+oversight.** A `technical_failure` settles *without* consuming budget, because
+V3-017 acceptance 3 ("failed calls do not burn call quota") is a passed
+criterion and its reason is real — a provider outage must not lock a user out of
+the retry they are about to press. So while a provider fails every render, a
+user with N distinct decisions can still spend N × `MAX_ATTEMPTS` attempts in a
+day. Closing that means deciding that failures *do* burn budget, which reverses
+a passed criterion and is the `spending_budget` human gate's call. What V3-026
+bounds is the same-generation loop and the instantaneous budget; this is
+recorded so the residual is not rediscovered as a surprise.
 
 `ootd_poster` is not changed to match: it is another feature's module, its quota
 is a different bucket, and its trade-off was made with different criteria.
@@ -131,7 +134,15 @@ from sqlalchemy import CursorResult, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.cost_guard import assert_within_quota
+from app.application.cost_guard import resolve_quota_limit
+from app.application.paid_generation_admission import (
+    Admission,
+    assert_revive_budget,
+    attach,
+    release,
+    reserve,
+    settle_terminal_reservations,
+)
 from app.application.ports.static_tryon import GarmentSlot, PipelineIdentity, StaticTryOnPort
 from app.application.purchase.outfit_composition import CATEGORY_SLOTS
 from app.application.purchase.static_preview_cache_key import (
@@ -308,14 +319,23 @@ class RequestStaticPreview:
         if cached is not None:
             return await self._serve_cached(cached, user_id=user_id, correlation_id=correlation_id)
 
-        # Only now, with a cache miss confirmed, does this cost anything. Raises
-        # FriendlyException(429); see the module docstring for why no
-        # `redis_client` is passed.
-        await assert_within_quota(self.session, user_id, JOB_TYPE)
+        # Only now, with a cache miss confirmed, does this cost anything. The
+        # budget is taken BEFORE the asset and the job exist, so no paid work is
+        # ever created that a reservation did not admit (V3-026 acceptance 1);
+        # `reserve` raises FriendlyException(429) instead of returning.
+        admission = await reserve(
+            self.session,
+            user_id=user_id,
+            job_type=JOB_TYPE,
+            reservation_key=key.idempotency_key(),
+            attempt_grant=MAX_ATTEMPTS,
+            limit=resolve_quota_limit(JOB_TYPE),
+        )
         return await self._insert_or_replay(
             key,
             inputs,
             identity,
+            admission=admission,
             user_id=user_id,
             decision_id=decision_id,
             correlation_id=correlation_id,
@@ -484,8 +504,9 @@ class RequestStaticPreview:
         (`PrepareAvatar._revive_if_terminal`); the same reasoning applies here,
         so a *failed* preview is retryable and a *ready* one is free.
 
-        Reviving is new paid work, so it goes through the quota. A cache hit
-        does not, which is the ordering the module docstring calls load-bearing.
+        Reviving is new paid work, so it takes its own reservation AND is capped
+        (V3-026 acceptance 5). A cache hit does neither, which is the ordering
+        the module docstring calls load-bearing.
         """
         job = await self._backing_job(asset.id)
         revivable = job is not None and job.status in (JOB_STATUS_DEAD, JOB_STATUS_FAILED)
@@ -503,16 +524,50 @@ class RequestStaticPreview:
             )
 
         assert job is not None  # narrowed by `revivable`
-        await assert_within_quota(self.session, user_id, JOB_TYPE)
+        # Close the books on the attempt-set that just died, BEFORE re-opening
+        # the job. Both halves of why are in `settle_terminal_reservations`'s
+        # docstring: after `_revive` the job is `queued` again, so a still-held
+        # reservation would eventually be settled from the NEXT attempt's status
+        # and a failure would be recorded as a success — and the refund is what
+        # makes the retry admissible at all when the day's budget is one.
+        await settle_terminal_reservations(
+            self.session, job_type=JOB_TYPE, target_id=asset.id
+        )
+        # The cap first, then the budget. Both raise 429 and they mean different
+        # things: the cap says "this render keeps failing, stop pressing" and is
+        # unconditional, the budget says "come back tomorrow" and only exists
+        # when one is configured. Checking the cap first means a generation that
+        # has exhausted its retries answers the same way whether or not the
+        # user also happens to be out of daily budget.
+        revive_index = await assert_revive_budget(
+            self.session,
+            target_id=asset.id,
+            job_type=JOB_TYPE,
+            max_revives=self.settings.TRYON_MAX_REVIVES,
+        )
+        admission = await reserve(
+            self.session,
+            user_id=user_id,
+            job_type=JOB_TYPE,
+            reservation_key=f"{job.idempotency_key}#revive:{revive_index}",
+            attempt_grant=MAX_ATTEMPTS,
+            limit=resolve_quota_limit(JOB_TYPE),
+            revive_index=revive_index,
+            target_id=asset.id,
+        )
         if not await self._revive(job):
             # Another retry won the conditional UPDATE. Its work is live, so
             # this request started nothing — the honest answer, and the same
-            # `rowcount != 1` resolution V3-013 uses.
+            # `rowcount != 1` resolution V3-013 uses. The unit this request
+            # reserved bought nothing, so it is refunded rather than left held.
+            if admission.created:
+                await release(self.session, admission.reservation_id, reason="revive_lost_race")
             return PreviewRequested(
                 asset_id=asset.id,
                 generation_status=asset.generation_status,
                 created=False,
             )
+        await attach(self.session, admission.reservation_id, job_id=job.id, target_id=asset.id)
         asset.generation_status = STATUS_QUEUED
         # The previous failure's message would otherwise sit on a row that is
         # now queued again, and `GET /v1/outfit-visual-assets/{id}` reads both.
@@ -532,6 +587,7 @@ class RequestStaticPreview:
         inputs: _RenderInputs,
         identity: PipelineIdentity,
         *,
+        admission: Admission,
         user_id: uuid.UUID,
         decision_id: uuid.UUID,
         correlation_id: str | None,
@@ -539,10 +595,11 @@ class RequestStaticPreview:
     ) -> PreviewRequested:
         """Insert the asset + its job, or lose the race and read the winner.
 
-        The two writes share this request's transaction, so a crash between them
-        cannot leave an asset with no job behind it — which would spin on
-        `queued` until the GET endpoint's 15-minute staleness rule called it
-        failed.
+        The three writes — reservation, asset, job — share this request's
+        transaction, so a crash between any two cannot leave an asset with no
+        job behind it (which would spin on `queued` until the GET endpoint's
+        15-minute staleness rule called it failed), and cannot leave a
+        reservation holding budget for work that does not exist.
         """
         # Built once and shared by the row and the job payload, so the worker
         # can never be handed a different set of inputs than the ones the row
@@ -594,6 +651,15 @@ class RequestStaticPreview:
             winner = await self._cached_asset(key)
             if winner is None:  # pragma: no cover - the index is what raised
                 raise
+            # The winner's own reservation is what admitted this render, so the
+            # unit reserved here bought nothing and is refunded. Only when this
+            # call created it: an idempotent replay would be refunding the
+            # request that won. Released BEFORE `_serve_cached`, because that
+            # path may itself revive and must see the refunded budget.
+            if admission.created:
+                await release(
+                    self.session, admission.reservation_id, reason="enqueue_lost_race"
+                )
             logger.info("static_tryon.lost_insert_race", asset_id=str(winner.id))
             return await self._serve_cached(
                 winner, user_id=user_id, correlation_id=correlation_id
@@ -617,6 +683,9 @@ class RequestStaticPreview:
             correlation_id=correlation_id,
             max_attempts=MAX_ATTEMPTS,
         )
+        # The reservation now names the work it paid for, which is what
+        # `settle_terminal_reservations` follows to find the terminal truth.
+        await attach(self.session, admission.reservation_id, job_id=job.id, target_id=asset.id)
         logger.info(
             "static_tryon.enqueued",
             asset_id=str(asset.id),

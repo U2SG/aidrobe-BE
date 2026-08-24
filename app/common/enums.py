@@ -396,3 +396,34 @@ class PreviewFeedbackAspect(StrEnum):
     GARMENT_FIT = "garment_fit"
     COLOR = "color"
     OTHER = "other"
+
+
+class PaidGenerationOutcome(StrEnum):
+    """How an admitted paid generation ended, in *internal* accounting only.
+
+    V3-026. This is the one axis that tells the two ways a render can stop
+    apart, which V3_SPEC §13.3 needs and acceptance 6 states: a
+    quality-gate rejection is a render the provider produced and we chose not
+    to show, a technical failure is a render that never arrived. Both are
+    invisible on the wire — `generation_status` carries the user-facing state
+    (contract §6.2) and nothing here reaches a response.
+
+    A reservation with no outcome is *held*: admitted, work not terminal. The
+    absence of a value is the state, so there is no second `status` column
+    saying the same thing twice.
+
+    **Which outcomes consume the daily budget** is
+    `paid_generation_admission.COUNTED_OUTCOMES`, not this enum's membership:
+
+    - `SUCCEEDED` / `QUALITY_REJECTED` count — a provider call happened and
+      produced an image, whether or not the quality gate let it through.
+    - `TECHNICAL_FAILURE` does not, because V3-017 acceptance 3 ("failed calls
+      do not burn call quota") is a passed criterion and still in force.
+    - `ABANDONED` does not, because the reservation bought nothing at all —
+      the enqueue lost its race, or the revive it was taken for never opened.
+    """
+
+    SUCCEEDED = "succeeded"
+    QUALITY_REJECTED = "quality_rejected"
+    TECHNICAL_FAILURE = "technical_failure"
+    ABANDONED = "abandoned"

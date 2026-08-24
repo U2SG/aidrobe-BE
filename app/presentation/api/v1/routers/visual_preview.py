@@ -151,7 +151,15 @@ _ERRORS: dict[int | str, dict[str, str]] = {
             "`no_renderable_candidate`, `no_grounded_outfit`."
         )
     },
-    429: {"description": "Daily try-on call quota exhausted (`ENABLE_COST_GUARD`)."},
+    429: {
+        "description": (
+            "`4091 STATE_CONFLICT`; `data.reason` is `daily_budget_exhausted` (the "
+            "per-user daily try-on budget is spent, `ENABLE_COST_GUARD`) or "
+            "`retry_budget_exhausted` (this generation has used its bounded retry "
+            "allowance and will not be re-attempted). Both are retryable states for "
+            "the client, on different horizons: tomorrow, and never for this preview."
+        )
+    },
     503: {"description": "`ENABLE_V3_STATIC_TRYON` is off."},
 }
 

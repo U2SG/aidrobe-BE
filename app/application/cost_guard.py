@@ -62,6 +62,31 @@ def _limit_for(settings: Settings, job_type: str) -> int | None:
     }.get(job_type)
 
 
+#: Job types whose usage is the reservation ledger's, not an `async_jobs`
+#: aggregate (V3-026). `tryon` moved because the aggregate could not count a
+#: queued generation as paid usage; leaving `usage_today` on the old path would
+#: make `GET /v1/user/cost-summary` report a smaller number than admission
+#: enforces, which is a lie in the direction the user notices.
+RESERVATION_BACKED_JOB_TYPES: tuple[str, ...] = ("tryon",)
+
+
+def resolve_quota_limit(job_type: str) -> int | None:
+    """The daily limit in force for `job_type`, or None when none is.
+
+    None means "do not enforce": either `ENABLE_COST_GUARD` is off or the bucket
+    has no configured cap. Extracted so V3-026's admission primitive can read
+    the same limit through the same `get_settings` this module already resolves
+    — which is also what keeps `monkeypatch.setattr("app.application.cost_guard
+    .get_settings", …)` (the pattern this repo's CLAUDE.md mandates for
+    `lru_cache`d settings) working for callers that never touch this module's
+    other functions.
+    """
+    settings = get_settings()
+    if not settings.ENABLE_COST_GUARD:
+        return None
+    return _limit_for(settings, job_type)
+
+
 async def usage_today(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -82,6 +107,14 @@ async def usage_today(
       succeeding, which would be a hostile regression for users with
       flaky network conditions. Only completed work consumes the quota.
     """
+    if job_type in RESERVATION_BACKED_JOB_TYPES:
+        # Imported here rather than at module scope: the admission module reads
+        # this module's `resolve_quota_limit`, so a top-level import would close
+        # the cycle. One narrow branch, one narrow import.
+        from app.application.paid_generation_admission import counted_reservations_today
+
+        return await counted_reservations_today(session, user_id, job_type)
+
     start, end = _today_window()
 
     if job_type == "llm_ask":

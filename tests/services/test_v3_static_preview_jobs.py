@@ -61,6 +61,7 @@ from app.common.enums import (
     Category,
     DecisionUncertainty,
     DecisionVisualNeed,
+    PaidGenerationOutcome,
     PurchaseCandidateSource,
     PurchaseDecision,
     WardrobeDecisionType,
@@ -70,6 +71,7 @@ from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.avatar import AvatarProfile, AvatarVersion
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
+from app.infrastructure.persistence.models.paid_generation import PaidGenerationReservation
 from app.infrastructure.persistence.models.purchase_decision import (
     PurchaseCandidate,
     WardrobeDecision,
@@ -1077,15 +1079,25 @@ async def test_reviving_a_dead_preview_goes_through_the_quota(
 
     # Now spend the whole budget on something else, so the revive is the
     # request that finds the cupboard bare.
+    #
+    # V3-026 moved the substrate this reads: admission counts reservations, not
+    # `async_jobs` rows, so the unrelated spend is seeded as a settled
+    # reservation. Only the fixture changed — the assertions below (a revive is
+    # metered, refused when the budget is bare, and leaves the dead job dead
+    # rather than half-revived) are this criterion's and are untouched.
     _use_quota(monkeypatch, limit=1)
     async with factory() as session:
         session.add(
-            AsyncJob(
-                job_type=JOB_TYPE,
-                idempotency_key=f"{JOB_TYPE}:unrelated:{uuid.uuid4()}",
+            PaidGenerationReservation(
                 user_id=fixture.user_id,
-                status=JOB_STATUS_SUCCEEDED,
-                payload={},
+                job_type=JOB_TYPE,
+                usage_day=datetime.now(UTC).date(),
+                reservation_key=f"{JOB_TYPE}:unrelated:{uuid.uuid4()}",
+                attempt_grant=MAX_ATTEMPTS,
+                attempts_used=1,
+                quality_regenerations=0,
+                outcome=PaidGenerationOutcome.SUCCEEDED.value,
+                settled_at=datetime.now(UTC),
             )
         )
         await session.commit()
