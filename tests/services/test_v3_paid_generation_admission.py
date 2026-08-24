@@ -919,6 +919,14 @@ async def test_a_refusal_before_the_cache_read_reserves_nothing(
 
     `_resolve_inputs` is ordered cheapest-refusal-first, all of it before the
     budget is touched, so a request that could never render never costs a unit.
+
+    Both columns move together because the database says they must:
+    `ck_avatar_profiles_active_version_matches_status` makes
+    `status ∈ {ready, refresh_recommended}` equivalent to
+    `active_version_id IS NOT NULL`, so a profile cannot be un-readied while
+    still naming an active version. (Learned from CI rather than assumed — the
+    first version of this fixture set the status alone and was rejected by that
+    CHECK.)
     """
     _use_quota(monkeypatch, limit=5)
     fixture = await _seed_preview_ready_user(factory)
@@ -926,7 +934,7 @@ async def test_a_refusal_before_the_cache_read_reserves_nothing(
         await session.execute(
             sa.update(AvatarProfile)
             .where(AvatarProfile.id == fixture.profile_id)
-            .values(status="pending_upload")
+            .values(status="pending_upload", active_version_id=None)
         )
         await session.commit()
 
