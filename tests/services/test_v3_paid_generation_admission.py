@@ -62,7 +62,7 @@ from app.application.purchase.request_static_preview import (
     PreviewRefused,
     RequestStaticPreview,
 )
-from app.common.enums import PaidGenerationOutcome
+from app.common.enums import AvatarStatus, PaidGenerationOutcome
 from app.common.exceptions import FriendlyException
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
@@ -971,9 +971,11 @@ async def test_a_refusal_before_the_cache_read_reserves_nothing(
     `ck_avatar_profiles_active_version_matches_status` makes
     `status ∈ {ready, refresh_recommended}` equivalent to
     `active_version_id IS NOT NULL`, so a profile cannot be un-readied while
-    still naming an active version. (Learned from CI rather than assumed — the
-    first version of this fixture set the status alone and was rejected by that
-    CHECK.)
+    still naming an active version. The status comes from `AvatarStatus` rather
+    than from a literal, because `ck_avatar_profiles_status_enum` is generated
+    from that enum. (Both learned from CI rather than assumed: the first version
+    of this fixture moved the status alone, and the second invented a status
+    value that does not exist.)
     """
     _use_quota(monkeypatch, limit=5)
     fixture = await _seed_preview_ready_user(factory)
@@ -981,7 +983,7 @@ async def test_a_refusal_before_the_cache_read_reserves_nothing(
         await session.execute(
             sa.update(AvatarProfile)
             .where(AvatarProfile.id == fixture.profile_id)
-            .values(status="pending_upload", active_version_id=None)
+            .values(status=AvatarStatus.PREPARING.value, active_version_id=None)
         )
         await session.commit()
 
