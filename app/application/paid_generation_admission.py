@@ -112,9 +112,11 @@ _TERMINAL_JOB_STATUSES: tuple[str, ...] = (
 )
 
 #: V3-018's rejected terminal state, matched to decide `quality_rejected` vs
-#: `succeeded`. A literal rather than an import: `app.application` must not
-#: import from `app.infrastructure.workers` for a vocabulary the contract
-#: freezes (§6.2) and the worker merely happens to also spell.
+#: `succeeded`. A literal rather than an import because there is nothing to
+#: import: contract §6.2 freezes this wire value, no module owns it as a
+#: constant, and `static_tryon_worker` spells the same string literal when it
+#: writes the row. Contrast the `JOB_STATUS_*` imports above, which are the job
+#: lifecycle's own vocabulary and are owned by `job_runtime`.
 _ASSET_STATUS_REJECTED = "rejected_by_quality_gate"
 
 #: `data.reason` on the 429, so FE can tell "come back tomorrow" from "this

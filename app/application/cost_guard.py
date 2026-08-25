@@ -74,12 +74,14 @@ def resolve_quota_limit(job_type: str) -> int | None:
     """The daily limit in force for `job_type`, or None when none is.
 
     None means "do not enforce": either `ENABLE_COST_GUARD` is off or the bucket
-    has no configured cap. Extracted so V3-026's admission primitive can read
-    the same limit through the same `get_settings` this module already resolves
-    — which is also what keeps `monkeypatch.setattr("app.application.cost_guard
-    .get_settings", …)` (the pattern this repo's CLAUDE.md mandates for
-    `lru_cache`d settings) working for callers that never touch this module's
-    other functions.
+    has no configured cap. Extracted so V3-026's paid admission path can read
+    the same limit through the same `get_settings` this module already resolves.
+    Its reader is `purchase.request_static_preview`, which passes the resolved
+    limit into `paid_generation_admission.reserve` — the admission module itself
+    imports nothing from here. That indirection is also what keeps
+    `monkeypatch.setattr("app.application.cost_guard.get_settings", …)` (the
+    pattern this repo's CLAUDE.md mandates for `lru_cache`d settings) working
+    for callers that never touch this module's other functions.
     """
     settings = get_settings()
     if not settings.ENABLE_COST_GUARD:
@@ -108,9 +110,14 @@ async def usage_today(
       flaky network conditions. Only completed work consumes the quota.
     """
     if job_type in RESERVATION_BACKED_JOB_TYPES:
-        # Imported here rather than at module scope: the admission module reads
-        # this module's `resolve_quota_limit`, so a top-level import would close
-        # the cycle. One narrow branch, one narrow import.
+        # Imported inside the branch rather than at module scope. There is no
+        # import cycle to break — `paid_generation_admission` imports nothing
+        # from this module (`purchase.request_static_preview` is what reads
+        # `resolve_quota_limit`) — so this is about import graph, not ordering:
+        # only the reservation-backed buckets need the ledger, and the four
+        # unrelated callers of this module (ask, import_tasks, ootd_posters,
+        # the account router) never touch it. One narrow branch, one narrow
+        # import.
         from app.application.paid_generation_admission import counted_reservations_today
 
         return await counted_reservations_today(session, user_id, job_type)

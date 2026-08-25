@@ -25,6 +25,11 @@ can show, mapped onto the feature's acceptance criteria:
    "no preview possible" reasons ride `data.reason` so FE can fall back to the
    decision card quietly instead of toasting an error.
 
+V3-027 adds one more wire-level assertion to the same refusal section: the 429
+`data.reason` literal FE branches on. It belongs here rather than in the service
+suite because the claim is about the serialized body of THIS endpoint, which is
+the only thing FE can read.
+
 App-building convention copied from tests/api/test_v3_purchase_decision_
 endpoint.py: the router calls `get_settings()` directly (lru-cached, so it
 bypasses `app.dependency_overrides`), hence the flag is monkeypatched on the
@@ -76,6 +81,7 @@ from app.infrastructure.vision.fake_static_tryon import (
     PROVIDER,
 )
 from app.infrastructure.workers import static_tryon_worker
+from app.infrastructure.workers.job_runtime import JOB_STATUS_DEAD
 from app.presentation.api.v1.routers import outfit_visual, visual_preview
 from app.presentation.middlewares.correlation import CorrelationIdMiddleware
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
@@ -110,7 +116,18 @@ def _client(app: FastAPI) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
 
 
-def _set_flag(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:
+def _set_flag(
+    monkeypatch: pytest.MonkeyPatch, *, enabled: bool, max_revives: int | None = None
+) -> None:
+    """Patch the router's `get_settings`, which is also the use case's.
+
+    The router builds the use case with `settings=get_settings()`, so this one
+    patch owns both the flag and `TRYON_MAX_REVIVES` — the knob the retry-budget
+    test drives. `max_revives=None` leaves the shipped default in place.
+    """
+    overrides: dict[str, Any] = {}
+    if max_revives is not None:
+        overrides["TRYON_MAX_REVIVES"] = max_revives
     monkeypatch.setattr(
         visual_preview,
         "get_settings",
@@ -118,6 +135,7 @@ def _set_flag(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:
             APP_ENV="dev",
             ENABLE_V3_STATIC_TRYON=enabled,
             ENABLE_V3_AVATAR=enabled,
+            **overrides,
         ),
     )
 
@@ -382,6 +400,63 @@ async def test_avatar_not_ready_is_4091_with_its_reason(
     body = resp.json()
     assert body["code"] == 4091
     assert body["data"] == {"reason": "avatar_not_ready"}
+
+
+async def test_the_exhausted_retry_budget_is_429_with_its_reason_on_the_wire(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """V3-027: the `retry_budget_exhausted` literal, end to end on the response.
+
+    V3-026 gave 429 a second meaning and FE branches on the exact string
+    (`toPreviewUnavailableReason` reads `error.response.data.data.reason`; an
+    unrecognized value degrades to the daily-quota caption, which says "come
+    back tomorrow" for a preview that is permanently spent). Until now the BE
+    side asserted only `FriendlyException.data` at service level, so nothing
+    pinned this value on THIS endpoint's serialized body — a rename would have
+    been caught by neither suite.
+
+    Driven the way a user reaches it rather than by patching the refusal: one
+    generation, one revive spent against `TRYON_MAX_REVIVES=1`, then the press
+    that is over the bound. The job is failed by hand because reaching `dead`
+    through the worker would need the separate-engine harness and would prove
+    the worker, not the wire.
+    """
+    _set_flag(monkeypatch, enabled=True, max_revives=1)
+    user_id = uuid.uuid4()
+    decision_id = await _seed_decision(db_session, user_id)
+    app = _build_app(db_session)
+
+    async def _kill_the_backing_job() -> None:
+        """The state a persistently failing provider leaves behind."""
+        job = (await db_session.scalars(select(AsyncJob))).one()
+        job.status = JOB_STATUS_DEAD
+        await db_session.flush()
+
+    async with _client(app) as client:
+        created = await _post_preview(client, decision_id, user_id)
+        assert created.status_code == 200, created.text
+        assert created.json()["generation_status"] == "queued"
+
+        # Revive 1 of 1 — admitted, so the refusal below is the bound firing
+        # and not the revive path being unreachable.
+        await _kill_the_backing_job()
+        revived = await _post_preview(client, decision_id, user_id)
+        assert revived.status_code == 200, revived.text
+        assert revived.json()["generation_status"] == "queued"
+
+        await _kill_the_backing_job()
+        refused = await _post_preview(client, decision_id, user_id)
+
+    assert refused.status_code == 429
+    body = refused.json()
+    assert body["code"] == 4091
+    assert body["data"] == {"reason": "retry_budget_exhausted"}
+    # The two 429 meanings must stay distinguishable on the wire: FE renders a
+    # different caption for each, so a body that carried the daily reason here
+    # would tell the user to come back tomorrow for a render that is finished.
+    assert body["data"]["reason"] != "daily_budget_exhausted"
+    # Refused, not silently served: no third job was created for the press.
+    assert len((await db_session.scalars(select(AsyncJob))).all()) == 1
 
 
 async def test_a_link_candidate_is_no_preview_possible_not_an_error(

@@ -16,8 +16,8 @@ reconstructed for rows that predate `quality_signals`.
 The two CHECKs and the three indexes are declared identically here and in
 `PaidGenerationReservation.__table_args__` — `tests/conftest.py` builds the test
 schema with `create_all`, so a constraint declared only in this revision would
-be absent in CI (and vice versa). `test_v3_paid_generation_migration.py` asserts
-the two descriptions cannot drift.
+be absent in CI (and vice versa). `tests/unit/test_v3_paid_generation_admission
+_sql.py` asserts the two descriptions cannot drift.
 
 Revision ID: 0052_add_paid_generation_reservations
 Revises: 0051_add_static_preview_feedback
