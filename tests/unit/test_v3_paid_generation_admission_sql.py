@@ -392,3 +392,22 @@ def test_downgrade_reverses_the_upgrade(monkeypatch: Any) -> None:
     assert {name for name, _t, _c, _u in recorder.created_indexes} == {
         name for name, _t in recorder.dropped_indexes
     }
+
+
+def test_the_rejected_status_literal_matches_the_worker_that_writes_it() -> None:
+    """V3-027: the one duplication `_ASSET_STATUS_REJECTED`'s comment admits to.
+
+    `static_tryon_worker.STATUS_REJECTED` writes the asset row;
+    `_ASSET_STATUS_REJECTED` reads it back to decide `quality_rejected` vs
+    `succeeded`. The application layer must not import a leaf worker, so the
+    two spellings are separate — and nothing else would notice them diverging:
+    the service test that covers the rejected settlement seeds
+    `generation_status="rejected_by_quality_gate"` itself, so it would keep
+    passing while every quality rejection was booked as a plain success.
+
+    Imported inside the function, not at module scope: this file is run with
+    `--noconftest` as DB-free evidence, and the import is only needed here.
+    """
+    from app.infrastructure.workers.static_tryon_worker import STATUS_REJECTED
+
+    assert admission._ASSET_STATUS_REJECTED == STATUS_REJECTED
