@@ -15,6 +15,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
 import pytest
 import pytest_asyncio
 from PIL import Image
@@ -418,3 +419,31 @@ async def test_render_keeps_legacy_url_only_snapshot_compatible(monkeypatch: pyt
 
     assert storage.get_calls == []
     assert downloads == ["https://external.example/bottom.jpg"]
+
+
+async def test_download_image_rejects_unsafe_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
+    async_client = httpx.AsyncClient
+    fetches: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        fetches.append(str(request.url))
+        return httpx.Response(302, request=request, headers={"location": "http://169.254.169.254/meta"})
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: async_client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(outfit_board_worker, "is_safe_url", lambda url: "169.254" not in url)
+
+    assert await outfit_board_worker._download_image("https://images.example/top.jpg") is None
+    assert fetches == ["https://images.example/top.jpg"]
+
+
+async def test_load_snapshot_image_raises_for_unreadable_object_without_fallback() -> None:
+    class _FailingStorage:
+        async def get_object(self, key: str) -> bytes:
+            raise RuntimeError("storage unavailable")
+
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await outfit_board_worker._load_snapshot_image(
+            _FailingStorage(),
+            object_key="users/u/items/i/cutout.png",
+            fallback_url=None,
+        )

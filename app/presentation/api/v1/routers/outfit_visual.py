@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import structlog
 from fastapi import APIRouter, Depends, status
@@ -80,13 +80,16 @@ async def _existing_outfit_board_asset(
     )
     if job is None or job.target_id is None:
         return None
-    return await db.scalar(
-        select(OutfitVisualAsset).where(
-            OutfitVisualAsset.id == job.target_id,
-            OutfitVisualAsset.user_id == user_id,
-            OutfitVisualAsset.outfit_id == outfit_id,
-            OutfitVisualAsset.visual_type == VisualType.OUTFIT_BOARD.value,
-        )
+    return cast(
+        OutfitVisualAsset | None,
+        await db.scalar(
+            select(OutfitVisualAsset).where(
+                OutfitVisualAsset.id == job.target_id,
+                OutfitVisualAsset.user_id == user_id,
+                OutfitVisualAsset.outfit_id == outfit_id,
+                OutfitVisualAsset.visual_type == VisualType.OUTFIT_BOARD.value,
+            )
+        ),
     )
 
 
