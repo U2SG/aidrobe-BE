@@ -10,12 +10,14 @@ Cover:
 
 from __future__ import annotations
 
+import io
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
 import pytest_asyncio
+from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.infrastructure.persistence.models.async_job import AsyncJob
@@ -336,3 +338,83 @@ def test_idempotency_key_without_outfit_uses_asset() -> None:
 def test_drain_constants_are_sane() -> None:
     assert 1 <= outfit_board_worker.MAX_DRAIN_PER_TICK <= 50
     assert outfit_board_worker.JOB_TYPE == "outfit_board"
+
+
+def _png_bytes() -> bytes:
+    image = Image.new("RGBA", (4, 4), (255, 0, 0, 255))
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class _RenderStorage:
+    def __init__(self) -> None:
+        self.get_calls: list[str] = []
+        self.put_calls: list[str] = []
+
+    async def get_object(self, key: str) -> bytes:
+        self.get_calls.append(key)
+        return _png_bytes()
+
+    async def put_object(self, key: str, data: bytes, content_type: str) -> str:
+        self.put_calls.append(key)
+        return f"https://fake-storage/{key}"
+
+
+async def test_render_prefers_object_key_without_http_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = _RenderStorage()
+    _patch_storage(monkeypatch, storage)
+
+    async def _unexpected_download(url: str):
+        raise AssertionError(f"HTTP fallback must not run for durable object keys: {url}")
+
+    monkeypatch.setattr(outfit_board_worker, "_download_image", _unexpected_download)
+    snapshot = _visual_asset_runtime.VisualAssetSnapshot(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        input_snapshot={
+            "item_list": [
+                {
+                    "role": "top",
+                    "category": "top",
+                    "cutout_object_key": "users/u/items/i/cutout.png",
+                }
+            ]
+        },
+    )
+
+    url, object_key = await outfit_board_worker._render_and_upload(snapshot)
+
+    assert storage.get_calls == ["users/u/items/i/cutout.png"]
+    assert storage.put_calls == [object_key]
+    assert url.endswith(object_key)
+
+
+async def test_render_keeps_legacy_url_only_snapshot_compatible(monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = _RenderStorage()
+    _patch_storage(monkeypatch, storage)
+    downloads: list[str] = []
+
+    async def _fake_download(url: str):
+        downloads.append(url)
+        return Image.new("RGBA", (4, 4), (0, 0, 255, 255))
+
+    monkeypatch.setattr(outfit_board_worker, "_download_image", _fake_download)
+    snapshot = _visual_asset_runtime.VisualAssetSnapshot(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        input_snapshot={
+            "item_list": [
+                {
+                    "role": "bottom",
+                    "category": "bottom",
+                    "thumbnail_url": "https://external.example/bottom.jpg",
+                }
+            ]
+        },
+    )
+
+    await outfit_board_worker._render_and_upload(snapshot)
+
+    assert storage.get_calls == []
+    assert downloads == ["https://external.example/bottom.jpg"]

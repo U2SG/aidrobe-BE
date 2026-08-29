@@ -4,22 +4,39 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+import structlog
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common import error_codes
+from app.common.enums import VisualType
 from app.common.exceptions import FriendlyException
+from app.infrastructure.persistence.models.async_job import AsyncJob
+from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
+from app.infrastructure.persistence.models.recommendation import OutfitItem
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
+from app.infrastructure.persistence.repositories.outfit_visual_repo import (
+    SqlAlchemyOutfitVisualRepository,
+)
+from app.infrastructure.persistence.repositories.recommendation_repo import (
+    SqlAlchemyRecommendationRepository,
+)
 from app.infrastructure.persistence.session import get_db_session as get_db
+from app.infrastructure.workers.outfit_board_worker import enqueue_outfit_board
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url as _resolve_render_url
 
 router = APIRouter(prefix="/v1", tags=["outfit-visual"])
+logger = structlog.get_logger(__name__)
 
 # A job that has been queued this long with no worker claims it is effectively
 # stale — surface 'failed' so the frontend stops polling instead of looping
 # until the user navigates away.
 _STALE_QUEUED_MINUTES = 15
+_OUTFIT_BOARD_LAYOUT_VERSION = "v1"
+_IMAGE_TYPE_PRIORITY = ("cutout", "thumbnail", "standard", "original")
 
 
 class OutfitVisualAssetResponse(BaseModel):
@@ -45,6 +62,149 @@ class OutfitVisualAssetResponse(BaseModel):
 class WardrobeItemImagesResponse(BaseModel):
     item_id: uuid.UUID
     images: list[dict[str, Any]]
+
+
+def _response_for_asset(asset: OutfitVisualAsset) -> OutfitVisualAssetResponse:
+    """Keep producer responses limited to the existing pollable contract."""
+    return OutfitVisualAssetResponse(
+        asset_id=asset.id,
+        generation_status=asset.generation_status,
+    )
+
+
+async def _existing_outfit_board_asset(
+    db: AsyncSession, *, user_id: uuid.UUID, outfit_id: uuid.UUID
+) -> OutfitVisualAsset | None:
+    job = await db.scalar(
+        select(AsyncJob).where(AsyncJob.idempotency_key == f"outfit_board:{outfit_id}:{_OUTFIT_BOARD_LAYOUT_VERSION}")
+    )
+    if job is None or job.target_id is None:
+        return None
+    return await db.scalar(
+        select(OutfitVisualAsset).where(
+            OutfitVisualAsset.id == job.target_id,
+            OutfitVisualAsset.user_id == user_id,
+            OutfitVisualAsset.outfit_id == outfit_id,
+            OutfitVisualAsset.visual_type == VisualType.OUTFIT_BOARD.value,
+        )
+    )
+
+
+async def _outfit_board_item_list(
+    db: AsyncSession, *, outfit_id: uuid.UUID, user_id: uuid.UUID
+) -> list[dict[str, str]]:
+    rows = (
+        await db.execute(
+            select(OutfitItem, WardrobeItem, WardrobeItemImage)
+            .join(
+                WardrobeItem,
+                OutfitItem.item_id == WardrobeItem.id,
+            )
+            .outerjoin(WardrobeItemImage, WardrobeItemImage.item_id == WardrobeItem.id)
+            .where(
+                OutfitItem.outfit_id == outfit_id,
+                WardrobeItem.user_id == user_id,
+                WardrobeItem.deleted_at.is_(None),
+            )
+            .order_by(OutfitItem.display_order)
+        )
+    ).all()
+    item_images: dict[uuid.UUID, dict[str, WardrobeItemImage]] = {}
+    items: dict[uuid.UUID, WardrobeItem] = {}
+    roles: dict[uuid.UUID, str] = {}
+    for outfit_item, item, image in rows:
+        items[item.id] = item
+        roles[item.id] = outfit_item.role
+        if image is not None and image.image_type not in item_images.setdefault(item.id, {}):
+            item_images[item.id][image.image_type] = image
+
+    item_list: list[dict[str, str]] = []
+    for item_id, item in items.items():
+        images = item_images.get(item_id, {})
+        board_item = {"role": roles[item_id], "category": item.category}
+
+        cutout = images.get("cutout")
+        if cutout is not None:
+            if cutout.object_key:
+                board_item["cutout_object_key"] = cutout.object_key
+            elif cutout.image_url:
+                board_item["cutout_image_url"] = cutout.image_url
+        elif item.cutout_status == "ready" and item.cover_image_url:
+            # No durable object key exists for this legacy row; retain a URL-only
+            # fallback rather than snapshotting a request-time signed URL.
+            board_item["cutout_image_url"] = item.cover_image_url
+
+        thumbnail = next(
+            (
+                images[kind]
+                for kind in _IMAGE_TYPE_PRIORITY[1:]
+                if kind in images and (images[kind].object_key or images[kind].image_url)
+            ),
+            None,
+        )
+        if thumbnail is not None:
+            if thumbnail.object_key:
+                board_item["thumbnail_object_key"] = thumbnail.object_key
+            elif thumbnail.image_url:
+                board_item["thumbnail_url"] = thumbnail.image_url
+        else:
+            thumbnail_url = item.cover_image_url or item.original_image_url
+            if thumbnail_url:
+                board_item["thumbnail_url"] = thumbnail_url
+
+        item_list.append(board_item)
+    return item_list
+
+
+@router.post(
+    "/outfits/{outfit_id}/share-asset",
+    response_model=OutfitVisualAssetResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_outfit_share_asset(
+    outfit_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+) -> OutfitVisualAssetResponse:
+    """Create or reuse the deterministic board for an owned outfit."""
+    outfit = await SqlAlchemyRecommendationRepository(db).get_outfit_for_user(outfit_id, current_user.id)
+    if outfit is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Outfit not found", status_code=404)
+
+    existing = await _existing_outfit_board_asset(db, user_id=current_user.id, outfit_id=outfit_id)
+    if existing is not None:
+        return _response_for_asset(existing)
+
+    asset = OutfitVisualAsset(
+        user_id=current_user.id,
+        outfit_id=outfit_id,
+        visual_type=VisualType.OUTFIT_BOARD.value,
+        generation_status="queued",
+        input_snapshot={"item_list": await _outfit_board_item_list(db, outfit_id=outfit_id, user_id=current_user.id)},
+    )
+    await SqlAlchemyOutfitVisualRepository(db).add(asset)
+    correlation_id = structlog.contextvars.get_contextvars().get("correlation_id")
+    _job, inserted = await enqueue_outfit_board(
+        db,
+        asset_id=asset.id,
+        outfit_id=outfit_id,
+        layout_version=_OUTFIT_BOARD_LAYOUT_VERSION,
+        user_id=current_user.id,
+        correlation_id=correlation_id if isinstance(correlation_id, str) else None,
+    )
+    if inserted:
+        return _response_for_asset(asset)
+
+    # The job table's unique key resolves a concurrent producer race. Discard
+    # this transaction's contender asset before commit, then return the winner.
+    await db.delete(asset)
+    await db.flush()
+    existing = await _existing_outfit_board_asset(db, user_id=current_user.id, outfit_id=outfit_id)
+    if existing is not None:
+        return _response_for_asset(existing)
+    logger.error("outfit_board_idempotency_target_missing", outfit_id=str(outfit_id))
+    raise FriendlyException(error_codes.INTERNAL_ERROR, "Could not create share asset", status_code=500)
 
 
 @router.get(
@@ -112,16 +272,12 @@ async def _resolve_pending_status(
     from app.infrastructure.persistence.models.async_job import AsyncJob
 
     has_dead_job = await db.scalar(
-        select(AsyncJob.id)
-        .where(AsyncJob.target_id == asset_id, AsyncJob.status == "dead")
-        .limit(1)
+        select(AsyncJob.id).where(AsyncJob.target_id == asset_id, AsyncJob.status == "dead").limit(1)
     )
     if has_dead_job:
         return "failed", current_error_code or "generation_failed"
 
-    if current_status == "queued" and datetime.now(UTC) - created_at > timedelta(
-        minutes=_STALE_QUEUED_MINUTES
-    ):
+    if current_status == "queued" and datetime.now(UTC) - created_at > timedelta(minutes=_STALE_QUEUED_MINUTES):
         return "failed", "worker_unavailable"
 
     return current_status, current_error_code
@@ -151,9 +307,7 @@ async def get_item_images(
     if item is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Item not found", status_code=404)
 
-    img_result = await db.execute(
-        select(WardrobeItemImage).where(WardrobeItemImage.item_id == item_id)
-    )
+    img_result = await db.execute(select(WardrobeItemImage).where(WardrobeItemImage.item_id == item_id))
     images = [
         {
             "image_type": img.image_type,

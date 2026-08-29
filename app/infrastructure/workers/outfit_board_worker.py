@@ -90,14 +90,35 @@ async def enqueue_outfit_board(
     )
 
 
+def _image_from_bytes(data: bytes) -> Image.Image | None:
+    try:
+        return Image.open(io.BytesIO(data)).convert("RGBA")
+    except Exception:
+        return None
+
+
 async def _download_image(url: str) -> Image.Image | None:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url)
             resp.raise_for_status()
-            return Image.open(io.BytesIO(resp.content)).convert("RGBA")
+            return _image_from_bytes(resp.content)
     except Exception:
         return None
+
+
+async def _load_snapshot_image(storage, *, object_key: str | None, fallback_url: str | None) -> Image.Image | None:
+    """Prefer durable object storage while keeping URL-only legacy snapshots readable."""
+    if object_key:
+        try:
+            image = _image_from_bytes(await storage.get_object(object_key))
+            if image is not None:
+                return image
+        except Exception:
+            pass
+    if fallback_url:
+        return await _download_image(fallback_url)
+    return None
 
 
 def _paste_item(canvas: Image.Image, item_img: Image.Image, box: tuple[int, int, int, int]) -> None:
@@ -127,23 +148,28 @@ def _draw_placeholder(canvas: Image.Image, box: tuple[int, int, int, int], label
 
 
 async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str]:
-    """Render the composite board and upload to object storage. Returns
-    `(image_url, object_key)`. Raises on storage / encode failures (the
-    worker converts to mark_failed)."""
+    """Render the composite board and upload to object storage."""
+    from app.bootstrap.container import object_storage
+
     items = snapshot.input_snapshot.get("item_list", [])
     canvas = Image.new("RGBA", (CANVAS_W, CANVAS_H), (255, 255, 255, 255))
+    storage = object_storage()
 
     for item in items:
         role = (item.get("role") or item.get("category") or "top").lower()
         box = LAYOUT.get(role, DEFAULT_BOX)
-        cutout_url = item.get("cutout_image_url")
-        thumb_url = item.get("thumbnail_url")
 
-        img = None
-        if cutout_url:
-            img = await _download_image(cutout_url)
-        if img is None and thumb_url:
-            img = await _download_image(thumb_url)
+        img = await _load_snapshot_image(
+            storage,
+            object_key=item.get("cutout_object_key"),
+            fallback_url=item.get("cutout_image_url"),
+        )
+        if img is None:
+            img = await _load_snapshot_image(
+                storage,
+                object_key=item.get("thumbnail_object_key"),
+                fallback_url=item.get("thumbnail_url"),
+            )
 
         if img is not None:
             _paste_item(canvas, img, box)
@@ -155,9 +181,6 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str]:
     rgb.save(buf, format="JPEG", quality=85)
     buf.seek(0)
 
-    from app.bootstrap.container import object_storage
-
-    storage = object_storage()
     key = f"{snapshot.user_id}/outfit_boards/{snapshot.id}.jpg"
     url = await storage.put_object(key, buf.read(), "image/jpeg")
     return url, key

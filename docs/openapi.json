@@ -4556,6 +4556,82 @@
         }
       }
     },
+    "/v1/outfits/{outfit_id}/share-asset": {
+      "post": {
+        "tags": [
+          "outfit-visual"
+        ],
+        "summary": "Create Outfit Share Asset",
+        "description": "Create or reuse the deterministic board for an owned outfit.",
+        "operationId": "create_outfit_share_asset_v1_outfits__outfit_id__share_asset_post",
+        "parameters": [
+          {
+            "name": "outfit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Outfit Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutfitVisualAssetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/outfit-visual-assets/{asset_id}": {
       "get": {
         "tags": [
