@@ -1,7 +1,8 @@
 from functools import lru_cache
 from typing import Literal, Self
+from urllib.parse import urlsplit
 
-from pydantic import field_validator, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.common.local_time import validate_timezone_name
@@ -296,6 +297,12 @@ class Settings(BaseSettings):
     # so flipping it back is a clean rollback.
     ENABLE_V3_PURCHASE_DECISION: bool = False
 
+    # FE #157: independent, default-off, vendor-neutral telemetry relay.
+    # URL/credential/retention/access approval is a human gate, not a default.
+    ENABLE_V3_ANALYTICS: bool = False
+    V3_ANALYTICS_COLLECTOR_URL: str = ""
+    V3_ANALYTICS_COLLECTOR_TOKEN: SecretStr | None = None
+
     # V3 P0 avatar (docs/v3-p0-contract.md §2, §4). Gates the
     # /v1/avatar-profile* and /v1/avatar-candidates/* surfaces — none of which
     # exist yet (V3-011 is persistence only; V3-012 detects candidates and
@@ -456,6 +463,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 "ENABLE_V3_STATIC_TRYON requires ENABLE_V3_AVATAR"
             )
+        if self.ENABLE_V3_ANALYTICS:
+            collector = urlsplit(self.V3_ANALYTICS_COLLECTOR_URL)
+            allowed_schemes = {"https"} if self.APP_ENV == "prod" else {"http", "https"}
+            if (collector.scheme not in allowed_schemes or not collector.hostname
+                    or collector.username or collector.password or collector.query or collector.fragment):
+                raise ValueError(
+                    "Enabled analytics requires an approved collector URL (HTTPS in prod), "
+                    "without embedded credentials/query/fragment"
+                )
         return self
 
 
