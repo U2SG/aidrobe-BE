@@ -229,7 +229,9 @@ async def confirm_import_items(
     task = await SqlAlchemyImportTaskRepository(session).get_for_user(task_id, current_user.id)
     return ResponseModel(
         data=ConfirmItemsResponse(
-            created_items=[ConfirmedItem(temp_item_id=entry.temp_item_id, item_id=entry.item.id) for entry in confirmed],
+            created_items=[
+                ConfirmedItem(temp_item_id=entry.temp_item_id, item_id=entry.item.id) for entry in confirmed
+            ],
             task_status=task.task_status if task else None,
         )
     )
