@@ -63,6 +63,12 @@ REPETITION_PENALTY = 0.2
 # soft penalty — never a hard exclude — so it stays reversible.
 SUPPRESSION_SIMILARITY_THRESHOLD = REPETITION_SIMILARITY_THRESHOLD
 SUPPRESSION_PENALTY = 0.5
+# Thermal feedback (see feedback_learning.thermal_offset_c). Runs warm: an outer
+# layer on a mild "feels like" day is what they complained about. Runs cold: no
+# layer on a cold "feels like" day. Either loses to the same look adjusted.
+MILD_FOR_WARM_RUNNER_C = 15.0
+COLD_FEELS_LIKE_C = 10.0
+THERMAL_FEEDBACK_PENALTY = 0.3
 # BE#46 — per-item penalty applied when an item's color matches an explicit
 # user-stated NEGATIVE color preference. Multiplied by how many items in the
 # combo match, so an outfit built mostly of disliked colors is pushed well below
@@ -149,6 +155,7 @@ class RecommendationEngine:
         suppressed_outfit_item_ids: list[set[str]] | None = None,
         indoor_climate: IndoorClimateSignal | None = None,
         context_constraints: list[str] | None = None,
+        thermal_offset_c: float = 0.0,
     ) -> EngineResult:
         recent_worn_main_item_ids = recent_worn_main_item_ids or set()
         context_constraints = context_constraints or []
@@ -174,6 +181,7 @@ class RecommendationEngine:
             disliked_colors,
             indoor_climate,
             context_constraints,
+            thermal_offset_c,
         )
         if not candidates:
             return EngineResult(
@@ -281,6 +289,7 @@ class RecommendationEngine:
                     item_ids=[i for i in outfit.item_ids if i in item_by_id],
                     main_item_id=self._main_item(outfit.item_ids, wearable),
                     indoor_climate=indoor_climate.tendency if indoor_climate else None,
+                    thermal_offset_c=thermal_offset_c,
                 ),
             )
             for outfit in selected
@@ -311,6 +320,7 @@ class RecommendationEngine:
         disliked_colors: set[str],
         indoor_climate: IndoorClimateSignal | None = None,
         context_constraints: list[str] | None = None,
+        thermal_offset_c: float = 0.0,
     ) -> list[EngineOutfit]:
         context_constraints = context_constraints or []
         # BE#78 — "不想穿裙子" excludes dresses AND skirts (stored as bottom items
@@ -373,6 +383,7 @@ class RecommendationEngine:
                         disliked_colors,
                         indoor_climate,
                         context_constraints,
+                        thermal_offset_c,
                     )
                 )
         return candidates
@@ -389,6 +400,7 @@ class RecommendationEngine:
         disliked_colors: set[str],
         indoor_climate: IndoorClimateSignal | None = None,
         context_constraints: list[str] | None = None,
+        thermal_offset_c: float = 0.0,
     ) -> EngineOutfit:
         context_constraints = context_constraints or []
         colors = [item.color_main for item in combo]
@@ -399,6 +411,7 @@ class RecommendationEngine:
         aesthetic_score = compute_aesthetic_score(colors, categories, style_profile)
         time_cost_score = self._time_cost_score(combo)
         weather_score = self._weather_score(combo, weather)
+        thermal_penalty = self._thermal_feedback_penalty(combo, weather, thermal_offset_c)
         fit_score = self._fit_score(combo, fit_profile)
         repetition_penalty = self._repetition_penalty(combo, recent_worn_outfit_item_ids)
         # BE#46 — explicit negative color preference: one penalty unit per item
@@ -430,6 +443,7 @@ class RecommendationEngine:
                 + fit_score * 0.10
                 - repetition_penalty
                 - disliked_penalty
+                - thermal_penalty
                 + indoor_climate_bonus
                 + context_bonus
             )
@@ -441,6 +455,7 @@ class RecommendationEngine:
                 + type_boost
                 - repetition_penalty
                 - disliked_penalty
+                - thermal_penalty
                 + indoor_climate_bonus
                 + context_bonus
             )
@@ -451,6 +466,7 @@ class RecommendationEngine:
                 + type_boost
                 - repetition_penalty
                 - disliked_penalty
+                - thermal_penalty
                 + indoor_climate_bonus
                 + context_bonus
             )
@@ -479,6 +495,8 @@ class RecommendationEngine:
         # BE#78 — same rule: only surface when an override is actually applied.
         if context_constraints:
             score_breakdown["context_bonus"] = context_bonus
+        if thermal_penalty:
+            score_breakdown["thermal_feedback_penalty"] = thermal_penalty
         return EngineOutfit(
             outfit_type=outfit_type,
             title=title,
@@ -589,6 +607,25 @@ class RecommendationEngine:
         ):
             score -= 0.25
         return _clamp_score(score)
+
+    def _thermal_feedback_penalty(
+        self, combo: list[EngineItem], weather: WeatherInfo | None, thermal_offset_c: float
+    ) -> float:
+        """Penalty from the user's own "too warm" / "too cold" feedback.
+
+        Applied in every scoring branch (the weather score only counts once a
+        style profile exists, so a new user's comfort feedback would otherwise
+        never change anything). 0 without feedback or weather → legacy ranking.
+        """
+        if weather is None or thermal_offset_c == 0:
+            return 0.0
+        feels_like_c = weather.temperature_c + thermal_offset_c
+        has_outer = any(item.category == Category.OUTERWEAR.value for item in combo)
+        if thermal_offset_c > 0 and feels_like_c >= MILD_FOR_WARM_RUNNER_C and has_outer:
+            return THERMAL_FEEDBACK_PENALTY  # was too warm with a layer on
+        if thermal_offset_c < 0 and feels_like_c < COLD_FEELS_LIKE_C and not has_outer:
+            return THERMAL_FEEDBACK_PENALTY  # was too cold without one
+        return 0.0
 
     def _indoor_climate_score(
         self, combo: list[EngineItem], indoor_climate: IndoorClimateSignal | None

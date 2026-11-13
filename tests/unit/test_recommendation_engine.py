@@ -451,3 +451,57 @@ async def test_llm_only_polishes_selected_outfits() -> None:
     assert llm.calls == len(result.outfits) <= 3
     assert all(outfit.reason_text == "AI润色" for outfit in result.outfits)
     assert result.llm_boundary_used is True
+
+
+# ── Thermal feedback ("too warm" / "too cold") ────────────────────────────
+
+
+def _layered_wardrobe() -> list[EngineItem]:
+    return [
+        EngineItem("t1", "White tee", "top", "white"),
+        EngineItem("t2", "Grey tee", "top", "grey"),
+        EngineItem("b1", "Navy chinos", "bottom", "navy"),
+        EngineItem("o1", "Beige trench", "outerwear", "beige"),
+        EngineItem("s1", "Brown loafers", "shoes", "brown"),
+    ]
+
+
+def _weather(temperature_c: float) -> WeatherInfo:
+    return WeatherInfo(
+        temperature_c=temperature_c, feels_like_c=temperature_c, rain_probability=0.0, condition="多云"
+    )
+
+
+@pytest.mark.asyncio
+async def test_too_warm_feedback_drops_the_outer_layer_on_a_mild_day() -> None:
+    result = await RecommendationEngine().generate(
+        _layered_wardrobe(), weather=_weather(16), thermal_offset_c=3.0
+    )
+
+    assert result.status == "ready"
+    assert all("o1" not in outfit.item_ids for outfit in result.outfits)
+    assert all(outfit.reasoning[0]["type"] == "feedback" for outfit in result.outfits)
+    assert result.outfits[0].reasoning[0]["text"] == "你上次说太热，这次没加外层"
+    layered = [c for c in result.candidates if "o1" in c.item_ids]
+    assert layered and all(c.score_breakdown["thermal_feedback_penalty"] > 0 for c in layered)
+
+
+@pytest.mark.asyncio
+async def test_too_cold_feedback_adds_a_layer_before_the_forecast_says_cold() -> None:
+    # 14°C is not "cold" by the forecast, but this user said "too cold" twice.
+    result = await RecommendationEngine().generate(
+        _layered_wardrobe(), weather=_weather(14), thermal_offset_c=-6.0
+    )
+
+    assert all("o1" in outfit.item_ids for outfit in result.outfits)
+    reason = result.outfits[0].reasoning[0]
+    assert reason["type"] == "feedback"
+    assert reason["referenced_item_ids"] == ["o1"]
+
+
+@pytest.mark.asyncio
+async def test_no_thermal_feedback_keeps_legacy_scores() -> None:
+    result = await RecommendationEngine().generate(_layered_wardrobe(), weather=_weather(16))
+
+    assert all("thermal_feedback_penalty" not in c.score_breakdown for c in result.candidates)
+    assert all(r["type"] != "feedback" for outfit in result.outfits for r in outfit.reasoning)
