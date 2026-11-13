@@ -78,6 +78,11 @@ DEFAULT_DURABLE_MIN_COUNT = 3
 # capped at ±THERMAL_MAX_C, so one report changes the next generation.
 TOO_WARM = "too_warm"
 TOO_COLD = "too_cold"
+TOO_FORMAL = "too_formal"
+TOO_CASUAL = "too_casual"
+# Net "too casual" minus "too formal" reports, capped: < 0 = steer away from
+# business-level looks, > 0 = away from very casual ones.
+FORMALITY_BIAS_MAX = 2
 THERMAL_STEP_C = 3.0
 THERMAL_MAX_C = 6.0
 
@@ -110,6 +115,8 @@ class LearningSignals:
     # Added to the forecast before weather rules: > 0 = this user runs warm
     # (said "too warm"), < 0 = runs cold. 0 when there is no such feedback.
     thermal_offset_c: float = 0.0
+    # < 0 after "too formal", > 0 after "too casual"; 0 without such feedback.
+    formality_bias: int = 0
 
 
 def normalize_event(event_type: str, reason_tags: Iterable[str] | None) -> set[str]:
@@ -157,6 +164,7 @@ def derive_learning_signals(
     cutoff = now - timedelta(days=suppression_days)
     signal_counts: Counter[str] = Counter()
     thermal_net = 0
+    formality_net = 0
     # Per signature, the most-recent suppression vs positive timestamps. A later
     # like/save/wear on the same look revokes an earlier dislike/dismiss.
     suppress_at: dict[frozenset[str], datetime] = {}
@@ -179,6 +187,7 @@ def derive_learning_signals(
                 positive_at[signature] = max(positive_at.get(signature, stamp), stamp)
         tags = {tag.strip().lower() for tag in _reason_tags(event.event_metadata)}
         thermal_net += (TOO_WARM in tags) - (TOO_COLD in tags)
+        formality_net += (TOO_CASUAL in tags) - (TOO_FORMAL in tags)
         # Durable-preference counting (only the self-describing reason signals).
         signals = normalize_event(event.event_type, _reason_tags(event.event_metadata))
         for signal in signals:
@@ -202,4 +211,5 @@ def derive_learning_signals(
         suppressed_signatures=suppressed,
         weak_preferences=weak,
         thermal_offset_c=thermal_offset,
+        formality_bias=max(-FORMALITY_BIAS_MAX, min(FORMALITY_BIAS_MAX, formality_net)),
     )

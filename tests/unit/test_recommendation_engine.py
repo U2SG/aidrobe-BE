@@ -505,3 +505,60 @@ async def test_no_thermal_feedback_keeps_legacy_scores() -> None:
 
     assert all("thermal_feedback_penalty" not in c.score_breakdown for c in result.candidates)
     assert all(r["type"] != "feedback" for outfit in result.outfits for r in outfit.reasoning)
+
+
+# ── Recognised attributes: season and formality ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_out_of_season_garments_lose_to_in_season_ones() -> None:
+    items = [
+        EngineItem("wool", "Wool jumper", "top", "white", season_tags=("winter",)),
+        EngineItem("tee", "Linen tee", "top", "white", season_tags=("summer",)),
+        EngineItem("b1", "Chinos", "bottom", "navy"),  # untagged: never penalised
+        EngineItem("s1", "Loafers", "shoes", "brown"),
+    ]
+    result = await RecommendationEngine().generate(items, target_date=date(2026, 7, 15))
+
+    assert "tee" in result.outfits[0].item_ids
+    wool = [c for c in result.candidates if "wool" in c.item_ids]
+    assert wool and all(c.score_breakdown["out_of_season_penalty"] == 0.15 for c in wool)
+    tee = [c for c in result.candidates if "tee" in c.item_ids]
+    assert all("out_of_season_penalty" not in c.score_breakdown for c in tee)
+
+
+def _formality_wardrobe() -> list[EngineItem]:
+    return [
+        EngineItem("blazer", "Blazer shirt", "top", "white", formality_score=90),
+        EngineItem("tee", "Tee", "top", "white", formality_score=30),
+        EngineItem("b1", "Chinos", "bottom", "navy", formality_score=50),
+        EngineItem("s1", "Loafers", "shoes", "brown"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_too_formal_feedback_picks_the_more_casual_look_and_says_why() -> None:
+    result = await RecommendationEngine().generate(_formality_wardrobe(), formality_bias=-1)
+
+    first = result.outfits[0]
+    assert "tee" in first.item_ids
+    assert first.reasoning[0]["type"] == "feedback"
+    assert first.reasoning[0]["text"] == "你上次说太正式，这次选了更日常的一套"
+    formal = [c for c in result.candidates if "blazer" in c.item_ids]
+    assert formal and all(c.score_breakdown["formality_feedback_penalty"] > 0 for c in formal)
+
+
+@pytest.mark.asyncio
+async def test_meeting_override_prefers_recognised_business_formality() -> None:
+    result = await RecommendationEngine().generate(_formality_wardrobe(), context_constraints=["formal"])
+
+    assert "blazer" in result.outfits[0].item_ids
+
+
+@pytest.mark.asyncio
+async def test_without_attributes_or_feedback_scores_are_unchanged() -> None:
+    result = await RecommendationEngine().generate(_formality_wardrobe(), target_date=date(2026, 7, 15))
+
+    keys = {"out_of_season_penalty", "formality_feedback_penalty"}
+    assert all(not keys & c.score_breakdown.keys() for c in result.candidates)
+    assert all(r["type"] != "feedback" for outfit in result.outfits for r in outfit.reasoning)

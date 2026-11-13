@@ -52,6 +52,10 @@ from app.common.enums import Category
 _COLD_C = 10.0
 _WARM_C = 22.0
 _RAIN_PROB = 0.5
+# Mirrors engine.BUSINESS_FORMALITY / CASUAL_FORMALITY (0..100 item scale);
+# duplicated rather than imported to keep this module import-cycle-free.
+_BUSINESS_FORMALITY = 60.0
+_CASUAL_FORMALITY = 40.0
 _LIGHT_SHOE_COLORS = {"white", "ivory", "cream", "beige", "light gray", "light grey", "silver"}
 
 # Reasoning item `type`s (FE renders/keys off these).
@@ -93,6 +97,8 @@ def build_reasoning(
     main_item_id: str | None = None,
     indoor_climate: str | None = None,
     thermal_offset_c: float = 0.0,
+    formality_bias: int = 0,
+    formality_mean: float | None = None,
     max_items: int = 4,
 ) -> list[dict[str, Any]]:
     """Return 2–4 grounded reasons (Chinese) with source provenance (BE#85).
@@ -144,6 +150,23 @@ def build_reasoning(
                 source="feedback_learning",
                 confidence="high",
                 referenced_item_ids=outerwear_ids,
+            ))
+
+    # 0b. "Too formal" / "too casual" feedback, when this look honours it.
+    if formality_bias and formality_mean is not None:
+        if formality_bias < 0 and formality_mean < _BUSINESS_FORMALITY:
+            reasons.append(_entry(
+                FEEDBACK,
+                "你上次说太正式，这次选了更日常的一套",
+                source="feedback_learning",
+                confidence="high",
+            ))
+        elif formality_bias > 0 and formality_mean > _CASUAL_FORMALITY:
+            reasons.append(_entry(
+                FEEDBACK,
+                "你上次说太随意，这次选了更利落的一套",
+                source="feedback_learning",
+                confidence="high",
             ))
 
     # 1. Weather — only claims that match the actual outfit + forecast.
