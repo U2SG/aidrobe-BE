@@ -131,36 +131,62 @@ services:
       timeout: 3s
       retries: 5
 
+  # S3-compatible object store. MinIO stopped publishing community images
+  # (minio/minio is gone from Docker Hub), so this runs RustFS (Apache-2.0,
+  # S3 API incl. presigned POST). The service keeps the name `minio`: clients
+  # rewrite presigned upload URLs whose host is `minio`, and S3_ENDPOINT_URL
+  # points here. Data written by the old MinIO image is not readable by RustFS.
   minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
+    image: rustfs/rustfs:1.0.5
     environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-minioadmin}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-minioadmin}
     volumes:
       - minio-data:/data
     ports:
       - "9000:9000"
       - "9001:9001"
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD", "nc", "-z", "localhost", "9000"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
+  # Creates the bucket and makes objects anonymously readable (image URLs are
+  # served straight from S3_PUBLIC_BASE_URL). Uses boto3 from the app image.
   minio-init:
-    image: minio/mc:latest
+    build: .
     depends_on:
       minio:
         condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-        mc alias set local http://minio:9000 $${S3_ACCESS_KEY_ID:-minioadmin} $${S3_SECRET_ACCESS_KEY:-minioadmin};
-        mc mb --ignore-existing local/$${S3_BUCKET:-aidrobe};
-        mc anonymous set download local/$${S3_BUCKET:-aidrobe};
-        exit 0;
-      "
+    environment:
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-aidrobe}
+    command:
+      - python
+      - -c
+      - |
+        import json, os, boto3
+        bucket = os.environ["S3_BUCKET"]
+        s3 = boto3.client(
+            "s3",
+            endpoint_url="http://minio:9000",
+            aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
+            aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
+            region_name="us-east-1",
+        )
+        if bucket not in {b["Name"] for b in s3.list_buckets().get("Buckets", [])}:
+            s3.create_bucket(Bucket=bucket)
+        s3.put_bucket_policy(Bucket=bucket, Policy=json.dumps({
+            "Version": "2012-10-17",
+            "Statement": [{"Effect": "Allow", "Principal": {"AWS": ["*"]},
+                           "Action": ["s3:GetObject"], "Resource": [f"arn:aws:s3:::{bucket}/*"]}],
+        }))
+        print(f"bucket {bucket} ready")
     restart: "no"
+    healthcheck:
+      disable: true
 
   nginx:
     image: nginx:1.27-alpine
