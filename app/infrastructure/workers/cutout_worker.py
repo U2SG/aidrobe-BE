@@ -121,29 +121,35 @@ async def _apply_result(
     cutout_url: str,
     cutout_key: str,
 ) -> None:
-    """Point the item's cover + `standard` image row at the finished cutout."""
+    """Store the finished cutout as the item's `cutout` image and mark it ready.
+
+    The cover and the `standard` image stay on the user's own photo. The
+    provider is a generative re-render (gpt-image-2), which can quietly change
+    colour, pattern or cut, so it must never replace what the user uploaded;
+    clients that want the product shot read the `cutout` image row.
+    """
     now = datetime.now(UTC)
     await session.execute(
         update(WardrobeItem)
         .where(WardrobeItem.id == item_id)
-        .values(cover_image_url=cutout_url, cutout_status=CutoutStatus.READY.value)
+        .values(cutout_status=CutoutStatus.READY.value)
     )
-    standard = (
+    existing = (
         await session.execute(
             select(WardrobeItemImage).where(
                 WardrobeItemImage.item_id == item_id,
-                WardrobeItemImage.image_type == ImageType.STANDARD.value,
+                WardrobeItemImage.image_type == ImageType.CUTOUT.value,
             )
         )
     ).scalar_one_or_none()
-    if standard is not None:
-        standard.image_url = cutout_url
-        standard.object_key = cutout_key
+    if existing is not None:
+        existing.image_url = cutout_url
+        existing.object_key = cutout_key
     else:
         session.add(
             WardrobeItemImage(
                 item_id=item_id,
-                image_type=ImageType.STANDARD.value,
+                image_type=ImageType.CUTOUT.value,
                 image_url=cutout_url,
                 object_key=cutout_key,
                 created_at=now,
