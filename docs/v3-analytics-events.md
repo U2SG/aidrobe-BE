@@ -21,6 +21,11 @@ event is emitted yet — emitters ship with the feature that owns the surface
 (PostHog, self-hosted, warehouse) is not part of P0; FE keeps the existing
 `setAnalyticsDispatcher` seam and BE keeps its structured logger.
 
+**Current transport (FE #157 / V3-023 follow-up):** emitters now exist on both
+sides. The default-off release dispatcher and API/worker HTTP delivery port are
+implemented in `docs/v3-telemetry-transport.md`. That follow-up does not change
+this event vocabulary or approve a production collector/retention policy.
+
 ## 1. Envelope
 
 Every event carries exactly these fields:

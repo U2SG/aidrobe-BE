@@ -364,10 +364,11 @@ PIPELINE_PREREQUISITES: tuple[PrerequisiteSpec, ...] = (
         requirement="A sink that persists emitted events somewhere queryable.",
         met=False,
         detail=(
-            "BE emits through structlog into application logs — no schema, no retention guarantee, "
-            "not queryable as events. FE never calls setAnalyticsDispatcher, so the 7 fe-owned events "
-            "reach a __DEV__ console.log and nothing at all in a release build. This is the single "
-            "reason the dashboard has no numbers, and it is the largest one."
+            "FE #157 registers a default-off, allowlisted release dispatcher and an authenticated BE relay; "
+            "BE API and worker emitters share a bounded HTTP delivery port. Synthetic local query evidence "
+            "proves wiring, not a deployed durable collector. Collector selection, per-environment "
+            "credentials, retention/access/deletion approval and real paired-build delivery verification "
+            "remain open. No production event collection is enabled and this prerequisite remains unmet."
         ),
         human_gate="telemetry_sink",
     ),

@@ -1,9 +1,7 @@
-"""BE-side V3 analytics emission — the structured-logger sink V3-002 chose.
+"""BE-side validated V3 events through the API/worker delivery port.
 
-The contract (`docs/v3-analytics-events.md` §0) keeps the backend on its
-structured logger until a real sink is picked post-P0, and requires every
-emitter to validate against the frozen registry first. This module is that
-single seam: features never call the logger directly for V3 events.
+No event properties are copied into general application logs: the independently
+disabled collector must not leave a second uncontrolled analytics copy.
 """
 
 from __future__ import annotations
@@ -14,11 +12,19 @@ from datetime import UTC, datetime
 
 import structlog
 
+from app.common.analytics_delivery import publish_records, validate_record
 from app.common.analytics_events import CONTRACT_SCHEMA_VERSION, validate_v3_event
 
 logger = structlog.get_logger("v3_analytics")
 
 _PLATFORM_BACKEND = "backend"
+
+
+def _warn_invalid_event() -> None:
+    try:
+        logger.warning("v3_analytics_event_invalid")
+    except Exception:
+        pass  # Even diagnostic logging must not break a business request.
 
 
 def emit_v3_event(
@@ -30,14 +36,17 @@ def emit_v3_event(
 ) -> bool:
     """Validate one event against the frozen contract, then emit it.
 
+    True means a valid event, not durable delivery. The default-off API/worker
+    port handles best-effort export independently.
+
     Returns ``False`` (with a field-free warning — event payloads must never
     leak through an error path) instead of raising: analytics must never fail
     the request that produced them.
     """
     try:
         validate_v3_event(event_name, fields, flow_id=flow_id)
-    except ValueError as exc:
-        logger.warning("v3_analytics_event_invalid", event_name=event_name, reason=str(exc))
+    except (ValueError, TypeError):
+        _warn_invalid_event()
         return False
     envelope: dict[str, object] = {
         "schema_version": CONTRACT_SCHEMA_VERSION,
@@ -47,5 +56,14 @@ def emit_v3_event(
     }
     if flow_id is not None:
         envelope["flow_id"] = flow_id
-    logger.info(event_name, **envelope, **dict(fields))
+    try:
+        record = validate_record(
+            {"event_id": str(uuid.uuid4()), "event_name": event_name, "properties": {**envelope, **dict(fields)}},
+            owner="be", user_id=user_id,
+        )
+    except (ValueError, TypeError):
+        _warn_invalid_event()
+        return False
+    # No payload fallback to application logs when the port is disabled/down.
+    publish_records([record])
     return True

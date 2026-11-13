@@ -78,6 +78,74 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/analytics/events:
+    post:
+      tags:
+      - analytics
+      summary: Ingest Events
+      operationId: ingest_events_v1_analytics_events_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '202':
+          description: Accepted into bounded memory; not a durability acknowledgement.
+          content:
+            application/json:
+              schema: {}
+        '413':
+          description: Body exceeds 16 KiB.
+        '422':
+          description: Invalid event, ownership, identity, envelope or payload; input
+            is never echoed.
+        '503':
+          description: Telemetry disabled or queue unavailable/full.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - events
+              properties:
+                events:
+                  type: array
+                  minItems: 1
+                  maxItems: 8
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                    - event_id
+                    - event_name
+                    - properties
+                    properties:
+                      event_id:
+                        type: string
+                        format: uuid
+                      event_name:
+                        type: string
+                        description: FE-owned name in the frozen V3 registry.
+                      properties:
+                        type: object
+                        description: Frozen V3 envelope + per-event allowlist; runtime
+                          validated.
   /healthz:
     get:
       summary: Health

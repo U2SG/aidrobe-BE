@@ -8,6 +8,7 @@ except ImportError:  # arq is optional at runtime
     cron = None  # type: ignore[assignment]
 
 from app.application.fit_profile.build_fit_profile import build_all_fit_profiles
+from app.bootstrap.analytics import analytics_worker_shutdown, analytics_worker_startup
 from app.config.settings import get_settings
 from app.infrastructure.persistence.session import AsyncSessionLocal
 from app.infrastructure.workers.avatar_candidate_worker import drain_avatar_candidate_jobs
@@ -83,6 +84,8 @@ settings = get_settings()
 
 
 class WorkerSettings:
+    on_startup = analytics_worker_startup
+    on_shutdown = analytics_worker_shutdown
     functions = [
         process_import_task,
         process_image_job,

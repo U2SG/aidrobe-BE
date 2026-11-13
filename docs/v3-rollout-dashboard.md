@@ -82,7 +82,8 @@ The chain each kill criterion depends on:
 kill criterion -> metric -> event field -> event -> emitter on the owning side -> sink
 ```
 
-Every link is asserted by the two test files except the last. A field resolves
+Contract links are asserted by the two drift tests. FE #157 additionally tests
+the transport against a synthetic collector; production durability remains open. A field resolves
 if it is an envelope field or is carried by **at least one** of the metric's
 events — the union, not the intersection, because a metric legitimately joins
 events with different field sets (`consent_prompt_completion_delta` reads
@@ -113,11 +114,12 @@ re-classify them in either direction (asserted). Faking a proxy number for
 `pipeline_prerequisites` in the artifact records this as data. Met: the frozen
 contract, and an emitter for all 11 events on the declared owning side. Unmet:
 
-1. **No sink.** BE emits through `structlog` into application logs — no schema,
-   no retention guarantee, not queryable as events. FE never calls
-   `setAnalyticsDispatcher`, so the 7 fe-owned events reach a `__DEV__`
-   `console.log` and nothing at all in a release build. This is the single
-   largest gap between this contract and a dashboard with numbers on it.
+1. **No approved deployed durable collector.** FE #157 now registers the default-off
+   release dispatcher; FE relay ingestion and the four BE-owned events share the
+   same API/worker delivery port. A synthetic local SQLite-backed HTTP fixture
+   can verify joined flows, but it does not choose a production processor,
+   guarantee retention/deletion/access, or prove a deployed build. Those remain
+   the `telemetry_sink` human gate. The pipeline prerequisite stays **unmet**.
 2. **Flags off**, so no V3 event is produced at all. Deliberately unmet —
    V3-023 acceptance 3 requires it.
 
