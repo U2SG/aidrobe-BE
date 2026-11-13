@@ -481,3 +481,46 @@ async def test_confirm_enqueues_item_embedding(db_session: AsyncSession) -> None
     )
     assert len(jobs) == 1
     assert jobs[0].payload["item_id"] == str(item_id)
+
+
+async def test_confirm_copies_recognised_attributes_onto_the_item(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        task_id = await create_task(client, user_id)
+        polled = await client.get(f"/v1/import-tasks/{task_id}", headers={"X-User-Id": str(user_id)})
+        response = await client.post(
+            f"/v1/import-tasks/{task_id}/confirm",
+            headers={"X-User-Id": str(user_id)},
+            json={"title": "Office shirt", "category": "top", "color_main": "white"},
+        )
+
+    candidate = polled.json()["data"]["candidate_item"]
+    assert candidate["formality_score"] == 50
+    assert candidate["season_tags"] == ["spring", "summer", "autumn"]
+    item = await db_session.get(WardrobeItem, uuid.UUID(response.json()["data"]["item_id"]))
+    assert item is not None
+    assert item.formality_score == 50
+    assert item.season_tags == {"tags": ["spring", "summer", "autumn"]}
+    assert item.material == "cotton"
+    assert item.style_tags == ["minimal", "classic"]
+
+
+async def test_correcting_the_category_drops_recognised_attributes(db_session: AsyncSession) -> None:
+    # Recognition said "top" (a cotton shirt); the user says these are shoes.
+    user_id = uuid.uuid4()
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        task_id = await create_task(client, user_id)
+        response = await client.post(
+            f"/v1/import-tasks/{task_id}/confirm",
+            headers={"X-User-Id": str(user_id)},
+            json={"title": "Loafers", "category": "shoes", "color_main": "brown"},
+        )
+
+    item = await db_session.get(WardrobeItem, uuid.UUID(response.json()["data"]["item_id"]))
+    assert item is not None
+    assert item.formality_score is None
+    assert item.season_tags is None
+    assert item.material is None
+    assert item.style_tags is None

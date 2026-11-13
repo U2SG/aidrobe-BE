@@ -115,6 +115,20 @@ async def test_wardrobe_list_filters_status_season_color(db_session: AsyncSessio
     assert combined.json()["data"]["items"][0]["title"] == "Blue spring tee"
 
 
+async def test_season_filter_includes_all_season_items(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    await _seed_item(db_session, user_id, title="Wool trousers", season_tags={"tags": ["all_season"]})
+    await _seed_item(db_session, user_id, title="Winter coat", category="outerwear", season_tags={"tags": ["winter"]})
+    app = build_app(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.get("/v1/wardrobe-items?season=summer", headers={"X-User-Id": str(user_id)})
+
+    assert [item["title"] for item in response.json()["data"]["items"]] == ["Wool trousers"]
+    assert response.json()["data"]["items"][0]["season_tags"] == ["all_season"]
+
+
 @pytest.mark.parametrize("query", ["status=bogus", "season=rainy"])
 async def test_wardrobe_list_rejects_invalid_filter_values(
     db_session: AsyncSession, query: str

@@ -29,6 +29,25 @@ _STYLE_VOCABULARY = (
 _MAX_TAGS = 8
 _MAX_TAG_LEN = 24
 
+# Garment attributes the recommender ranks on. The model answers formality on a
+# 1–5 ladder (more reliable than a 0–100 guess); it is stored on the 0–100
+# WardrobeItem scale. Anything outside these vocabularies is dropped as unknown.
+_FORMALITY_LADDER = {1: 10, 2: 30, 3: 50, 4: 70, 5: 90}
+_SEASONS = ("spring", "summer", "autumn", "winter")
+_MATERIALS = (
+    "cotton", "denim", "linen", "wool", "cashmere", "knit", "silk", "leather",
+    "suede", "polyester", "nylon", "down", "fleece", "canvas", "synthetic",
+)
+_MAX_ITEM_STYLE_TAGS = 4
+_ATTRIBUTE_PROMPT = (
+    "Also return: formality — an integer 1 to 5 (1 sportswear or loungewear, "
+    "2 casual, 3 smart casual, 4 business, 5 formal or evening); seasons — an array "
+    "drawn from spring, summer, autumn, winter (use [\"all_season\"] when it suits "
+    "every season); material — one word from " + ", ".join(_MATERIALS) + ", or null if "
+    "unclear; style_tags — up to 4 words from: " + _STYLE_VOCABULARY + ". "
+    "Judge only what is visible; use null or [] rather than guessing."
+)
+
 
 def build_vision_prompt(locale: str) -> str:
     resolved = resolve_locale(locale)
@@ -43,7 +62,8 @@ def build_vision_prompt(locale: str) -> str:
         f"display_name MUST be a natural {language} name for the item — do not "
         f"return English for display_name unless the item genuinely has no "
         f"{language} name. "
-        "confidence_score must be a number from 0 to 1."
+        "confidence_score must be a number from 0 to 1. "
+        + _ATTRIBUTE_PROMPT
     )
 
 
@@ -60,8 +80,9 @@ def build_outfit_vision_prompt(locale: str) -> str:
         "(stable English snake_case; never translate it). color_main must be a stable "
         "English color word. canonical_name must be a short English name. "
         f"display_name MUST be a natural {language} name for the garment. "
-        "confidence_score must be a number from 0 to 1. If no garment is visible, "
-        "return {\"items\": []}."
+        "confidence_score must be a number from 0 to 1. "
+        + _ATTRIBUTE_PROMPT
+        + " Give these per garment. If no garment is visible, return {\"items\": []}."
     )
 
 
@@ -262,4 +283,44 @@ class QwenVision:
             canonical_name=canonical,
             display_name=display,
             localized_names={locale: display} if display else {},
+            **garment_attributes(data),
         )
+
+
+def garment_attributes(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the optional attribute keys of one model answer.
+
+    Lenient by design: a missing, malformed or out-of-vocabulary value becomes
+    "unknown" instead of failing the import — naming and category are what the
+    import cannot do without, these only sharpen ranking.
+    """
+    formality: int | None = None
+    raw_formality = data.get("formality")
+    if isinstance(raw_formality, int | float) and not isinstance(raw_formality, bool):
+        formality = _FORMALITY_LADDER.get(round(raw_formality))
+
+    raw_seasons = data.get("seasons")
+    seasons: list[str] = []
+    if isinstance(raw_seasons, list):
+        words = {str(w).strip().lower() for w in raw_seasons}
+        if "all_season" in words or set(_SEASONS) <= words:
+            seasons = ["all_season"]
+        else:
+            seasons = [season for season in _SEASONS if season in words]
+
+    raw_material = data.get("material")
+    material = str(raw_material).strip().lower() if isinstance(raw_material, str) else None
+    if material not in _MATERIALS:
+        material = None
+
+    raw_styles = data.get("style_tags")
+    styles: list[str] = []
+    if isinstance(raw_styles, list):
+        for word in raw_styles:
+            tag = str(word).strip().lower()[:_MAX_TAG_LEN]
+            if tag and tag.replace(" ", "").isalpha() and tag not in styles:
+                styles.append(tag)
+            if len(styles) == _MAX_ITEM_STYLE_TAGS:
+                break
+
+    return {"formality_score": formality, "season_tags": seasons, "material": material, "style_tags": styles}

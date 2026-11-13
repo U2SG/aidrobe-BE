@@ -19,6 +19,16 @@ class VisionResult:
     canonical_name: str = ""
     display_name: str = ""
     localized_names: dict[str, str] = field(default_factory=dict)
+    # Attributes the recommender ranks on. All optional: absent means unknown
+    # (never "neutral"), and readers must not penalize unknown values.
+    # - formality_score: 0..100 (the WardrobeItem / scoring scale)
+    # - season_tags: subset of spring/summer/autumn/winter, or ["all_season"]
+    # - material: one lowercase English word
+    # - style_tags: lowercase English descriptors
+    formality_score: int | None = None
+    season_tags: list[str] = field(default_factory=list)
+    material: str | None = None
+    style_tags: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

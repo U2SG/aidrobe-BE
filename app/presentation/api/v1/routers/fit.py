@@ -27,7 +27,7 @@ from app.presentation.api.v1.schemas.fit import (
     FitFeedbackResponse,
     UpdateFitRequest,
 )
-from app.presentation.api.v1.schemas.wardrobe import WardrobeItemResponse
+from app.presentation.api.v1.schemas.wardrobe import WardrobeItemResponse, season_tag_list
 
 router = APIRouter(tags=["fit"])
 
@@ -59,6 +59,10 @@ def item_response(item: WardrobeItem, locale: str) -> WardrobeItemResponse:
         fit_intent=item.fit_intent,
         fit_status=item.fit_status,
         comfort_score=item.comfort_score,
+        material=item.material,
+        season_tags=season_tag_list(item.season_tags),
+        style_tags=item.style_tags if isinstance(item.style_tags, list) else None,
+        formality_score=item.formality_score,
         # A-4: new fields
         last_worn=item.last_worn_at,
         purchase_date=item.purchase_date,

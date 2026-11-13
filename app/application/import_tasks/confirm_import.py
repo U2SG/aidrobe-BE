@@ -307,6 +307,7 @@ class ConfirmImageImportTask:
             fit_intent=fit_intent,
             purchase_price=purchase_price,
             purchase_date=purchase_date,
+            **_recognised_attributes(candidate, confirmed_category=category),
         )
         await self.wardrobe_repository.add(item)
 
@@ -372,6 +373,35 @@ class ConfirmImageImportTask:
                 )
         except Exception:
             logger.warning("import_confirm.embedding_enqueue_failed", item_id=str(item.id), exc_info=True)
+
+
+def _recognised_attributes(candidate: dict[str, Any], *, confirmed_category: str) -> dict[str, Any]:
+    """Recognised attributes from the candidate, in WardrobeItem's shapes.
+
+    Unknown stays NULL (never a default), so rankers can tell "not recognised"
+    from "recognised as neutral". season_tags uses the `{"tags": [...]}` shape
+    the season readers (obstacles, scoring, wardrobe filter) expect.
+
+    When the user corrected the category, recognition looked at (or imagined)
+    a different garment, so its attributes are dropped rather than trusted.
+    """
+    recognised_category = candidate.get("category")
+    if isinstance(recognised_category, str) and recognised_category != confirmed_category:
+        return {}
+    attributes: dict[str, Any] = {}
+    formality = candidate.get("formality_score")
+    if isinstance(formality, int) and not isinstance(formality, bool) and 0 <= formality <= 100:
+        attributes["formality_score"] = formality
+    seasons = candidate.get("season_tags")
+    if isinstance(seasons, list) and seasons:
+        attributes["season_tags"] = {"tags": [str(s) for s in seasons]}
+    material = candidate.get("material")
+    if isinstance(material, str) and material:
+        attributes["material"] = material[:64]
+    styles = candidate.get("style_tags")
+    if isinstance(styles, list) and styles:
+        attributes["style_tags"] = [str(t) for t in styles]
+    return attributes
 
 
 def _to_decimal(value: object) -> Decimal | None:
