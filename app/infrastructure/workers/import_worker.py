@@ -25,6 +25,7 @@ from app.infrastructure.persistence.repositories.import_task_repo import (
     SqlAlchemyImportTaskRepository,
 )
 from app.infrastructure.persistence.session import AsyncSessionLocal
+from app.infrastructure.workers.garment_crops import attach_garment_crops
 from app.infrastructure.workers.job_runtime import (
     claim_one,
     enqueue,
@@ -136,6 +137,12 @@ class ProcessImageImportTask:
                     "temp_item_id": uuid.uuid4().hex,
                     "should_import": True,
                 }
+            )
+
+        if task.input_type == InputType.OUTFIT_IMAGE.value:
+            # One picture per garment instead of the whole outfit photo.
+            await attach_garment_crops(
+                candidate_items, results, image_url=image_url, user_id=user_id, task_id=task_id
             )
 
         # Keep the first result in the legacy top-level shape while exposing all

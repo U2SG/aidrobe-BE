@@ -68,6 +68,16 @@ def static_preview_object_key(user_id: uuid.UUID, asset_id: uuid.UUID) -> str:
     return f"users/{user_id}/{_STATIC_PREVIEW_PREFIX}/{asset_id}.png"
 
 
+def garment_crop_object_key(user_id: uuid.UUID, task_id: uuid.UUID, temp_item_id: str) -> str:
+    """Where the crop of one garment from a multi-garment import photo lands.
+
+    Under `users/<user_id>/` for the same ownership / purge reasons as above,
+    and derived from (task, candidate) so a retried import job overwrites its
+    own crop instead of leaving orphans.
+    """
+    return f"users/{user_id}/wardrobe/crops/{task_id}/{temp_item_id}.jpg"
+
+
 def names_unresolvable_per_purpose_bucket(image_url: str | None, settings: Settings) -> bool:
     """Is this one of *our* objects in a bucket we deliberately cannot resolve?
 

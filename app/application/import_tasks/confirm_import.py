@@ -263,6 +263,13 @@ class ConfirmImageImportTask:
         cutout_image_url = candidate.get("cutout_image_url")
         crop_image_url = candidate.get("crop_image_url")
         standard_image_url = cutout_image_url or crop_image_url or original_image_url
+        # A garment crop we stored ourselves: keep its key so reads can be
+        # signed on a private bucket instead of relying on the URL.
+        standard_object_key = (
+            candidate.get("crop_object_key")
+            if not cutout_image_url and crop_image_url and standard_image_url == crop_image_url
+            else None
+        )
 
         # M18 — auto-fill from the OCR candidate when the client didn't override.
         # candidate_payload stores price/date as strings (JSONB-safe), so coerce.
@@ -326,6 +333,7 @@ class ConfirmImageImportTask:
                     item_id=item.id,
                     image_type=ImageType.STANDARD.value,
                     image_url=standard_image_url,
+                    object_key=standard_object_key if isinstance(standard_object_key, str) else None,
                     created_at=now,
                 )
             )

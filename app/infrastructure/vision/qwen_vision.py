@@ -1,5 +1,6 @@
 import base64
 import json
+from dataclasses import replace
 from typing import Any, cast
 
 import httpx
@@ -82,7 +83,9 @@ def build_outfit_vision_prompt(locale: str) -> str:
         f"display_name MUST be a natural {language} name for the garment. "
         "confidence_score must be a number from 0 to 1. "
         + _ATTRIBUTE_PROMPT
-        + " Give these per garment. If no garment is visible, return {\"items\": []}."
+        + " Give these per garment, plus box — [x_min, y_min, x_max, y_max] around that "
+        "garment as fractions (0 to 1) of the image width and height. "
+        "If no garment is visible, return {\"items\": []}."
     )
 
 
@@ -147,7 +150,10 @@ class QwenVision:
         if len(raw_items) > 12:
             raise ValueError("Outfit response contains too many garments")
         return [
-            self._vision_result(self._validate_vision_data(raw), resolved)
+            replace(
+                self._vision_result(self._validate_vision_data(raw), resolved),
+                bbox=garment_box(raw.get("box")),
+            )
             for raw in raw_items
         ]
 
@@ -324,3 +330,22 @@ def garment_attributes(data: dict[str, Any]) -> dict[str, Any]:
                 break
 
     return {"formality_score": formality, "season_tags": seasons, "material": material, "style_tags": styles}
+
+
+_MIN_BOX_SIDE = 0.05
+
+
+def garment_box(raw: Any) -> tuple[float, float, float, float] | None:
+    """A model-reported garment box as clamped fractions, or None if unusable.
+
+    Rejects malformed, inverted or tiny boxes (under 5% of a side) — a bad box
+    must leave the candidate on the full photo, never crop to the wrong place.
+    """
+    if not isinstance(raw, list) or len(raw) != 4:
+        return None
+    if not all(isinstance(v, int | float) and not isinstance(v, bool) for v in raw):
+        return None
+    x1, y1, x2, y2 = (max(0.0, min(1.0, float(v))) for v in raw)
+    if x2 - x1 < _MIN_BOX_SIDE or y2 - y1 < _MIN_BOX_SIDE:
+        return None
+    return (x1, y1, x2, y2)

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.application.ports.vision import StyleAnalysis, VisionResult
 from app.common.locale import DEFAULT_LOCALE, resolve_locale
@@ -75,7 +75,11 @@ class FakeVision:
     async def analyze_outfit(self, image_url: str, locale: str = DEFAULT_LOCALE) -> list[VisionResult]:
         if "fail" in image_url:
             raise ValueError("fake vision failure")
-        return [_result_for("top", locale), _result_for("bottom", locale)]
+        # Upper and lower halves of the photo, as a model would box them.
+        return [
+            replace(_result_for("top", locale), bbox=(0.2, 0.08, 0.8, 0.52)),
+            replace(_result_for("bottom", locale), bbox=(0.25, 0.48, 0.75, 0.95)),
+        ]
 
     async def analyze_style(self, image_url: str, locale: str = DEFAULT_LOCALE) -> StyleAnalysis:
         if "fail" in image_url:

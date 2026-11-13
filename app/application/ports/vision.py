@@ -29,6 +29,10 @@ class VisionResult:
     season_tags: list[str] = field(default_factory=list)
     material: str | None = None
     style_tags: list[str] = field(default_factory=list)
+    # Where the garment is in the photo, as fractions of width/height:
+    # (x_min, y_min, x_max, y_max). Only for multi-garment photos; None when
+    # the model gave no usable box (the candidate then keeps the full photo).
+    bbox: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True)
