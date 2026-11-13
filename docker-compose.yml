@@ -8,6 +8,10 @@ services:
     environment:
       ENABLE_SCHEDULER: "false"
       DATABASE_URL: postgresql+asyncpg://aidrobe:aidrobe@postgres:5432/aidrobe
+      # The postgres image ships pgvector and migration 0012 creates
+      # item_embeddings.vector as vector(512); the ORM must use the same type
+      # (it falls back to JSONB, for test databases, when this is unset).
+      PGVECTOR_ENABLED: "true"
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT_URL: http://minio:9000
       # Host the CLIENT reaches (on-device over LAN/Tailscale, browser, ...).
@@ -43,6 +47,10 @@ services:
     environment:
       ENABLE_SCHEDULER: "true"
       DATABASE_URL: postgresql+asyncpg://aidrobe:aidrobe@postgres:5432/aidrobe
+      # The postgres image ships pgvector and migration 0012 creates
+      # item_embeddings.vector as vector(512); the ORM must use the same type
+      # (it falls back to JSONB, for test databases, when this is unset).
+      PGVECTOR_ENABLED: "true"
       REDIS_URL: redis://redis:6379/0
     depends_on:
       postgres:
@@ -69,6 +77,10 @@ services:
     environment:
       ENABLE_SCHEDULER: "false"
       DATABASE_URL: postgresql+asyncpg://aidrobe:aidrobe@postgres:5432/aidrobe
+      # The postgres image ships pgvector and migration 0012 creates
+      # item_embeddings.vector as vector(512); the ORM must use the same type
+      # (it falls back to JSONB, for test databases, when this is unset).
+      PGVECTOR_ENABLED: "true"
       REDIS_URL: redis://redis:6379/0
       ARQ_REDIS_URL: redis://redis:6379/1
       S3_ENDPOINT_URL: http://minio:9000
@@ -100,6 +112,10 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://aidrobe:aidrobe@postgres:5432/aidrobe
+      # The postgres image ships pgvector and migration 0012 creates
+      # item_embeddings.vector as vector(512); the ORM must use the same type
+      # (it falls back to JSONB, for test databases, when this is unset).
+      PGVECTOR_ENABLED: "true"
     depends_on:
       postgres:
         condition: service_healthy
