@@ -52,6 +52,7 @@ async def _seed_task(
     factory: async_sessionmaker[AsyncSession],
     *,
     task_status: str = ImportStatus.QUEUED.value,
+    input_type: str = "image",
 ) -> tuple[uuid.UUID, uuid.UUID]:
     user_id = uuid.uuid4()
     async with factory() as s:
@@ -59,7 +60,7 @@ async def _seed_task(
         await s.flush()
         task = ImportTask(
             user_id=user_id,
-            input_type="image",
+            input_type=input_type,
             source_type="album",
             task_status=task_status,
             input_payload={"image_url": "https://cdn/shirt.jpg"},
@@ -184,3 +185,69 @@ async def test_reconcile_dead_marks_task_failed(
 def test_drain_constants_are_sane() -> None:
     assert 1 <= import_worker.IMPORT_MAX_DRAIN_PER_TICK <= 50
     assert import_worker.IMPORT_JOB_TYPE == "import_task"
+
+
+async def test_outfit_photo_gets_one_crop_per_garment(
+    patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+
+    from PIL import Image
+
+    from app.infrastructure.workers import garment_crops
+
+    photo = io.BytesIO()
+    Image.new("RGB", (300, 600), (200, 30, 30)).save(photo, "JPEG")
+    stored: dict[str, bytes] = {}
+
+    class _Storage:
+        async def put_object(self, key: str, data: bytes, content_type: str) -> str:
+            stored[key] = data
+            return f"https://fake-storage/{key}"
+
+    async def _load(source_url: str, source_key: str | None) -> bytes:
+        return photo.getvalue()
+
+    monkeypatch.setattr("app.bootstrap.container.object_storage", lambda: _Storage())
+    monkeypatch.setattr(garment_crops, "load_source_bytes", _load)
+
+    user_id, task_id = await _seed_task(patched_session_factory, input_type="outfit_image")
+    async with patched_session_factory() as s:
+        await enqueue_import_task(s, task_id=task_id, user_id=user_id)
+        await s.commit()
+    assert await drain_import_jobs(ctx=None) == 1
+
+    async with patched_session_factory() as s:
+        task = await s.get(ImportTask, task_id)
+        assert task is not None and task.candidate_payload is not None
+        candidates = task.candidate_payload["candidate_items"]
+    assert len(candidates) == 2
+    for candidate in candidates:
+        key = f"users/{user_id}/wardrobe/crops/{task_id}/{candidate['temp_item_id']}.jpg"
+        assert candidate["crop_object_key"] == key
+        assert candidate["crop_image_url"] == f"https://fake-storage/{key}"
+        assert candidate["original_image_url"] == "https://cdn/shirt.jpg"
+        assert len(candidate["bbox"]) == 4
+    assert len(stored) == 2
+
+
+async def test_crop_failure_keeps_the_full_photo(
+    patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.infrastructure.workers import garment_crops
+
+    async def _broken(source_url: str, source_key: str | None) -> bytes:
+        raise OSError("storage down")
+
+    monkeypatch.setattr(garment_crops, "load_source_bytes", _broken)
+    user_id, task_id = await _seed_task(patched_session_factory, input_type="outfit_image")
+    async with patched_session_factory() as s:
+        await enqueue_import_task(s, task_id=task_id, user_id=user_id)
+        await s.commit()
+    assert await drain_import_jobs(ctx=None) == 1
+
+    async with patched_session_factory() as s:
+        task = await s.get(ImportTask, task_id)
+        assert task is not None and task.task_status == ImportStatus.WAITING_CONFIRM.value
+        assert task.candidate_payload is not None
+        assert all("crop_image_url" not in c for c in task.candidate_payload["candidate_items"])
