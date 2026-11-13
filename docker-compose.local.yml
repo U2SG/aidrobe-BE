@@ -1,0 +1,60 @@
+# Zero-cost local stack: every paid / external provider is forced to its fake
+# or disabled variant, whatever `.env` says. `environment:` here wins over
+# `env_file`, so a `.env` written for another host (real API keys, Tailscale
+# URLs) cannot trigger calls or point uploads elsewhere.
+#
+#   scripts/dev-up.sh            # build + start, then smoke-check
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml down
+#
+# To test from a phone, export AIDROBE_PUBLIC_HOST=<this Mac's LAN/Tailscale IP>
+# before dev-up so presigned upload / image URLs resolve from the device.
+
+x-zero-cost: &zero-cost
+  APP_ENV: dev
+  GIT_SHA: ${GIT_SHA:-unknown}
+  VISION_PROVIDER: fake
+  OCR_PROVIDER: fake
+  LLM_PROVIDER: none
+  EMBEDDING_PROVIDER: fake
+  WEATHER_PROVIDER: none
+  IMAGE_CUTOUT_PROVIDER: fake
+  ENABLE_ITEM_CUTOUT: "false"
+  ENABLE_RECEIPT_IMPORT: "false"
+  ENABLE_V3_ANALYTICS: "false"
+  ENABLE_IMPORT_ASYNC_JOBS: "true"
+  STORAGE_PROVIDER: s3
+  S3_BUCKET: aidrobe
+  S3_REGION: us-east-1
+  S3_ACCESS_KEY_ID: minioadmin
+  S3_SECRET_ACCESS_KEY: minioadmin
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_PUBLIC_BASE_URL: http://${AIDROBE_PUBLIC_HOST:-localhost}:9000/aidrobe
+
+x-build: &build
+  context: .
+  args:
+    GIT_SHA: ${GIT_SHA:-unknown}
+
+services:
+  api:
+    build: *build
+    environment: *zero-cost
+  worker:
+    build: *build
+    environment: *zero-cost
+  scheduler:
+    build: *build
+    environment: *zero-cost
+  migrate:
+    build: *build
+    environment: *zero-cost
+  minio:
+    environment:
+      RUSTFS_ACCESS_KEY: minioadmin
+      RUSTFS_SECRET_KEY: minioadmin
+  minio-init:
+    build: *build
+    environment:
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_BUCKET: aidrobe

@@ -1,5 +1,26 @@
 # Development Setup
 
+## Quick start: zero-cost local stack (macOS / Linux)
+
+Requires Docker (OrbStack or Docker Desktop). No `.env` is needed.
+
+```sh
+scripts/dev-up.sh      # postgres+pgvector, redis, minio, migrate, api, worker
+scripts/dev-smoke.sh   # presign -> upload -> import -> confirm x2 -> /today
+curl localhost:8000/version   # {"git_sha": ..., "alembic_revision": ...}
+docker compose -f docker-compose.yml -f docker-compose.local.yml down
+```
+
+`docker-compose.local.yml` forces every paid or external provider to its fake /
+disabled variant (vision, OCR, LLM, embedding, weather, cutout, receipt import,
+analytics) and points storage at the local MinIO, overriding anything in `.env`.
+Enable a real provider only deliberately, one at a time, after checking its cost.
+
+To test from a phone, run `AIDROBE_PUBLIC_HOST=<this machine's LAN or Tailscale IP> scripts/dev-up.sh`
+so presigned upload and image URLs resolve from the device.
+
+The sections below describe the older host-run (Windows / PowerShell) setup.
+
 ## Install
 
 ```powershell

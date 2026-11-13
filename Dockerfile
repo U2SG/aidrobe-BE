@@ -23,6 +23,10 @@ COPY app app
 COPY alembic alembic
 COPY alembic.ini .
 
+# Last layer so a new commit only rebuilds this metadata, not the deps above.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
+
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD curl -f http://localhost:8000/healthz || exit 1
 
