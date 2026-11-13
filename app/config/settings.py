@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     ARQ_JOB_TIMEOUT_SECONDS: int = 300
     ARQ_MAX_JOBS: int = 50
     APP_ENV: Literal["dev", "test", "prod"] = "dev"
+    # Source commit baked into the image (build arg GIT_SHA); surfaced by /version.
+    GIT_SHA: str = "unknown"
     DEFAULT_TIMEZONE: str = "Asia/Shanghai"
     ENABLE_SCHEDULER: bool = False
     VISION_PROVIDER: str = "fake"

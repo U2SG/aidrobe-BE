@@ -2,7 +2,9 @@ services:
   api:
     build: .
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       ENABLE_SCHEDULER: "false"
       DATABASE_URL: postgresql+asyncpg://aidrobe:aidrobe@postgres:5432/aidrobe
@@ -35,7 +37,9 @@ services:
   scheduler:
     build: .
     command: python -m app.jobs.scheduler
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       ENABLE_SCHEDULER: "true"
       DATABASE_URL: postgresql+asyncpg://aidrobe:aidrobe@postgres:5432/aidrobe
@@ -59,7 +63,9 @@ services:
   worker:
     build: .
     command: arq app.infrastructure.workers.worker_main.WorkerSettings
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       ENABLE_SCHEDULER: "false"
       DATABASE_URL: postgresql+asyncpg://aidrobe:aidrobe@postgres:5432/aidrobe
@@ -72,6 +78,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     # arq refreshes a redis heartbeat key every health_check_interval (60s, set
     # in WorkerSettings); `arq --check` reads it back, so health reflects the
@@ -87,7 +95,9 @@ services:
   migrate:
     build: .
     command: alembic upgrade head
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://aidrobe:aidrobe@postgres:5432/aidrobe
     depends_on:
