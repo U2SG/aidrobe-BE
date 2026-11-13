@@ -8925,21 +8925,31 @@ components:
           anyOf:
           - items:
               type: string
+              enum:
+              - spring
+              - summer
+              - autumn
+              - winter
+              - all_season
             type: array
+            maxItems: 5
           - type: 'null'
           title: Season Tags
         style_tags:
           anyOf:
           - items:
               type: string
+              maxLength: 24
+              minLength: 1
             type: array
+            maxItems: 8
           - type: 'null'
           title: Style Tags
         formality_score:
           anyOf:
           - type: integer
-            maximum: 5.0
-            minimum: 1.0
+            maximum: 100.0
+            minimum: 0.0
           - type: 'null'
           title: Formality Score
         time_cost_level:

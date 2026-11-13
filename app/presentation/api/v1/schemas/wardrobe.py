@@ -1,8 +1,9 @@
 from datetime import date
 from decimal import Decimal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from app.common.enums import FitIntent, WardrobeItemStatus
 
@@ -93,9 +94,16 @@ class UpdateWardrobeItemRequest(BaseModel):
     sub_category: str | None = Field(default=None, max_length=32)
     color_secondary: str | None = Field(default=None, max_length=32)
     material: str | None = Field(default=None, max_length=64)
-    season_tags: list[str] | None = None
-    style_tags: list[str] | None = None
-    formality_score: int | None = Field(default=None, ge=1, le=5)
+    # [] clears. Seasons are a closed vocabulary; style tags are free short
+    # words (recognition's style descriptors, RN's occasion chips).
+    season_tags: list[Literal["spring", "summer", "autumn", "winter", "all_season"]] | None = Field(
+        default=None, max_length=5
+    )
+    style_tags: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=24)]] | None = (
+        Field(default=None, max_length=8)
+    )
+    # Same 0..100 scale recognition writes (10 sport … 90 formal) and scoring reads.
+    formality_score: int | None = Field(default=None, ge=0, le=100)
     time_cost_level: str | None = Field(default=None, max_length=16)
     purchase_price: float | None = Field(default=None, ge=0)
     # A-4: purchase_date writeable; last_worn_at write path is A-5

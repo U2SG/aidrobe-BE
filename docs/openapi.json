@@ -14150,9 +14150,17 @@
             "anyOf": [
               {
                 "items": {
-                  "type": "string"
+                  "type": "string",
+                  "enum": [
+                    "spring",
+                    "summer",
+                    "autumn",
+                    "winter",
+                    "all_season"
+                  ]
                 },
-                "type": "array"
+                "type": "array",
+                "maxItems": 5
               },
               {
                 "type": "null"
@@ -14164,9 +14172,12 @@
             "anyOf": [
               {
                 "items": {
-                  "type": "string"
+                  "type": "string",
+                  "maxLength": 24,
+                  "minLength": 1
                 },
-                "type": "array"
+                "type": "array",
+                "maxItems": 8
               },
               {
                 "type": "null"
@@ -14178,8 +14189,8 @@
             "anyOf": [
               {
                 "type": "integer",
-                "maximum": 5.0,
-                "minimum": 1.0
+                "maximum": 100.0,
+                "minimum": 0.0
               },
               {
                 "type": "null"

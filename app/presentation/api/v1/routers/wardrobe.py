@@ -93,6 +93,10 @@ def item_response(item: WardrobeItem, locale: str) -> WardrobeItemResponse:
         fit_intent=item.fit_intent,
         fit_status=item.fit_status,
         comfort_score=item.comfort_score,
+        sub_category=item.sub_category,
+        color_secondary=item.color_secondary,
+        time_cost_level=item.time_cost_level,
+        purchase_price=float(item.purchase_price) if item.purchase_price is not None else None,
         material=item.material,
         season_tags=season_tag_list(item.season_tags),
         style_tags=item.style_tags if isinstance(item.style_tags, list) else None,
@@ -169,6 +173,18 @@ async def update_wardrobe_item(
         status=payload.status,
         location=payload.location,
         purchase_date=payload.purchase_date,
+        attributes=payload.model_dump(
+            include={
+                "sub_category",
+                "color_secondary",
+                "material",
+                "season_tags",
+                "style_tags",
+                "formality_score",
+                "time_cost_level",
+                "purchase_price",
+            }
+        ),
     )
     await invalidate_daily_recommendation_cache(redis_client, current_user.id)
     effective_locale = await _effective_locale(session, current_user.id)
