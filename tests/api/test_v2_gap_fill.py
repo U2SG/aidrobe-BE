@@ -434,3 +434,67 @@ async def test_export_polling_404_for_foreign_or_wrong_type_job(
 
     assert foreign.status_code == 404
     assert wrong_type.status_code == 404
+
+
+async def test_patch_persists_and_returns_the_extended_attributes(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    item = await _seed_item(db_session, user_id, title="Jacket", category="outerwear")
+    app = build_app(db_session)
+    headers = {"X-User-Id": str(user_id)}
+    changes = {
+        "sub_category": "bomber",
+        "color_secondary": "black",
+        "material": "leather",
+        "season_tags": ["autumn", "winter"],
+        "style_tags": ["casual", "street"],
+        "formality_score": 30,
+        "time_cost_level": "low",
+        "purchase_price": 899.5,
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        patched = await client.patch(f"/v1/wardrobe-items/{item.id}", headers=headers, json=changes)
+        fetched = await client.get(f"/v1/wardrobe-items/{item.id}", headers=headers)
+
+    assert patched.status_code == 200
+    for body in (patched.json()["data"], fetched.json()["data"]):
+        for key, value in changes.items():
+            assert body[key] == value, key
+    await db_session.refresh(item)
+    assert item.season_tags == {"tags": ["autumn", "winter"]}
+
+
+async def test_patch_empty_tag_list_clears_and_omitted_fields_stay(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    item = await _seed_item(
+        db_session, user_id, season_tags={"tags": ["summer"]}, material="linen", formality_score=50
+    )
+    app = build_app(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.patch(
+            f"/v1/wardrobe-items/{item.id}", headers={"X-User-Id": str(user_id)}, json={"season_tags": []}
+        )
+
+    body = response.json()["data"]
+    assert body["season_tags"] is None
+    assert body["material"] == "linen"
+    assert body["formality_score"] == 50
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"season_tags": ["rainy"]}, {"formality_score": 101}, {"formality_score": -1}, {"style_tags": ["x" * 25]}],
+)
+async def test_patch_rejects_out_of_vocabulary_attributes(db_session: AsyncSession, change: dict[str, object]) -> None:
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    item = await _seed_item(db_session, user_id)
+    app = build_app(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.patch(f"/v1/wardrobe-items/{item.id}", headers={"X-User-Id": str(user_id)}, json=change)
+
+    assert response.status_code == 422

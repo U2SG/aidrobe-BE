@@ -1,5 +1,8 @@
 import uuid
+from collections.abc import Mapping
 from datetime import date as DateType
+from decimal import Decimal
+from typing import Any
 
 from app.application.recommendations.background import schedule_today_recompute
 from app.common import error_codes
@@ -36,7 +39,12 @@ class UpdateWardrobeItem:
         location: str | None = None,
         # A-4: purchase_date is now persisted; last_worn_at write path is A-5
         purchase_date: DateType | None = None,
+        attributes: Mapping[str, Any] | None = None,
     ) -> WardrobeItem:
+        """`attributes`: the extended fields (material, season_tags, style_tags,
+        formality_score, sub_category, color_secondary, time_cost_level,
+        purchase_price). None = leave unchanged; an empty tag list clears. A user
+        edit always wins — recognition only ever writes at import time."""
         item = await self.repository.get_for_user(item_id, user_id)
         if item is None:
             raise FriendlyException(
@@ -59,6 +67,30 @@ class UpdateWardrobeItem:
             item.location = location
         if purchase_date is not None:
             item.purchase_date = purchase_date
+        _apply_attributes(item, attributes or {})
         await self.repository.flush()
         await schedule_today_recompute(user_id, self.recommendation_repository, self.style_repository)
         return item
+
+
+_TEXT_ATTRIBUTES = ("sub_category", "color_secondary", "material", "time_cost_level")
+
+
+def _apply_attributes(item: WardrobeItem, attributes: Mapping[str, Any]) -> None:
+    for name in _TEXT_ATTRIBUTES:
+        value = attributes.get(name)
+        if value is not None:
+            setattr(item, name, value)
+    seasons = attributes.get("season_tags")
+    if seasons is not None:
+        # Stored shape {"tags": [...]} (season readers depend on it).
+        item.season_tags = {"tags": list(dict.fromkeys(seasons))} if seasons else None
+    styles = attributes.get("style_tags")
+    if styles is not None:
+        item.style_tags = list(dict.fromkeys(styles)) or None
+    formality = attributes.get("formality_score")
+    if formality is not None:
+        item.formality_score = formality
+    price = attributes.get("purchase_price")
+    if price is not None:
+        item.purchase_price = Decimal(str(price))
