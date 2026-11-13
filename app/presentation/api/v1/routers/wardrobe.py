@@ -43,7 +43,6 @@ from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.wardrobe import (
-    season_tag_list,
     DeleteWardrobeItemResponse,
     ItemWearHistoryResponse,
     MarkItemWornRequest,
@@ -51,6 +50,7 @@ from app.presentation.api.v1.schemas.wardrobe import (
     WardrobeItemResponse,
     WardrobeListResponse,
     WearHistoryEntry,
+    season_tag_list,
 )
 
 router = APIRouter(prefix="/v1/wardrobe-items", tags=["wardrobe"])
