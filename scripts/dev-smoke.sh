@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end smoke on the local stack: presign -> upload to MinIO -> import ->
-# confirm (one top, one bottom) -> GET /v1/recommendations/today.
+# confirm (top, bottom, shoes: the first-outfit minimum) -> GET /v1/recommendations/today.
 # Uses the dev X-User-Id shortcut; every provider is fake, so it costs nothing.
 set -euo pipefail
 api="${API:-http://localhost:8000}"
@@ -17,8 +17,9 @@ import_item() { # $1 = name hint (top|pants), $2 = category, $3 = title
   local presign url fields file_url task status
   presign=$(curl -fsS "${hdr[@]}" -X POST "$api/v1/uploads/presign" \
     -d "{\"file_name\":\"$1.jpg\",\"content_type\":\"image/jpeg\"}")
-  url=$(jqr "d['upload_url']" <<<"$presign")
   file_url=$(jqr "d['file_url']" <<<"$presign")
+  # Same rewrite the apps do: the presign carries the in-cluster host (minio).
+  url=$(python3 -c "import sys,urllib.parse as u; a=u.urlsplit(sys.argv[1]); b=u.urlsplit(sys.argv[2]); print(u.urlunsplit(a._replace(netloc=b.netloc, scheme=b.scheme)) if a.hostname in {'minio','localhost','127.0.0.1','0.0.0.0'} else sys.argv[1])" "$(jqr "d['upload_url']" <<<"$presign")" "$file_url")
   fields=$(jqr "' '.join('-F ' + k + '=' + v for k, v in (d.get('fields') or {}).items())" <<<"$presign")
   # shellcheck disable=SC2086
   curl -fsS -o /dev/null $fields -F "file=@$img;type=image/jpeg" "$url"
@@ -39,6 +40,7 @@ import_item() { # $1 = name hint (top|pants), $2 = category, $3 = title
 echo "user $user"
 import_item top top "Smoke Tee"
 import_item pants bottom "Smoke Trousers"
+import_item shoes shoes "Smoke Loafers"
 
 for _ in $(seq 1 30); do
   today=$(curl -fsS "${hdr[@]}" --max-time 60 "$api/v1/recommendations/today")
