@@ -2,6 +2,7 @@ import uuid
 from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,8 +11,13 @@ from app.application.wardrobe.update_fit import FitUpdateValue, UpdateWardrobeFi
 from app.common.enums import FitFeedbackType, FitScene
 from app.common.item_labels import localized_item_name
 from app.common.locale import resolve_locale
+from app.infrastructure.cache.client import get_redis_client, invalidate_daily_recommendation_cache
 from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.repositories.recommendation_repo import (
+    SqlAlchemyRecommendationRepository,
+)
+from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
@@ -68,16 +74,23 @@ async def update_fit(
     payload: UpdateFitRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[Redis, Depends(get_redis_client)],
 ) -> ResponseModel[WardrobeItemResponse]:
     updates = cast(
         dict[str, FitUpdateValue],
         payload.model_dump(exclude_unset=True, mode="json"),
     )
-    item = await UpdateWardrobeFit(SqlAlchemyWardrobeRepository(session)).execute(
+    item = await UpdateWardrobeFit(
+        SqlAlchemyWardrobeRepository(session),
+        SqlAlchemyRecommendationRepository(session),
+        SqlAlchemyStyleRepository(session),
+    ).execute(
         item_id,
         current_user.id,
         updates,
     )
+    if "fit_status" in updates:
+        await invalidate_daily_recommendation_cache(redis_client, current_user.id)
     settings_locale = await session.scalar(select(UserSettings.locale).where(UserSettings.user_id == current_user.id))
     return ResponseModel(data=item_response(item, resolve_locale(settings_locale=settings_locale)))
 
