@@ -49,6 +49,12 @@ class CandidateItem(BaseModel):
     bbox: list[float] | None = None
     visibility: str | None = None
     should_import: bool | None = None
+    # Recognised garment attributes (null / [] = unknown). Copied onto the
+    # item at confirm; the recommender ranks on formality and seasons.
+    formality_score: int | None = None
+    season_tags: list[str] = Field(default_factory=list)
+    material: str | None = None
+    style_tags: list[str] = Field(default_factory=list)
     # Set once this candidate has been confirmed (batches / retries); the
     # client skips it and can resume with the remaining ones.
     confirmed_item_id: UUID | None = None

@@ -8589,6 +8589,42 @@
             ],
             "title": "Should Import"
           },
+          "formality_score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Formality Score"
+          },
+          "season_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Season Tags"
+          },
+          "material": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material"
+          },
+          "style_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Style Tags"
+          },
           "confirmed_item_id": {
             "anyOf": [
               {

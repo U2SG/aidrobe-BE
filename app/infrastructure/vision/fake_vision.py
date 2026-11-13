@@ -14,6 +14,10 @@ class _FakeItem:
     # locale acceptance tests assert a Chinese display_name for zh-CN and an
     # English one for en-US while category/color stay English.
     names: dict[str, str]
+    formality_score: int | None = None
+    season_tags: tuple[str, ...] = ()
+    material: str | None = None
+    style_tags: tuple[str, ...] = ()
 
 
 _ITEMS: dict[str, _FakeItem] = {
@@ -23,6 +27,10 @@ _ITEMS: dict[str, _FakeItem] = {
         confidence_score=0.85,
         canonical_name="Black trousers",
         names={"en-US": "Black trousers", "zh-CN": "黑色长裤"},
+        formality_score=70,
+        season_tags=("all_season",),
+        material="wool",
+        style_tags=("tailored", "classic"),
     ),
     "top": _FakeItem(
         category="top",
@@ -30,6 +38,10 @@ _ITEMS: dict[str, _FakeItem] = {
         confidence_score=0.9,
         canonical_name="White shirt",
         names={"en-US": "White shirt", "zh-CN": "白色衬衫"},
+        formality_score=50,
+        season_tags=("spring", "summer", "autumn"),
+        material="cotton",
+        style_tags=("minimal", "classic"),
     ),
 }
 
@@ -46,6 +58,10 @@ def _result_for(key: str, locale: str) -> VisionResult:
         canonical_name=spec.canonical_name,
         display_name=display_name,
         localized_names=dict(spec.names),
+        formality_score=spec.formality_score,
+        season_tags=list(spec.season_tags),
+        material=spec.material,
+        style_tags=list(spec.style_tags),
     )
 
 

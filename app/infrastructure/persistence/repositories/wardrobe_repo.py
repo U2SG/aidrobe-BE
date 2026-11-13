@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import cast
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
@@ -52,7 +52,13 @@ class SqlAlchemyWardrobeRepository:
         if season is not None:
             # season_tags JSONB shape: {"tags": ["spring", ...]} (V3 M14)
             # Navigate to the tags key first, then use @> array containment.
-            filters.append(WardrobeItem.season_tags["tags"].contains([season]))
+            # An all-season garment belongs in every season's list.
+            filters.append(
+                or_(
+                    WardrobeItem.season_tags["tags"].contains([season]),
+                    WardrobeItem.season_tags["tags"].contains(["all_season"]),
+                )
+            )
         if color is not None:
             filters.append(WardrobeItem.color_main == color)
         total = await self.session.scalar(
