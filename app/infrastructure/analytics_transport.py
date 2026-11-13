@@ -102,7 +102,7 @@ class HttpAnalyticsSink:
     async def send(self, records: Sequence[AnalyticsRecord]) -> int:
         # Credentials and environment partitioning are transport-only, never
         # fields of an event. Use distinct endpoints/credentials per environment.
-        headers = {"X-Aidrobe-Environment": self.settings.APP_ENV}
+        headers: dict[str, str] = {"X-Aidrobe-Environment": self.settings.APP_ENV}
         secret = self.settings.V3_ANALYTICS_COLLECTOR_TOKEN
         if secret is not None:
             headers["Authorization"] = "Bearer " + secret.get_secret_value()
