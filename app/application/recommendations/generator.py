@@ -19,6 +19,7 @@ from app.application.recommendations.decision_trace import (
 from app.application.recommendations.engine import EngineItem, RecommendationEngine, RelationshipEdge
 from app.application.recommendations.feedback_learning import (
     DEFAULT_SUPPRESSION_DAYS,
+    LearningSignals,
     derive_learning_signals,
 )
 from app.application.recommendations.fit_profile import build_fit_profile
@@ -162,7 +163,8 @@ class RecommendationGenerator:
         # BE#67 — down-rank looks the user recently dismissed/disliked. Derived at
         # read time from the event stream (no persistence), gated by the flag so a
         # flag-off generation is byte-identical to the legacy one.
-        suppressed_outfit_item_ids = await self._load_suppressed_signatures(user_id, settings)
+        learning = await self._load_learning_signals(user_id, settings)
+        suppressed_outfit_item_ids = [set(sig) for sig in learning.suppressed_signatures]
 
         result = await self.engine.generate(
             [
@@ -190,7 +192,21 @@ class RecommendationGenerator:
             suppressed_outfit_item_ids=suppressed_outfit_item_ids,
             indoor_climate=indoor_climate,
             context_constraints=context_constraints or [],
+            thermal_offset_c=learning.thermal_offset_c,
         )
+        if suppressed_outfit_item_ids or learning.thermal_offset_c:
+            # "Feedback → next change" trail: what the user's feedback did to
+            # this generation, joinable with the feedback events by user/date.
+            logger.info(
+                "feedback_learning.applied",
+                user_id=str(user_id),
+                target_date=str(target_date),
+                suppressed_looks=len(suppressed_outfit_item_ids),
+                thermal_offset_c=learning.thermal_offset_c,
+                feedback_reasons=sum(
+                    1 for outfit in result.outfits for reason in outfit.reasoning if reason.get("type") == "feedback"
+                ),
+            )
 
         captured_at = datetime.now(UTC)
         context_snapshot = _build_context_snapshot(
@@ -462,26 +478,25 @@ class RecommendationGenerator:
             logger.warning("preference_memory_load_failed", user_id=str(user_id), error=str(exc))
             return set()
 
-    async def _load_suppressed_signatures(
-        self, user_id: uuid.UUID, settings: Any
-    ) -> list[set[str]]:
-        """BE#67 — item-set signatures the user recently dismissed/disliked.
+    async def _load_learning_signals(self, user_id: uuid.UUID, settings: Any) -> LearningSignals:
+        """BE#67 — what recent feedback should change in this generation:
+        item-sets the user dismissed/disliked (down-ranked) and the "feels like"
+        temperature offset from "too warm" / "too cold" reports.
 
-        Off (empty) unless ENABLE_FEEDBACK_LEARNING is on. Derived from the event
+        Empty unless ENABLE_FEEDBACK_LEARNING is on. Derived from the event
         stream and recomputed each generation (no persistence → clean rollback).
         Fail-soft: a read/derivation error must not abort the daily generation."""
         if not settings.ENABLE_FEEDBACK_LEARNING:
-            return []
+            return LearningSignals()
         try:
             now = datetime.now(UTC)
             events = await self.repository.list_recommendation_events(
                 user_id, since=now - timedelta(days=DEFAULT_SUPPRESSION_DAYS)
             )
-            signals = derive_learning_signals(events, now=now)
-            return [set(sig) for sig in signals.suppressed_signatures]
+            return derive_learning_signals(events, now=now)
         except Exception as exc:
             logger.warning("feedback_learning_load_failed", user_id=str(user_id), error=str(exc))
-            return []
+            return LearningSignals()
 
     async def _load_style_profile(
         self,

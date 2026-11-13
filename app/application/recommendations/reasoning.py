@@ -37,6 +37,8 @@ Sources NOT emitted by this layer:
 Sources emitted here:
   indoor_climate_inference — BE#82, medium confidence, only when a tendency was
     inferred AND the look carries a removable outer layer (never labels the user)
+  feedback_learning — the user's own "too warm" / "too cold" feedback changed
+    the layering of this look; high confidence (it is their stated reason)
 """
 
 from __future__ import annotations
@@ -59,6 +61,7 @@ STYLE_MATCH = "style_match"
 CATEGORY = "category"
 FIT = "fit"
 INDOOR_CLIMATE = "indoor_climate"
+FEEDBACK = "feedback"
 
 
 def _entry(
@@ -89,6 +92,7 @@ def build_reasoning(
     item_ids: list[str] | None = None,
     main_item_id: str | None = None,
     indoor_climate: str | None = None,
+    thermal_offset_c: float = 0.0,
     max_items: int = 4,
 ) -> list[dict[str, Any]]:
     """Return 2–4 grounded reasons (Chinese) with source provenance (BE#85).
@@ -121,6 +125,26 @@ def build_reasoning(
         for i, status in enumerate(fit_statuses)
         if status == "fits_well" and i < len(ids)
     ]
+
+    # 0. The user's own comfort feedback, when it shaped this look's layering.
+    #    First, so "you told us X, so we did Y" is the reason people see.
+    if weather is not None and thermal_offset_c:
+        has_outer = Category.OUTERWEAR.value in cats
+        if thermal_offset_c > 0 and not has_outer:
+            reasons.append(_entry(
+                FEEDBACK,
+                "你上次说太热，这次没加外层",
+                source="feedback_learning",
+                confidence="high",
+            ))
+        elif thermal_offset_c < 0 and has_outer:
+            reasons.append(_entry(
+                FEEDBACK,
+                "你上次说偏冷，这次加了外层",
+                source="feedback_learning",
+                confidence="high",
+                referenced_item_ids=outerwear_ids,
+            ))
 
     # 1. Weather — only claims that match the actual outfit + forecast.
     if weather is not None:

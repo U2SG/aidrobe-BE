@@ -112,3 +112,20 @@ def test_weak_preference_values_are_canonical_tokens() -> None:
 
 def test_empty_events_yield_empty_signals() -> None:
     assert derive_learning_signals([], now=_NOW) == LearningSignals()
+
+
+def test_one_too_warm_report_shifts_feels_like_up() -> None:
+    signals = derive_learning_signals([_dislike(["a", "b"], ["too_warm"])], now=_NOW)
+    assert signals.thermal_offset_c == 3.0
+
+
+def test_thermal_reports_net_out_and_are_capped() -> None:
+    events = [_dislike(["a"], ["too_cold"], age_days=day) for day in range(4)]
+    assert derive_learning_signals(events, now=_NOW).thermal_offset_c == -6.0
+    mixed = [_dislike(["a"], ["too_warm"]), _dislike(["b"], ["too_cold"])]
+    assert derive_learning_signals(mixed, now=_NOW).thermal_offset_c == 0.0
+
+
+def test_thermal_reports_outside_the_window_are_ignored() -> None:
+    signals = derive_learning_signals([_dislike(["a"], ["too_warm"], age_days=30)], now=_NOW)
+    assert signals.thermal_offset_c == 0.0

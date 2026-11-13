@@ -72,6 +72,15 @@ _SIGNAL_TO_PREFERENCE: dict[str, tuple[str, str, str]] = {
 DEFAULT_SUPPRESSION_DAYS = 14
 DEFAULT_DURABLE_MIN_COUNT = 3
 
+# Contextual comfort reasons ("too warm" / "too cold" on a worn look) are not
+# durable preferences, but they say how this user feels a given forecast: each
+# net report shifts the temperature the weather rules see by THERMAL_STEP_C,
+# capped at ±THERMAL_MAX_C, so one report changes the next generation.
+TOO_WARM = "too_warm"
+TOO_COLD = "too_cold"
+THERMAL_STEP_C = 3.0
+THERMAL_MAX_C = 6.0
+
 
 class FeedbackEvent(Protocol):
     """The subset of RecommendationEvent this module reads.
@@ -98,6 +107,9 @@ class LearningSignals:
     suppressed_signatures: list[frozenset[str]] = field(default_factory=list)
     # Durable preferences derived from REPEATED feedback (one-offs excluded).
     weak_preferences: list[WeakPreference] = field(default_factory=list)
+    # Added to the forecast before weather rules: > 0 = this user runs warm
+    # (said "too warm"), < 0 = runs cold. 0 when there is no such feedback.
+    thermal_offset_c: float = 0.0
 
 
 def normalize_event(event_type: str, reason_tags: Iterable[str] | None) -> set[str]:
@@ -144,6 +156,7 @@ def derive_learning_signals(
     """
     cutoff = now - timedelta(days=suppression_days)
     signal_counts: Counter[str] = Counter()
+    thermal_net = 0
     # Per signature, the most-recent suppression vs positive timestamps. A later
     # like/save/wear on the same look revokes an earlier dislike/dismiss.
     suppress_at: dict[frozenset[str], datetime] = {}
@@ -164,6 +177,8 @@ def derive_learning_signals(
                 suppress_at[signature] = max(suppress_at.get(signature, stamp), stamp)
             elif event.event_type in _POSITIVE_EVENT_TYPES:
                 positive_at[signature] = max(positive_at.get(signature, stamp), stamp)
+        tags = {tag.strip().lower() for tag in _reason_tags(event.event_metadata)}
+        thermal_net += (TOO_WARM in tags) - (TOO_COLD in tags)
         # Durable-preference counting (only the self-describing reason signals).
         signals = normalize_event(event.event_type, _reason_tags(event.event_metadata))
         for signal in signals:
@@ -182,4 +197,9 @@ def derive_learning_signals(
             ptype, pvalue, polarity = _SIGNAL_TO_PREFERENCE[signal]
             weak.append(WeakPreference(ptype, pvalue, polarity))
 
-    return LearningSignals(suppressed_signatures=suppressed, weak_preferences=weak)
+    thermal_offset = max(-THERMAL_MAX_C, min(THERMAL_MAX_C, thermal_net * THERMAL_STEP_C))
+    return LearningSignals(
+        suppressed_signatures=suppressed,
+        weak_preferences=weak,
+        thermal_offset_c=thermal_offset,
+    )
