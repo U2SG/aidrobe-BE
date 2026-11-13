@@ -30,6 +30,36 @@ x-zero-cost: &zero-cost
   S3_ENDPOINT_URL: http://minio:9000
   S3_PUBLIC_BASE_URL: http://${AIDROBE_PUBLIC_HOST:-localhost}:9000/aidrobe
 
+# The product's feature set (mirrors the switches the deployed .env turned on),
+# minus everything that needs a paid or unavailable provider: Ask (LLM), item
+# cutout / receipt import / OOTD poster / PDF + vision style learning, Aliyun
+# STS. SenseCheck is retired in favour of the V3 purchase decision.
+x-product-flags: &product-flags
+  ENABLE_DATE_AWARE_TODAY: "true"
+  ENABLE_TODAY_CONTEXT: "true"
+  ENABLE_TODAY_REASONING: "true"
+  ENABLE_TODAY_REFRESH: "true"
+  ENABLE_CONTEXT_OVERRIDES: "true"
+  ENABLE_RECOMMENDATION_DIVERSITY: "true"
+  ENABLE_WARDROBE_GRAPH: "true"
+  ENABLE_PREFERENCE_MEMORY: "true"
+  ENABLE_FEEDBACK_LEARNING: "true"
+  ENABLE_INDOOR_CLIMATE_INFERENCE: "true"
+  ENABLE_RESURFACE_INSIGHT: "true"
+  ENABLE_OBSTACLES: "true"
+  ENABLE_OUTFIT_SCORES: "true"
+  ENABLE_PREP_STEPS: "true"
+  ENABLE_OUTFIT_CALENDAR: "true"
+  ENABLE_PACKING_LIST: "true"
+  ENABLE_PACKING_PLANNER: "true"
+  ENABLE_WARDROBE_HEALTH: "true"
+  ENABLE_WARDROBE_REPORT: "true"
+  ENABLE_DATA_TRUST: "true"
+  ENABLE_USER_PURGE: "true"
+  ENABLE_COST_GUARD: "true"
+  ENABLE_V3_PURCHASE_DECISION: "true"
+  ENABLE_SENSE_CHECK: "false"
+
 x-build: &build
   context: .
   args:
@@ -38,16 +68,20 @@ x-build: &build
 services:
   api:
     build: *build
-    environment: *zero-cost
+    environment:
+      <<: [*zero-cost, *product-flags]
   worker:
     build: *build
-    environment: *zero-cost
+    environment:
+      <<: [*zero-cost, *product-flags]
   scheduler:
     build: *build
-    environment: *zero-cost
+    environment:
+      <<: [*zero-cost, *product-flags]
   migrate:
     build: *build
-    environment: *zero-cost
+    environment:
+      <<: [*zero-cost, *product-flags]
   minio:
     environment:
       RUSTFS_ACCESS_KEY: minioadmin
