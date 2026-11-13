@@ -129,3 +129,10 @@ def test_thermal_reports_net_out_and_are_capped() -> None:
 def test_thermal_reports_outside_the_window_are_ignored() -> None:
     signals = derive_learning_signals([_dislike(["a"], ["too_warm"], age_days=30)], now=_NOW)
     assert signals.thermal_offset_c == 0.0
+
+
+def test_too_formal_reports_steer_formality_down_and_are_capped() -> None:
+    assert derive_learning_signals([_dislike(["a"], ["too_formal"])], now=_NOW).formality_bias == -1
+    many = [_dislike(["a"], ["too_formal"], age_days=day) for day in range(5)]
+    assert derive_learning_signals(many, now=_NOW).formality_bias == -2
+    assert derive_learning_signals([_dislike(["a"], ["too_casual"])], now=_NOW).formality_bias == 1

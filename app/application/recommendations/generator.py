@@ -35,7 +35,7 @@ from app.common.enums import (
     TimeSensitivity,
 )
 from app.common.local_time import local_datetime, utc_now
-from app.common.season import current_season
+from app.common.season import current_season, season_tags_of
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.preference_memory import UserPreferenceMemory
 from app.infrastructure.persistence.models.recommendation import (
@@ -177,6 +177,8 @@ class RecommendationGenerator:
                     fit_status=item.fit_status,
                     fit_intent=item.fit_intent,
                     sub_category=item.sub_category,
+                    formality_score=item.formality_score,
+                    season_tags=season_tags_of(item.season_tags),
                 )
                 for item in items
             ],
@@ -193,8 +195,9 @@ class RecommendationGenerator:
             indoor_climate=indoor_climate,
             context_constraints=context_constraints or [],
             thermal_offset_c=learning.thermal_offset_c,
+            formality_bias=learning.formality_bias,
         )
-        if suppressed_outfit_item_ids or learning.thermal_offset_c:
+        if suppressed_outfit_item_ids or learning.thermal_offset_c or learning.formality_bias:
             # "Feedback → next change" trail: what the user's feedback did to
             # this generation, joinable with the feedback events by user/date.
             logger.info(
@@ -203,6 +206,7 @@ class RecommendationGenerator:
                 target_date=str(target_date),
                 suppressed_looks=len(suppressed_outfit_item_ids),
                 thermal_offset_c=learning.thermal_offset_c,
+                formality_bias=learning.formality_bias,
                 feedback_reasons=sum(
                     1 for outfit in result.outfits for reason in outfit.reasoning if reason.get("type") == "feedback"
                 ),

@@ -22,6 +22,7 @@ from app.application.recommendations.reasoning import build_reasoning
 from app.application.safety.copy_guard import sanitize_generated_copy
 from app.application.style.build_style_profile import aesthetic_score as compute_aesthetic_score
 from app.common.enums import Category, OutfitType
+from app.common.season import current_season, in_season
 from app.infrastructure.llm.sanitizer import sanitize_llm_text
 from app.infrastructure.persistence.models.wardrobe_relationship import (
     POSITIVE_RELATIONSHIP_TYPES,
@@ -66,6 +67,13 @@ SUPPRESSION_PENALTY = 0.5
 # Thermal feedback (see feedback_learning.thermal_offset_c). Runs warm: an outer
 # layer on a mild "feels like" day is what they complained about. Runs cold: no
 # layer on a cold "feels like" day. Either loses to the same look adjusted.
+# Garments tagged for other seasons (season_tags, untagged = fine).
+OUT_OF_SEASON_PENALTY = 0.15
+OUT_OF_SEASON_PENALTY_CAP = 0.3
+# Formality on the 0..100 item scale (recognition stores 10/30/50/70/90).
+BUSINESS_FORMALITY = 60.0
+CASUAL_FORMALITY = 40.0
+FORMALITY_FEEDBACK_PENALTY = 0.3
 MILD_FOR_WARM_RUNNER_C = 15.0
 COLD_FEELS_LIKE_C = 10.0
 THERMAL_FEEDBACK_PENALTY = 0.3
@@ -102,6 +110,9 @@ class EngineItem:
     # BE#78 — needed so an "exclude dresses/skirts" override can also drop skirts,
     # which are stored as bottom items with sub_category == "skirt".
     sub_category: str | None = None
+    # Recognised attributes (None / () = unknown, never penalised).
+    formality_score: int | None = None
+    season_tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -156,6 +167,7 @@ class RecommendationEngine:
         indoor_climate: IndoorClimateSignal | None = None,
         context_constraints: list[str] | None = None,
         thermal_offset_c: float = 0.0,
+        formality_bias: int = 0,
     ) -> EngineResult:
         recent_worn_main_item_ids = recent_worn_main_item_ids or set()
         context_constraints = context_constraints or []
@@ -182,6 +194,8 @@ class RecommendationEngine:
             indoor_climate,
             context_constraints,
             thermal_offset_c,
+            current_season(target_date) if target_date is not None else None,
+            formality_bias,
         )
         if not candidates:
             return EngineResult(
@@ -290,6 +304,10 @@ class RecommendationEngine:
                     main_item_id=self._main_item(outfit.item_ids, wearable),
                     indoor_climate=indoor_climate.tendency if indoor_climate else None,
                     thermal_offset_c=thermal_offset_c,
+                    formality_bias=formality_bias,
+                    formality_mean=_mean_formality(
+                        [item_by_id[i] for i in outfit.item_ids if i in item_by_id]
+                    ),
                 ),
             )
             for outfit in selected
@@ -321,6 +339,8 @@ class RecommendationEngine:
         indoor_climate: IndoorClimateSignal | None = None,
         context_constraints: list[str] | None = None,
         thermal_offset_c: float = 0.0,
+        season: str | None = None,
+        formality_bias: int = 0,
     ) -> list[EngineOutfit]:
         context_constraints = context_constraints or []
         # BE#78 — "不想穿裙子" excludes dresses AND skirts (stored as bottom items
@@ -384,6 +404,8 @@ class RecommendationEngine:
                         indoor_climate,
                         context_constraints,
                         thermal_offset_c,
+                        season,
+                        formality_bias,
                     )
                 )
         return candidates
@@ -401,6 +423,8 @@ class RecommendationEngine:
         indoor_climate: IndoorClimateSignal | None = None,
         context_constraints: list[str] | None = None,
         thermal_offset_c: float = 0.0,
+        season: str | None = None,
+        formality_bias: int = 0,
     ) -> EngineOutfit:
         context_constraints = context_constraints or []
         colors = [item.color_main for item in combo]
@@ -412,6 +436,8 @@ class RecommendationEngine:
         time_cost_score = self._time_cost_score(combo)
         weather_score = self._weather_score(combo, weather)
         thermal_penalty = self._thermal_feedback_penalty(combo, weather, thermal_offset_c)
+        season_penalty = self._out_of_season_penalty(combo, season)
+        formality_penalty = self._formality_feedback_penalty(combo, formality_bias)
         fit_score = self._fit_score(combo, fit_profile)
         repetition_penalty = self._repetition_penalty(combo, recent_worn_outfit_item_ids)
         # BE#46 — explicit negative color preference: one penalty unit per item
@@ -444,6 +470,8 @@ class RecommendationEngine:
                 - repetition_penalty
                 - disliked_penalty
                 - thermal_penalty
+                - season_penalty
+                - formality_penalty
                 + indoor_climate_bonus
                 + context_bonus
             )
@@ -456,6 +484,8 @@ class RecommendationEngine:
                 - repetition_penalty
                 - disliked_penalty
                 - thermal_penalty
+                - season_penalty
+                - formality_penalty
                 + indoor_climate_bonus
                 + context_bonus
             )
@@ -467,6 +497,8 @@ class RecommendationEngine:
                 - repetition_penalty
                 - disliked_penalty
                 - thermal_penalty
+                - season_penalty
+                - formality_penalty
                 + indoor_climate_bonus
                 + context_bonus
             )
@@ -497,6 +529,10 @@ class RecommendationEngine:
             score_breakdown["context_bonus"] = context_bonus
         if thermal_penalty:
             score_breakdown["thermal_feedback_penalty"] = thermal_penalty
+        if season_penalty:
+            score_breakdown["out_of_season_penalty"] = season_penalty
+        if formality_penalty:
+            score_breakdown["formality_feedback_penalty"] = formality_penalty
         return EngineOutfit(
             outfit_type=outfit_type,
             title=title,
@@ -627,6 +663,26 @@ class RecommendationEngine:
             return THERMAL_FEEDBACK_PENALTY  # was too cold without one
         return 0.0
 
+    def _out_of_season_penalty(self, combo: list[EngineItem], season: str | None) -> float:
+        """Down-rank looks that need a garment tagged for other seasons. Untagged
+        garments never count (unknown is not "wrong"); 0 when nothing is tagged."""
+        if season is None:
+            return 0.0
+        off = sum(1 for item in combo if not in_season(item.season_tags, season))
+        return min(OUT_OF_SEASON_PENALTY * off, OUT_OF_SEASON_PENALTY_CAP)
+
+    def _formality_feedback_penalty(self, combo: list[EngineItem], formality_bias: int) -> float:
+        """Penalty from the user's "too formal" / "too casual" feedback, applied
+        only when the look's formality is actually known."""
+        mean = _mean_formality(combo)
+        if formality_bias == 0 or mean is None:
+            return 0.0
+        if formality_bias < 0 and mean >= BUSINESS_FORMALITY:
+            return FORMALITY_FEEDBACK_PENALTY  # said "too formal"
+        if formality_bias > 0 and mean <= CASUAL_FORMALITY:
+            return FORMALITY_FEEDBACK_PENALTY  # said "too casual"
+        return 0.0
+
     def _indoor_climate_score(
         self, combo: list[EngineItem], indoor_climate: IndoorClimateSignal | None
     ) -> float:
@@ -656,10 +712,15 @@ class RecommendationEngine:
         has_outer = Category.OUTERWEAR.value in categories
         if REMOVABLE_LAYER in constraints and has_outer:
             bonus += 0.10
-        if FORMAL in constraints and has_outer:
-            # No item formality metadata; a layer reads more polished — a mild,
-            # honest nudge. applied_context tells FE what was requested regardless.
-            bonus += 0.06
+        if FORMAL in constraints:
+            mean = _mean_formality(combo)
+            if mean is not None:
+                # Recognised formality: reward business-level looks.
+                bonus += 0.10 if mean >= BUSINESS_FORMALITY else 0.0
+            elif has_outer:
+                # No formality metadata; a layer reads more polished — a mild,
+                # honest nudge. applied_context tells FE what was requested regardless.
+                bonus += 0.06
         if COMFORT in constraints:
             # Reward low-effort, easy-to-wear looks (time_cost already captures this).
             bonus += 0.10 * time_cost_score
@@ -820,6 +881,12 @@ class RecommendationEngine:
                 if item_by_id[item_id].category in core_categories
             )
         )
+
+
+def _mean_formality(combo: list[EngineItem]) -> float | None:
+    """Average recognised formality of the look; None when no piece has one."""
+    known = [item.formality_score for item in combo if item.formality_score is not None]
+    return sum(known) / len(known) if known else None
 
 
 def _clamp_score(value: float) -> float:

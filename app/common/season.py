@@ -18,3 +18,14 @@ def current_season(today: date) -> str:
     if m in (9, 10, 11):
         return "autumn"
     return "winter"
+
+
+def season_tags_of(raw: object) -> tuple[str, ...]:
+    """Season tags from the stored `{"tags": [...]}` JSONB shape; () if unknown."""
+    tags = raw.get("tags") if isinstance(raw, dict) else None
+    return tuple(str(tag) for tag in tags) if isinstance(tags, list) else ()
+
+
+def in_season(tags: tuple[str, ...], season: str) -> bool:
+    """True when the garment suits `season`; untagged garments always do."""
+    return not tags or season in tags or "all_season" in tags

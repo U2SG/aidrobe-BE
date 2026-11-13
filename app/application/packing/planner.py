@@ -24,6 +24,7 @@ from app.application.recommendations.engine import (
     RelationshipEdge,
 )
 from app.common.enums import Category
+from app.common.season import season_tags_of
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 _RAIN_THRESHOLD = 0.5
@@ -109,6 +110,9 @@ def _to_engine_item(item: WardrobeItem) -> EngineItem:
         location=item.location,
         fit_status=item.fit_status,
         fit_intent=item.fit_intent,
+        sub_category=item.sub_category,
+        formality_score=item.formality_score,
+        season_tags=season_tags_of(item.season_tags),
     )
 
 
