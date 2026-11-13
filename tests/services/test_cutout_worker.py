@@ -269,7 +269,7 @@ async def test_confirm_enqueues_cutout_when_flag_on(
         use_case = ConfirmImageImportTask(
             SqlAlchemyImportTaskRepository(s), SqlAlchemyWardrobeRepository(s)
         )
-        item = await use_case.execute(
+        confirmed = await use_case.execute(
             task_id=task_id,
             user_id=user_id,
             title="Off-Shoulder Top",
@@ -277,7 +277,7 @@ async def test_confirm_enqueues_cutout_when_flag_on(
             color_main="grey",
         )
         await s.commit()
-        item_id = item.id
+        item_id = confirmed.item.id
 
     async with patched_session_factory() as s:
         refreshed = await s.get(WardrobeItem, item_id)

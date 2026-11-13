@@ -259,7 +259,7 @@
     "/readyz": {
       "get": {
         "summary": "Readiness",
-        "description": "Deep health check: returns 200 when the DB is reachable, 503 otherwise.\nUsed by the docker-compose healthcheck and load-balancer probes.",
+        "description": "Deep health check: 200 only when the DB and Redis both answer.\nUsed by the docker-compose healthcheck and load-balancer probes.",
         "operationId": "readiness_readyz_get",
         "responses": {
           "200": {
@@ -267,6 +267,36 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/version": {
+      "get": {
+        "summary": "Version",
+        "description": "Which code and which schema this instance runs; null revision when the\ndatabase has no alembic_version table (e.g. schema built without Alembic).",
+        "operationId": "version_version_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "type": "object",
+                  "title": "Response Version Version Get"
+                }
               }
             }
           }
@@ -570,6 +600,23 @@
         "summary": "Create Import Task",
         "operationId": "create_import_task_v1_import_tasks_post",
         "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 128
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
           {
             "name": "Authorization",
             "in": "header",
@@ -8541,6 +8588,18 @@
               }
             ],
             "title": "Should Import"
+          },
+          "confirmed_item_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed Item Id"
           }
         },
         "type": "object",
@@ -8844,6 +8903,11 @@
             "type": "array",
             "minItems": 1,
             "title": "Items"
+          },
+          "dismiss_remaining": {
+            "type": "boolean",
+            "title": "Dismiss Remaining",
+            "default": false
           }
         },
         "type": "object",
@@ -8860,6 +8924,17 @@
             },
             "type": "array",
             "title": "Created Items"
+          },
+          "task_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Status"
           }
         },
         "type": "object",
