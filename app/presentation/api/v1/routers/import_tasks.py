@@ -2,12 +2,16 @@ import uuid
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, status
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.avatar.enqueue_candidate_detection import enqueue_candidate_detection
-from app.application.import_tasks.confirm_import import ConfirmImageImportTask, ConfirmItemInput
+from app.application.import_tasks.confirm_import import (
+    ConfirmImageImportTask,
+    ConfirmItemInput,
+    confirmed_item_ids,
+)
 from app.application.import_tasks.create_import import CreateImageImportTask
 from app.common import error_codes
 from app.common.enums import AvatarSourceType, InputType
@@ -51,7 +55,7 @@ router = APIRouter(prefix="/v1/import-tasks", tags=["import-tasks"])
 
 
 def to_response(task: ImportTask) -> ImportTaskResponse:
-    candidate_items = _candidate_items_from_payload(task.candidate_payload)
+    candidate_items = _candidate_items_from_payload(task.candidate_payload, confirmed_item_ids(task))
     # Compat: `candidate_item` mirrors the first recommended candidate
     # (`should_import`), falling back to the first one overall.
     candidate_item = next(
@@ -68,13 +72,19 @@ def to_response(task: ImportTask) -> ImportTaskResponse:
     )
 
 
-def _candidate_items_from_payload(payload: dict[str, object] | None) -> list[CandidateItem]:
+def _candidate_items_from_payload(
+    payload: dict[str, object] | None, confirmed: dict[str, str] | None = None
+) -> list[CandidateItem]:
     if not payload:
         return []
     # BE#24 — new multi-candidate payloads nest the list under `candidate_items`.
     raw_items = payload.get("candidate_items")
     if isinstance(raw_items, list):
-        return [CandidateItem(**item) for item in raw_items]
+        candidates = [CandidateItem(**item) for item in raw_items]
+        for candidate in candidates:
+            if candidate.temp_item_id and confirmed and candidate.temp_item_id in confirmed:
+                candidate.confirmed_item_id = uuid.UUID(confirmed[candidate.temp_item_id])
+        return candidates
     # Legacy / OCR payloads store a single candidate at the top level; the
     # nested key is absent, so map the top-level shape to a length-1 list.
     legacy = {key: value for key, value in payload.items() if key != "candidate_items"}
@@ -91,6 +101,7 @@ async def create_import_task(
     background_tasks: BackgroundTasks,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key", max_length=128)] = None,
 ) -> ResponseModel[ImportTaskResponse]:
     if payload.image_url is None and payload.source_url is None:
         raise FriendlyException(
@@ -109,15 +120,20 @@ async def create_import_task(
 
     repository = SqlAlchemyImportTaskRepository(session)
     use_case = CreateImageImportTask(repository)
-    task = await use_case.execute(
+    task, created = await use_case.execute(
         user_id=current_user.id,
         input_type=payload.input_type,
         source_type=payload.source_type,
         image_url=payload.image_url,
         source_url=payload.source_url,
         locale=payload.locale,
+        idempotency_key=idempotency_key,
     )
     response = to_response(task)
+    if not created:
+        # Retried create with the same Idempotency-Key: the first attempt
+        # already queued processing.
+        return ResponseModel(data=response)
     # BE#26 — when enabled, hand processing to job_runtime/arq (own session,
     # lease/retry/dead-letter) instead of running heavy Vision/OCR/link work in
     # the request lifecycle on the request's session. The import_tasks row is
@@ -143,7 +159,7 @@ async def confirm_import_task(
         SqlAlchemyRecommendationRepository(session),
         SqlAlchemyStyleRepository(session),
     )
-    item = await use_case.execute(
+    confirmed = await use_case.execute(
         task_id=task_id,
         user_id=current_user.id,
         title=payload.title,
@@ -156,12 +172,14 @@ async def confirm_import_task(
         purchase_price=payload.purchase_price,
         purchase_date=payload.purchase_date,
     )
-    await SqlAlchemyOperationLogRepository(session).add(
-        current_user.id,
-        "item_imported",
-        {"category": item.category, "color_main": item.color_main},
-    )
-    await invalidate_daily_recommendation_cache(redis_client, current_user.id)
+    item = confirmed.item
+    if confirmed.created:
+        await SqlAlchemyOperationLogRepository(session).add(
+            current_user.id,
+            "item_imported",
+            {"category": item.category, "color_main": item.color_main},
+        )
+        await invalidate_daily_recommendation_cache(redis_client, current_user.id)
     return ResponseModel(data=ConfirmImportResponse(item_id=item.id))
 
 
@@ -179,7 +197,7 @@ async def confirm_import_items(
         SqlAlchemyRecommendationRepository(session),
         SqlAlchemyStyleRepository(session),
     )
-    created = await use_case.confirm_items(
+    confirmed = await use_case.confirm_items(
         task_id=task_id,
         user_id=current_user.id,
         items=[
@@ -195,19 +213,24 @@ async def confirm_import_items(
             )
             for item in payload.items
         ],
+        dismiss_remaining=payload.dismiss_remaining,
     )
     operation_log_repo = SqlAlchemyOperationLogRepository(session)
-    for _temp_id, item in created:
+    new_entries = [entry for entry in confirmed if entry.created]
+    for entry in new_entries:
         await operation_log_repo.add(
             current_user.id,
             "item_imported",
-            {"category": item.category, "color_main": item.color_main},
+            {"category": entry.item.category, "color_main": entry.item.color_main},
         )
-    await invalidate_daily_recommendation_cache(redis_client, current_user.id)
-    await _offer_outfit_import_as_avatar_candidate(session, task_id=task_id, user_id=current_user.id)
+    if new_entries:
+        await invalidate_daily_recommendation_cache(redis_client, current_user.id)
+        await _offer_outfit_import_as_avatar_candidate(session, task_id=task_id, user_id=current_user.id)
+    task = await SqlAlchemyImportTaskRepository(session).get_for_user(task_id, current_user.id)
     return ResponseModel(
         data=ConfirmItemsResponse(
-            created_items=[ConfirmedItem(temp_item_id=temp_id, item_id=item.id) for temp_id, item in created]
+            created_items=[ConfirmedItem(temp_item_id=entry.temp_item_id, item_id=entry.item.id) for entry in confirmed],
+            task_status=task.task_status if task else None,
         )
     )
 

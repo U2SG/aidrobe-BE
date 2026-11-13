@@ -49,6 +49,9 @@ class CandidateItem(BaseModel):
     bbox: list[float] | None = None
     visibility: str | None = None
     should_import: bool | None = None
+    # Set once this candidate has been confirmed (batches / retries); the
+    # client skips it and can resume with the remaining ones.
+    confirmed_item_id: UUID | None = None
 
 
 class ConfirmItemInput(BaseModel):
@@ -67,6 +70,10 @@ class ConfirmItemInput(BaseModel):
 
 class ConfirmItemsRequest(BaseModel):
     items: list[ConfirmItemInput] = Field(min_length=1)
+    # Close the task after this batch even if other candidates are left
+    # unconfirmed. By default the task stays waiting_confirm until every
+    # candidate is confirmed, so the rest can be imported in a later batch.
+    dismiss_remaining: bool = False
 
 
 class ConfirmedItem(BaseModel):
@@ -76,6 +83,8 @@ class ConfirmedItem(BaseModel):
 
 class ConfirmItemsResponse(BaseModel):
     created_items: list[ConfirmedItem]
+    # waiting_confirm while candidates remain; completed otherwise.
+    task_status: str | None = None
 
 
 class ImportTaskResponse(BaseModel):

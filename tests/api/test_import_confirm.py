@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import Settings, get_settings
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
@@ -147,7 +148,9 @@ async def test_confirm_user_custom_name_wins(db_session: AsyncSession) -> None:
     assert item.canonical_name == "White shirt"
 
 
-async def test_confirm_completed_task_returns_409(db_session: AsyncSession) -> None:
+async def test_confirm_retry_returns_the_same_item(db_session: AsyncSession) -> None:
+    # A retried confirm (lost response, double tap) replays the first result
+    # instead of failing with 409 or creating a second item.
     user_id = uuid.uuid4()
     app = build_import_confirm_app(db_session)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
@@ -165,8 +168,10 @@ async def test_confirm_completed_task_returns_409(db_session: AsyncSession) -> N
         )
 
     assert first.status_code == 200
-    assert second.status_code == 409
-    assert second.json()["code"] == 4091
+    assert second.status_code == 200
+    assert second.json()["data"]["item_id"] == first.json()["data"]["item_id"]
+    items = list(await db_session.scalars(select(WardrobeItem).where(WardrobeItem.user_id == user_id)))
+    assert len(items) == 1
 
 
 async def test_confirm_marks_import_task_completed(db_session: AsyncSession) -> None:
@@ -381,3 +386,98 @@ async def test_confirm_items_non_waiting_returns_409(db_session: AsyncSession) -
             json={"items": [{"temp_item_id": "tmp_1", "title": "X", "category": "top", "color_main": "white"}]},
         )
     assert response.status_code == 409
+
+
+def _item_payload(temp_id: str, title: str) -> dict[str, str]:
+    return {"temp_item_id": temp_id, "title": title, "category": "top", "color_main": "white"}
+
+
+async def test_create_with_same_idempotency_key_returns_same_task(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    app = build_import_confirm_app(db_session)
+    body = {"input_type": "image", "source_type": "camera", "image_url": "https://cdn/shirt.jpg"}
+    headers = {"X-User-Id": str(user_id), "Idempotency-Key": "upload-abc"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        first = await client.post("/v1/import-tasks", headers=headers, json=body)
+        second = await client.post("/v1/import-tasks", headers=headers, json=body)
+        other = await client.post(
+            "/v1/import-tasks", headers={**headers, "Idempotency-Key": "upload-def"}, json=body
+        )
+
+    assert first.status_code == second.status_code == 202
+    assert second.json()["data"]["task_id"] == first.json()["data"]["task_id"]
+    assert other.json()["data"]["task_id"] != first.json()["data"]["task_id"]
+    tasks = list(await db_session.scalars(select(ImportTask).where(ImportTask.user_id == user_id)))
+    assert len(tasks) == 2
+
+
+async def test_confirm_items_in_batches_keeps_task_open_until_all_confirmed(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    task = await seed_multi_candidate_task(db_session, user_id)
+    app = build_import_confirm_app(db_session)
+    url = f"/v1/import-tasks/{task.id}/confirm-items"
+    headers = {"X-User-Id": str(user_id)}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        first = await client.post(url, headers=headers, json={"items": [_item_payload("tmp_1", "Tee")]})
+        polled = await client.get(f"/v1/import-tasks/{task.id}", headers=headers)
+        second = await client.post(url, headers=headers, json={"items": [_item_payload("tmp_2", "Skirt")]})
+        retry = await client.post(url, headers=headers, json={"items": [_item_payload("tmp_1", "Tee")]})
+
+    assert first.status_code == 200
+    assert first.json()["data"]["task_status"] == "waiting_confirm"
+    first_item_id = first.json()["data"]["created_items"][0]["item_id"]
+    candidates = {c["temp_item_id"]: c for c in polled.json()["data"]["candidate_items"]}
+    assert polled.json()["data"]["status"] == "waiting_confirm"
+    assert candidates["tmp_1"]["confirmed_item_id"] == first_item_id
+    assert candidates["tmp_2"]["confirmed_item_id"] is None
+
+    assert second.status_code == 200
+    assert second.json()["data"]["task_status"] == "completed"
+    # Re-sending a confirmed candidate after completion replays it.
+    assert retry.status_code == 200
+    assert retry.json()["data"]["created_items"][0]["item_id"] == first_item_id
+    items = list(await db_session.scalars(select(WardrobeItem).where(WardrobeItem.user_id == user_id)))
+    assert len(items) == 2
+
+
+async def test_confirm_items_dismiss_remaining_completes_task(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    task = await seed_multi_candidate_task(db_session, user_id)
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            f"/v1/import-tasks/{task.id}/confirm-items",
+            headers={"X-User-Id": str(user_id)},
+            json={"items": [_item_payload("tmp_1", "Tee")], "dismiss_remaining": True},
+        )
+        late = await client.post(
+            f"/v1/import-tasks/{task.id}/confirm-items",
+            headers={"X-User-Id": str(user_id)},
+            json={"items": [_item_payload("tmp_2", "Skirt")]},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["task_status"] == "completed"
+    # A dismissed candidate can no longer be imported.
+    assert late.status_code == 409
+
+
+async def test_confirm_enqueues_item_embedding(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    app = build_import_confirm_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        task_id = await create_task(client, user_id)
+        response = await client.post(
+            f"/v1/import-tasks/{task_id}/confirm",
+            headers={"X-User-Id": str(user_id)},
+            json={"title": "Office shirt", "category": "top", "color_main": "white"},
+        )
+
+    item_id = uuid.UUID(response.json()["data"]["item_id"])
+    jobs = list(
+        await db_session.scalars(
+            select(AsyncJob).where(AsyncJob.job_type == "embedding", AsyncJob.user_id == user_id)
+        )
+    )
+    assert len(jobs) == 1
+    assert jobs[0].payload["item_id"] == str(item_id)

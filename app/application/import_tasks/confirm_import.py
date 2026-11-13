@@ -4,6 +4,8 @@ from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+import structlog
+
 from app.application.cost_guard import assert_within_quota
 from app.application.recommendations.background import schedule_today_recompute
 from app.common import error_codes
@@ -22,6 +24,8 @@ from app.infrastructure.persistence.repositories.style_repo import SqlAlchemySty
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.workers.cutout_worker import enqueue_item_cutout
 
+logger = structlog.get_logger(__name__)
+
 
 @dataclass(frozen=True)
 class ConfirmItemInput:
@@ -39,6 +43,31 @@ class ConfirmItemInput:
     size_label: str | None = None
     fit_status: str | None = None
     fit_intent: str | None = None
+
+
+@dataclass(frozen=True)
+class ConfirmedEntry:
+    temp_item_id: str
+    item: WardrobeItem
+    created: bool  # False = replay of an earlier confirmation
+
+
+# Which wardrobe item each candidate became, kept in `input_payload` so a
+# retried confirm returns the same item instead of a 409 / a duplicate, and a
+# multi-candidate task can be confirmed in several batches.
+_CONFIRMED_KEY = "confirmed_items"
+_SINGLE_KEY = "__single__"
+
+
+def confirmed_item_ids(task: ImportTask) -> dict[str, str]:
+    """temp_item_id (or the single-confirm key) → created wardrobe item id."""
+    raw = (task.input_payload or {}).get(_CONFIRMED_KEY)
+    return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+
+
+def _store_confirmed_map(task: ImportTask, mapping: dict[str, str]) -> None:
+    # Reassign (not mutate) so SQLAlchemy sees the JSONB change.
+    task.input_payload = {**(task.input_payload or {}), _CONFIRMED_KEY: mapping}
 
 
 class ConfirmImageImportTask:
@@ -67,8 +96,14 @@ class ConfirmImageImportTask:
         fit_intent: str | None = None,
         purchase_price: Decimal | None = None,
         purchase_date: date | None = None,
-    ) -> WardrobeItem:
-        task = await self._load_waiting_task(task_id, user_id)
+    ) -> ConfirmedEntry:
+        task = await self._load_task(task_id, user_id)
+        confirmed = confirmed_item_ids(task)
+        if task.task_status == ImportStatus.COMPLETED.value and _SINGLE_KEY in confirmed:
+            existing = await self._existing_item(confirmed[_SINGLE_KEY], user_id)
+            if existing is not None:
+                return ConfirmedEntry(_SINGLE_KEY, existing, created=False)
+        self._require_waiting(task)
 
         item = await self._create_item(
             user_id=user_id,
@@ -85,24 +120,37 @@ class ConfirmImageImportTask:
             purchase_date=purchase_date,
         )
 
+        _store_confirmed_map(task, {**confirmed, _SINGLE_KEY: str(item.id)})
         task.task_status = ImportStatus.COMPLETED.value
         await self.import_task_repository.flush()
         await schedule_today_recompute(user_id, self.recommendation_repository, self.style_repository)
-        return item
+        return ConfirmedEntry(_SINGLE_KEY, item, created=True)
 
     async def confirm_items(
         self,
         task_id: uuid.UUID,
         user_id: uuid.UUID,
         items: list[ConfirmItemInput],
-    ) -> list[tuple[str, WardrobeItem]]:
+        *,
+        dismiss_remaining: bool = False,
+    ) -> list[ConfirmedEntry]:
         """BE#25 — batch-confirm a subset of the task's candidates.
 
         Each input targets a candidate by `temp_item_id`; the typed form fields
         win over the candidate's AI guesses (same provenance rules as single
         confirm). Reuses `_create_item` so item/image/cutout behavior is shared.
+
+        Batches: the task stays `waiting_confirm` while candidates remain, so the
+        rest can be confirmed later; it completes once every candidate is
+        confirmed or the caller passes `dismiss_remaining`. Re-sending an
+        already confirmed candidate returns its existing item (retry-safe).
         """
-        task = await self._load_waiting_task(task_id, user_id)
+        task = await self._load_task(task_id, user_id)
+        confirmed = confirmed_item_ids(task)
+        if task.task_status != ImportStatus.WAITING_CONFIRM.value and not all(
+            entry.temp_item_id in confirmed for entry in items
+        ):
+            self._require_waiting(task)
 
         # Build temp_item_id -> raw candidate map from the persisted payload.
         # Legacy rows may carry a None temp_item_id; those keys are unaddressable
@@ -134,8 +182,14 @@ class ConfirmImageImportTask:
                     status_code=422,
                 )
 
-        created: list[tuple[str, WardrobeItem]] = []
+        results: list[ConfirmedEntry] = []
         for entry in items:
+            if entry.temp_item_id in confirmed:
+                existing = await self._existing_item(confirmed[entry.temp_item_id], user_id)
+                if existing is not None:
+                    results.append(ConfirmedEntry(entry.temp_item_id, existing, created=False))
+                    continue
+                self._require_waiting(task)
             item = await self._create_item(
                 user_id=user_id,
                 candidate=candidate_by_temp_id[entry.temp_item_id],
@@ -148,24 +202,40 @@ class ConfirmImageImportTask:
                 fit_status=entry.fit_status,
                 fit_intent=entry.fit_intent,
             )
-            created.append((entry.temp_item_id, item))
+            confirmed[entry.temp_item_id] = str(item.id)
+            results.append(ConfirmedEntry(entry.temp_item_id, item, created=True))
 
-        task.task_status = ImportStatus.COMPLETED.value
+        _store_confirmed_map(task, confirmed)
+        if dismiss_remaining or not set(candidate_by_temp_id) - set(confirmed):
+            task.task_status = ImportStatus.COMPLETED.value
         await self.import_task_repository.flush()
-        await schedule_today_recompute(user_id, self.recommendation_repository, self.style_repository)
-        return created
+        if any(entry.created for entry in results):
+            await schedule_today_recompute(user_id, self.recommendation_repository, self.style_repository)
+        return results
 
-    async def _load_waiting_task(self, task_id: uuid.UUID, user_id: uuid.UUID) -> ImportTask:
+    async def _load_task(self, task_id: uuid.UUID, user_id: uuid.UUID) -> ImportTask:
+        # FOR UPDATE: a concurrent confirm waits, then sees the recorded
+        # confirmation and replays it instead of creating a duplicate item.
         task = await self.import_task_repository.get_for_user(task_id, user_id, for_update=True)
         if task is None:
             raise FriendlyException(error_codes.NOT_FOUND, "Import task not found", status_code=404)
+        return task
+
+    @staticmethod
+    def _require_waiting(task: ImportTask) -> None:
         if task.task_status != ImportStatus.WAITING_CONFIRM.value:
             raise FriendlyException(
                 error_codes.STATE_CONFLICT,
                 "Import task is not waiting for confirmation",
                 status_code=409,
             )
-        return task
+
+    async def _existing_item(self, item_id: str, user_id: uuid.UUID) -> WardrobeItem | None:
+        try:
+            parsed = uuid.UUID(item_id)
+        except ValueError:
+            return None
+        return await self.wardrobe_repository.get_for_user(parsed, user_id)
 
     async def _create_item(
         self,
@@ -278,7 +348,30 @@ class ConfirmImageImportTask:
                 # quota exhausted (429) — leave cutout_status='skipped'.
                 pass
 
+        # Similarity search (replacements, duplicate checks, purchase evidence)
+        # reads item embeddings; this is their only producer for imported items.
+        # Idempotent per (item, model version); a failure must not block import.
+        if original_image_url:
+            await self._enqueue_embedding(item, user_id, str(original_image_url))
+
         return item
+
+    async def _enqueue_embedding(self, item: WardrobeItem, user_id: uuid.UUID, image_url: str) -> None:
+        from app.bootstrap.container import embedding_service
+        from app.infrastructure.workers.embedding_worker import enqueue_embedding
+
+        session = self.wardrobe_repository.session
+        try:
+            async with session.begin_nested():
+                await enqueue_embedding(
+                    session,
+                    item_id=item.id,
+                    image_url=image_url,
+                    model_version=embedding_service().model_version,
+                    user_id=user_id,
+                )
+        except Exception:
+            logger.warning("import_confirm.embedding_enqueue_failed", item_id=str(item.id), exc_info=True)
 
 
 def _to_decimal(value: object) -> Decimal | None:
