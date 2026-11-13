@@ -285,12 +285,19 @@ class RecommendationEngine:
             )
             for outfit in selected
         ]
+        # The LLM only rewrites the reason of outfits the user will actually see
+        # (≤3). Polishing every scored candidate made one generation cost
+        # hundreds of serial calls on a mid-sized wardrobe.
+        selected = [
+            await self._polish_reason(outfit, item_by_id, weather, recent_worn_main_item_ids)
+            for outfit in selected
+        ]
 
         return EngineResult(
             status="ready",
             outfits=selected,
             candidates=candidates,
-            llm_boundary_used=any(candidate.llm_boundary_used for candidate in candidates),
+            llm_boundary_used=any(outfit.llm_boundary_used for outfit in selected),
         )
 
     async def _build_candidates(
@@ -450,29 +457,9 @@ class RecommendationEngine:
 
         title = _TITLE_TEMPLATES[outfit_type]
         template = _REASON_TEMPLATES[outfit_type]
+        # Template reason only; the LLM polishes the selected outfits in
+        # `generate` (one call per shown outfit, not per scored candidate).
         reason = template.format(title=combo[0].title)
-
-        # Polish reason with LLM if available
-        llm_boundary_used = False
-        if self.llm is not None:
-            llm_boundary_used = True
-            try:
-                prompt = self._build_reason_prompt(
-                    outfit_type,
-                    combo,
-                    colors,
-                    categories,
-                    weather=weather,
-                    is_fresh=main_item_id not in recent_worn_main_item_ids,
-                )
-                polished = await self.llm.polish_reason(prompt)
-                if polished.strip():
-                    reason = sanitize_generated_copy(
-                        polished.strip(), fallback=reason
-                    )
-            except Exception:
-                # Fall through to template reason
-                pass
 
         score_breakdown = {
             "utility_score": utility_score,
@@ -499,8 +486,38 @@ class RecommendationEngine:
             item_ids=[item.item_id for item in combo],
             score_total=round(max(0.0, total), 4),
             score_breakdown=score_breakdown,
-            llm_boundary_used=llm_boundary_used,
         )
+
+    async def _polish_reason(
+        self,
+        outfit: EngineOutfit,
+        item_by_id: dict[str, EngineItem],
+        weather: WeatherInfo | None,
+        recent_worn_main_item_ids: set[str],
+    ) -> EngineOutfit:
+        """LLM-polish one selected outfit's reason; the template stays on failure."""
+        if self.llm is None:
+            return outfit
+        combo = [item_by_id[item_id] for item_id in outfit.item_ids if item_id in item_by_id]
+        if not combo:
+            return outfit
+        reason = outfit.reason_text
+        try:
+            prompt = self._build_reason_prompt(
+                outfit.outfit_type,
+                combo,
+                [item.color_main for item in combo],
+                [item.category for item in combo],
+                weather=weather,
+                is_fresh=self._main_item(outfit.item_ids, combo) not in recent_worn_main_item_ids,
+            )
+            polished = await self.llm.polish_reason(prompt)
+            if polished.strip():
+                reason = sanitize_generated_copy(polished.strip(), fallback=reason)
+        except Exception:
+            # Fall through to template reason
+            pass
+        return replace(outfit, reason_text=reason, llm_boundary_used=True)
 
     def _build_reason_prompt(
         self,

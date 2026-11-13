@@ -2,17 +2,29 @@ import uuid
 from collections.abc import Mapping
 from typing import cast
 
+from app.application.recommendations.background import schedule_today_recompute
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.repositories.recommendation_repo import (
+    SqlAlchemyRecommendationRepository,
+)
+from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 
 FitUpdateValue = str | int | None
 
 
 class UpdateWardrobeFit:
-    def __init__(self, repository: SqlAlchemyWardrobeRepository) -> None:
+    def __init__(
+        self,
+        repository: SqlAlchemyWardrobeRepository,
+        recommendation_repository: SqlAlchemyRecommendationRepository | None = None,
+        style_repository: SqlAlchemyStyleRepository | None = None,
+    ) -> None:
         self.repository = repository
+        self.recommendation_repository = recommendation_repository
+        self.style_repository = style_repository
 
     async def execute(
         self,
@@ -43,4 +55,9 @@ class UpdateWardrobeFit:
             item.comfort_score = cast(int | None, updates["comfort_score"])
 
         await self.repository.flush()
+        # fit_status feeds ranking (tight / needs_alteration down-rank,
+        # no_longer_fits excludes), so Today must be regenerated like any other
+        # wardrobe mutation.
+        if "fit_status" in updates:
+            await schedule_today_recompute(user_id, self.recommendation_repository, self.style_repository)
         return item

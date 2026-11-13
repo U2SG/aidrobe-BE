@@ -421,3 +421,33 @@ async def test_no_disliked_colors_is_legacy_behavior() -> None:
     a = await RecommendationEngine().generate(items)
     b = await RecommendationEngine().generate(items, disliked_colors=set())
     assert [o.score_total for o in a.outfits] == [o.score_total for o in b.outfits]
+
+
+class CountingLlm:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def polish_reason(self, prompt: str) -> str:
+        self.calls += 1
+        return "AI润色"
+
+
+@pytest.mark.asyncio
+async def test_llm_only_polishes_selected_outfits() -> None:
+    # 10 tops x 8 bottoms + outerwear + shoes scores hundreds of candidates; the
+    # LLM must only be asked about the outfits actually returned.
+    llm = CountingLlm()
+    items = [EngineItem(f"t{i}", f"Top {i}", "top", "white") for i in range(10)]
+    items += [EngineItem(f"b{i}", f"Bottom {i}", "bottom", "navy") for i in range(8)]
+    items += [
+        EngineItem("o1", "Coat", "outerwear", "beige"),
+        EngineItem("s1", "Loafers", "shoes", "brown"),
+    ]
+
+    result = await RecommendationEngine(llm=llm).generate(items)
+
+    assert result.status == "ready"
+    assert len(result.candidates) > 100
+    assert llm.calls == len(result.outfits) <= 3
+    assert all(outfit.reason_text == "AI润色" for outfit in result.outfits)
+    assert result.llm_boundary_used is True

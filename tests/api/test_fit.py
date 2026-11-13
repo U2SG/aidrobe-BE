@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.enums import Category, ItemStatus
 from app.config.settings import Settings, get_settings
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.fit import FitFeedback
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -137,3 +138,40 @@ async def test_fit_rejects_invalid_enum(db_session: AsyncSession) -> None:
 
     assert response.status_code == 422
     assert response.json()["code"] == 4001
+
+
+async def test_patch_fit_status_schedules_today_recompute(db_session: AsyncSession) -> None:
+    # fit_status changes ranking (no_longer_fits is excluded), so Today must be
+    # regenerated; size-only edits must not churn it.
+    user_id = uuid.uuid4()
+    item = await seed_item(db_session, user_id)
+    app = build_fit_app(db_session)
+
+    async def recompute_jobs() -> list[AsyncJob]:
+        rows = await db_session.scalars(
+            select(AsyncJob).where(
+                AsyncJob.user_id == user_id,
+                AsyncJob.job_type == "recommendation_recompute",
+            )
+        )
+        return list(rows)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        size_only = await client.patch(
+            f"/v1/wardrobe-items/{item.id}/fit",
+            headers={"X-User-Id": str(user_id)},
+            json={"size_label": "L"},
+        )
+        assert size_only.status_code == 200
+        assert await recompute_jobs() == []
+
+        response = await client.patch(
+            f"/v1/wardrobe-items/{item.id}/fit",
+            headers={"X-User-Id": str(user_id)},
+            json={"fit_status": "no_longer_fits"},
+        )
+
+    assert response.status_code == 200
+    jobs = await recompute_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].status == "queued"
