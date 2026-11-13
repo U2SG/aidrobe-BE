@@ -2,7 +2,7 @@ import uuid
 from collections.abc import Mapping
 from datetime import date as DateType
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from app.application.recommendations.background import schedule_today_recompute
 from app.common import error_codes
@@ -87,7 +87,9 @@ def _apply_attributes(item: WardrobeItem, attributes: Mapping[str, Any]) -> None
         item.season_tags = {"tags": list(dict.fromkeys(seasons))} if seasons else None
     styles = attributes.get("style_tags")
     if styles is not None:
-        item.style_tags = list(dict.fromkeys(styles)) or None
+        # The JSONB column is typed as a dict on the model but holds a list
+        # (insights, reports and Ask all read it as one).
+        item.style_tags = cast(Any, list(dict.fromkeys(styles)) or None)
     formality = attributes.get("formality_score")
     if formality is not None:
         item.formality_score = formality
