@@ -219,8 +219,9 @@ def test_drain_constants_are_sane() -> None:
     assert import_worker.IMPORT_JOB_TYPE == "import_task"
 
 
-async def test_outfit_photo_gets_one_crop_per_garment(
-    patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("approved", [[True, True], [True, False]])
+async def test_outfit_photo_stores_only_approved_crops(
+    patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch, approved: list[bool]
 ) -> None:
     import io
 
@@ -240,8 +241,13 @@ async def test_outfit_photo_gets_one_crop_per_garment(
     async def _load(source_url: str, source_key: str | None) -> bytes:
         return photo.getvalue()
 
+    async def _review(self: object, crops: list[bytes], garments: list[object]) -> list[bool]:
+        assert len(crops) == len(garments) == 2
+        return approved
+
     monkeypatch.setattr("app.bootstrap.container.object_storage", lambda: _Storage())
     monkeypatch.setattr(garment_crops, "load_source_bytes", _load)
+    monkeypatch.setattr("app.infrastructure.vision.fake_vision.FakeVision.review_garment_crops", _review)
 
     user_id, task_id = await _seed_task(patched_session_factory, input_type="outfit_image")
     async with patched_session_factory() as s:
@@ -254,13 +260,16 @@ async def test_outfit_photo_gets_one_crop_per_garment(
         assert task is not None and task.candidate_payload is not None
         candidates = task.candidate_payload["candidate_items"]
     assert len(candidates) == 2
-    for candidate in candidates:
-        key = f"users/{user_id}/wardrobe/crops/{task_id}/{candidate['temp_item_id']}.jpg"
-        assert candidate["crop_object_key"] == key
-        assert candidate["crop_image_url"] == f"https://fake-storage/{key}"
+    for candidate, passed in zip(candidates, approved, strict=True):
         assert candidate["original_image_url"] == "https://cdn/shirt.jpg"
         assert len(candidate["bbox"]) == 4
-    assert len(stored) == 2
+        if not passed:
+            assert "crop_image_url" not in candidate and "crop_object_key" not in candidate
+            continue
+        key = f"users/{user_id}/wardrobe/verified-crops/{task_id}/{candidate['temp_item_id']}.jpg"
+        assert candidate["crop_object_key"] == key
+        assert candidate["crop_image_url"] == f"https://fake-storage/{key}"
+    assert len(stored) == sum(approved)
 
 
 async def test_crop_failure_keeps_the_full_photo(

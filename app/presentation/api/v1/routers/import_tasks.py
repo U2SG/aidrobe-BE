@@ -35,7 +35,11 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
 from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
-from app.infrastructure.storage.object_key import extract_internal_object_key, is_owned_object_key
+from app.infrastructure.storage.object_key import (
+    extract_internal_object_key,
+    is_legacy_garment_crop,
+    is_owned_object_key,
+)
 from app.infrastructure.workers.import_worker import enqueue_import_task, process_import_task_with_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url
@@ -112,7 +116,10 @@ def _review_photos(response: ImportTaskResponse, user_id: uuid.UUID) -> None:
         candidate.original_image_url = _image_for_review(candidate.original_image_url, user_id) or (
             candidate.original_image_url
         )
-        candidate.crop_image_url = _image_for_review(candidate.crop_image_url, user_id)
+        candidate.crop_image_url = (
+            None if is_legacy_garment_crop(candidate.crop_image_url, user_id)
+            else _image_for_review(candidate.crop_image_url, user_id)
+        )
         candidate.cutout_image_url = _image_for_review(candidate.cutout_image_url, user_id)
 
 

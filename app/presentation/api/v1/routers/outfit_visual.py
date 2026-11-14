@@ -27,6 +27,7 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
 from app.infrastructure.persistence.session import get_db_session as get_db
+from app.infrastructure.storage.object_key import is_legacy_garment_crop
 from app.infrastructure.workers.outfit_board_worker import enqueue_outfit_board
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url as _resolve_render_url
@@ -144,6 +145,8 @@ async def _outfit_board_item_list(
         if generate:
             board_item.update(title=item.title, color=item.color_main)
             source = review_sources.get(item_id, {})
+            if is_legacy_garment_crop(source.get("source_url"), user_id):
+                source = {}
             if source.get("source_key"):
                 board_item["review_object_key"] = source["source_key"]
             elif source.get("source_url"):
@@ -170,7 +173,9 @@ async def _outfit_board_item_list(
             (
                 images[kind]
                 for kind in _IMAGE_TYPE_PRIORITY[1:]
-                if kind in images and (images[kind].object_key or images[kind].image_url)
+                if kind in images
+                and (images[kind].object_key or images[kind].image_url)
+                and not is_legacy_garment_crop(images[kind].image_url, user_id)
             ),
             None,
         )
@@ -180,7 +185,9 @@ async def _outfit_board_item_list(
             elif thumbnail.image_url:
                 board_item["thumbnail_url"] = thumbnail.image_url
         else:
-            thumbnail_url = item.cover_image_url or item.original_image_url
+            thumbnail_url = item.cover_image_url
+            if not thumbnail_url or is_legacy_garment_crop(thumbnail_url, user_id):
+                thumbnail_url = item.original_image_url
             if thumbnail_url:
                 board_item["thumbnail_url"] = thumbnail_url
 

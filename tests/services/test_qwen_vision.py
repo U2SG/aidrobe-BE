@@ -25,6 +25,7 @@ async def test_analyze_outfit_keeps_top_and_bottom(monkeypatch: pytest.MonkeyPat
               "display_name": "Beige trousers",
               "category": "bottom",
               "color_main": "beige",
+              "box_2d": [250, 510, 700, 940],
               "confidence_score": 0.91
             }
           ]
@@ -35,6 +36,7 @@ async def test_analyze_outfit_keeps_top_and_bottom(monkeypatch: pytest.MonkeyPat
     results = await vision.analyze_outfit("https://cdn/outfit.jpg", "en-US")
 
     assert [result.category for result in results] == ["top", "bottom"]
+    assert results[1].bbox == (0.25, 0.51, 0.7, 0.94)
     assert [result.canonical_name for result in results] == [
         "Black T-shirt",
         "Beige trousers",

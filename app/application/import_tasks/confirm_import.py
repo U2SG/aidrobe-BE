@@ -22,6 +22,7 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
 )
 from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
+from app.infrastructure.storage.object_key import is_legacy_garment_crop
 from app.infrastructure.workers.cutout_worker import enqueue_item_cutout
 
 logger = structlog.get_logger(__name__)
@@ -273,6 +274,8 @@ class ConfirmImageImportTask:
         # neither field, so it falls back to original (behavior unchanged).
         cutout_image_url = candidate.get("cutout_image_url")
         crop_image_url = candidate.get("crop_image_url")
+        if is_legacy_garment_crop(crop_image_url, user_id):
+            crop_image_url = None
         standard_image_url = cutout_image_url or crop_image_url or original_image_url
         # A garment crop we stored ourselves: keep its key so reads can be
         # signed on a private bucket instead of relying on the URL.
