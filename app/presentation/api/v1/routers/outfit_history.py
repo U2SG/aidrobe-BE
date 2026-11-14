@@ -20,6 +20,7 @@ from app.infrastructure.persistence.models.recommendation import Outfit, OutfitF
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.session import get_db_session as get_db
 from app.presentation.api.v1.deps import get_current_user
+from app.presentation.api.v1.render_url import wardrobe_image_urls
 from app.presentation.api.v1.schemas.outfit_history import (
     OotdUploadRequest,
     OotdUploadResponse,
@@ -53,8 +54,11 @@ async def _build_entries(
     item_ids = {oi.item_id for o in outfits_by_id.values() for oi in o.items}
     wardrobe_by_id: dict[uuid.UUID, WardrobeItem] = {}
     if item_ids:
-        wardrobe_result = await db.execute(select(WardrobeItem).where(WardrobeItem.id.in_(item_ids)))
+        wardrobe_result = await db.execute(
+            select(WardrobeItem).where(WardrobeItem.id.in_(item_ids), WardrobeItem.user_id == user_id)
+        )
         wardrobe_by_id = {w.id: w for w in wardrobe_result.scalars().all()}
+    wardrobe_images = await wardrobe_image_urls(db, list(wardrobe_by_id.values()))
 
     fb_result = await db.execute(
         select(OutfitFeedback).where(
@@ -79,7 +83,7 @@ async def _build_entries(
                         title=wardrobe.title if wardrobe else None,
                         category=category,
                         display_role=map_category_to_role(category),
-                        cover_image_url=wardrobe.cover_image_url if wardrobe else None,
+                        cover_image_url=wardrobe_images[oi.item_id].cover if wardrobe else None,
                     )
                 )
             outfit_summary = OutfitSummary(

@@ -152,6 +152,7 @@ class RecommendationGenerationSource(StrEnum):
 class ImageType(StrEnum):
     ORIGINAL = "original"
     STANDARD = "standard"
+    CROP = "crop"
 
 
 class CutoutStatus(StrEnum):

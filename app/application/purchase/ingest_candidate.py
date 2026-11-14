@@ -212,7 +212,7 @@ class IngestPurchaseCandidate:
         image_url = self._sign(source_object_key)
         if image_url is None:
             return ParsedItem(), False
-        reading = await self._analyze_image(image_url)
+        reading = await self._analyze_image(image_url, source_key=source_object_key)
         if reading is None:
             return ParsedItem(), False
         parsed = normalize_candidate(
@@ -229,7 +229,7 @@ class IngestPurchaseCandidate:
         if image_url is None:
             return ParsedItem(), False
         try:
-            result = await self.ocr.extract_text(image_url)
+            result = await self.ocr.extract_text(image_url, source_key=source_object_key)
         except (ValueError, RuntimeError):
             logger.info("v3.purchase_candidate.ocr_failed")
             return ParsedItem(), False
@@ -252,9 +252,9 @@ class IngestPurchaseCandidate:
             logger.info("v3.purchase_candidate.link_parse_failed")
             return ProductPage()
 
-    async def _analyze_image(self, image_url: str) -> VisionResult | None:
+    async def _analyze_image(self, image_url: str, *, source_key: str | None = None) -> VisionResult | None:
         try:
-            reading = await self.vision.analyze_image(image_url)
+            reading = await self.vision.analyze_image(image_url, source_key=source_key)
         except (ValueError, RuntimeError, httpx.HTTPError):
             # Provider down, image unreadable or response malformed: the
             # candidate degrades to parse_failed (contract §5.2), never a 500.

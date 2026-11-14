@@ -42,12 +42,7 @@ class CandidateItem(BaseModel):
     size_label: str | None = None
     purchase_price: str | None = None
     purchase_date: str | None = None
-    # BE#24 — multi-candidate fields. All optional with defaults so legacy
-    # single-candidate payloads (and OCR payloads) still deserialize into a
-    # length-1 candidate_items list. `temp_item_id` is a stable per-candidate
-    # id the worker persists (None for legacy rows); #25 confirm-items keys off
-    # it. `should_import` marks the recommended candidate; the first one with
-    # it true becomes the compat `candidate_item`.
+    # Stable ID shared by both confirmation routes, including old records.
     temp_item_id: str | None = None
     sub_category: str | None = None
     crop_image_url: str | None = None
@@ -103,12 +98,11 @@ class ConfirmItemsResponse(BaseModel):
 class ImportTaskResponse(BaseModel):
     task_id: UUID
     status: str
-    # Compat — old FE reads the single recommended candidate here. For a
-    # multi-candidate task this mirrors the first `should_import` candidate
-    # (falling back to the first overall).
+    # Compatibility field for clients using the single-confirm route.
     candidate_item: CandidateItem | None = None
     # BE#24 — new FE reads the full 1–N candidate list here. Always present;
     # empty for processing/failed tasks.
-    candidate_items: list[CandidateItem] = []
+    candidate_items: list[CandidateItem] = Field(default_factory=list)
     error_code: str | None = None
     error_message: str | None = None
+    retryable: bool | None = None

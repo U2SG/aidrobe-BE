@@ -8,7 +8,7 @@ import httpx
 from app.application.ports.vision import StyleAnalysis, VisionResult
 from app.common.locale import DEFAULT_LOCALE, resolve_locale
 from app.config.settings import Settings
-from app.infrastructure.storage.source_image import load_source_bytes
+from app.infrastructure.storage.source_image import image_data_uri, load_source_bytes
 
 # Human-readable language names per locale for the prompt instruction. zh-CN
 # MUST yield natural Simplified Chinese; we never want an English display_name
@@ -65,6 +65,7 @@ def build_vision_prompt(locale: str) -> str:
         f"return English for display_name unless the item genuinely has no "
         f"{language} name. "
         "confidence_score must be a number from 0 to 1. "
+        "If no garment is visible, return {\"no_garment\": true}. "
         + _ATTRIBUTE_PROMPT
     )
 
@@ -131,15 +132,21 @@ def _bound_tags(raw: Any, *, limit: int = _MAX_TAGS) -> list[str]:
     return seen
 
 
+class NoGarmentsDetected(ValueError):
+    pass
+
+
 class QwenVision:
     def __init__(self, settings: Settings) -> None:
         if not settings.QWEN_API_KEY:
             raise ValueError("QWEN_API_KEY is required when VISION_PROVIDER=qwen")
         self.settings = settings
 
-    async def analyze_image(self, image_url: str, locale: str = DEFAULT_LOCALE) -> VisionResult:
+    async def analyze_image(
+        self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
+    ) -> VisionResult:
         resolved = resolve_locale(locale)
-        content = await self._request_content(image_url, build_vision_prompt(resolved))
+        content = await self._request_content(image_url, build_vision_prompt(resolved), source_key=source_key)
         data = self._parse_json_content(content)
         return self._vision_result(data, resolved)
 
@@ -148,8 +155,10 @@ class QwenVision:
         content = await self._request_content(image_url, build_outfit_vision_prompt(resolved))
         payload = cast(dict[str, Any], json.loads(self._strip_json_fence(content)))
         raw_items = payload.get("items")
-        if not isinstance(raw_items, list) or not raw_items:
-            raise ValueError("Outfit response contains no garments")
+        if not isinstance(raw_items, list):
+            raise ValueError("Outfit response missing items")
+        if not raw_items:
+            return []
         if len(raw_items) > 12:
             raise ValueError("Outfit response contains too many garments")
         return merge_paired_garments(
@@ -232,10 +241,12 @@ class QwenVision:
         result = json.loads(self._strip_json_fence(content))
         return isinstance(result, dict) and result.get("accepted") is True
 
-    async def _request_content(self, image_url: str, prompt: str, *reference_urls: str) -> str:
+    async def _request_content(
+        self, image_url: str, prompt: str, *reference_urls: str, source_key: str | None = None
+    ) -> str:
         # Inline private wardrobe images instead of exposing signed URLs to the
         # third-party vision provider.
-        image_payload_url = await self._to_data_uri(image_url)
+        image_payload_url = await self._to_data_uri(image_url, source_key)
         payload = {
             "model": self.settings.QWEN_VISION_MODEL,
             "messages": [
@@ -266,16 +277,14 @@ class QwenVision:
             response.raise_for_status()
         return str(response.json()["choices"][0]["message"]["content"])
 
-    async def _to_data_uri(self, image_url: str) -> str:
+    async def _to_data_uri(self, image_url: str, source_key: str | None = None) -> str:
         # Already inlined (e.g. a caller passed a data URI) — pass through.
         if image_url.startswith("data:"):
             return image_url
         # Our own uploads are read from storage by key: the public URL is for
         # devices and may not resolve from the worker (in the local stack it is
         # localhost:9000). External import links are fetched behind the SSRF guard.
-        data = await load_source_bytes(image_url, None)
-        encoded = base64.b64encode(data).decode("ascii")
-        return f"data:{_image_mime(data)};base64,{encoded}"
+        return image_data_uri(await load_source_bytes(image_url, source_key))
 
     @staticmethod
     def _strip_json_fence(content: str) -> str:
@@ -285,7 +294,10 @@ class QwenVision:
         return text
 
     def _parse_json_content(self, content: str) -> dict[str, Any]:
-        return self._validate_vision_data(json.loads(self._strip_json_fence(content)))
+        raw = json.loads(self._strip_json_fence(content))
+        if isinstance(raw, dict) and raw.get("no_garment") is True:
+            raise NoGarmentsDetected
+        return self._validate_vision_data(raw)
 
     @staticmethod
     def _validate_vision_data(raw: Any) -> dict[str, Any]:

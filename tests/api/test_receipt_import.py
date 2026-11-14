@@ -14,6 +14,9 @@ from app.presentation.api.v1.routers import import_tasks as import_tasks_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
 
 
+pytestmark = pytest.mark.usefixtures("import_api_environment")
+
+
 def build_app(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
@@ -137,7 +140,7 @@ async def test_ocr_failure_marks_task_failed(db_session: AsyncSession, monkeypat
         data = await _wait_for_status(client, task_id, user_id, "failed")
 
     assert data["status"] == "failed"
-    assert data["error_code"] == "ocr_failed"
+    assert data["error_code"] == "provider_response_invalid"
 
 
 async def test_confirm_auto_fills_price_and_size_from_candidate(

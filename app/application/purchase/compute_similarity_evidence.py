@@ -78,7 +78,7 @@ from app.application.purchase.wardrobe_similarity import (
     unknown_evidence,
 )
 from app.common.enums import FitFeedbackType, ItemStatus, WardrobeItemStatus
-from app.infrastructure.persistence.models.embedding import ItemEmbedding
+from app.infrastructure.persistence.models.embedding import ItemEmbedding, is_current_embedding
 from app.infrastructure.persistence.models.fit import FitFeedback
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
@@ -153,7 +153,11 @@ async def compute_similarity_evidence(
             category=item.category,
             color_main=item.color_main or "",
             material=item.material,
-            garment_type=garment_type(item.canonical_name, item.sub_category, item.title),
+            garment_type=(
+                garment_type(item.title, item.sub_category)
+                if item.name_source == "user"
+                else garment_type(item.canonical_name, item.sub_category, item.title)
+            ),
             style_tags=normalize_style_tags(item.style_tags),
             wear_scenes=tuple(sorted(scenes.get(item.id, set()))),
         )
@@ -297,9 +301,12 @@ async def _rank_by_embedding(
     structured order appended after, since a cross-category cosine distance
     would rank shoes against a coat on image features alone.
     """
-    same_category = [f for f in facts if f.category == category]
+    from app.bootstrap.container import embedding_model_version
+
+    same_category = [f.item_id for f in facts if f.category == category]
     if not same_category:
         return []
+    current_vector = is_current_embedding(embedding_model_version())
     # The `ORDER BY` makes the anchor arbitrary but *stable*. Without it the
     # entire vector ranking hangs on whichever row Postgres happened to return,
     # so the same wardrobe could rank two ways — and V3-007 freezes this output
@@ -307,7 +314,8 @@ async def _rank_by_embedding(
     # Ordering on the id matches `rank_by_attributes`' tie-break convention.
     anchor_vector = await session.scalar(
         select(ItemEmbedding.vector)
-        .where(ItemEmbedding.item_id.in_([f.item_id for f in same_category]))
+        .join(WardrobeItem, WardrobeItem.id == ItemEmbedding.item_id)
+        .where(WardrobeItem.id.in_(same_category), current_vector)
         .order_by(ItemEmbedding.item_id)
         .limit(1)
     )
@@ -322,8 +330,10 @@ async def _rank_by_embedding(
                 WardrobeItem.category == category,
                 WardrobeItem.status.in_(OWNED_STATUSES),
                 WardrobeItem.deleted_at.is_(None),
+                WardrobeItem.id.in_(same_category),
+                current_vector,
             )
-            .order_by(ItemEmbedding.vector.op("<->")(anchor_vector))
+            .order_by(ItemEmbedding.vector.op("<->")(anchor_vector), WardrobeItem.id)
             .limit(len(same_category))
         )
     )

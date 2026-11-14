@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, fix/import-pipeline-hardening]
 
 # Newer pushes to the same ref cancel in-flight runs (the test job is long).
 concurrency:
@@ -45,7 +45,19 @@ jobs:
         # flaky, so it is disabled.
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
+          IMPORT_PIPELINE_EVIDENCE_DIR: ci-artifacts/import-pipeline
         run: uv run pytest -q
+      - name: Upload import pipeline evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: import-pipeline-evidence
+          path: ci-artifacts/import-pipeline/A23.json
+          if-no-files-found: error
+      - name: Verify vector consumers on pgvector
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+          PGVECTOR_ENABLED: "true"
+        run: uv run pytest -q tests/services/test_current_vector_consumers.py
 
   recommendation-eval:
     name: Recommendation eval
@@ -100,3 +112,27 @@ jobs:
           uv run alembic upgrade head
           uv run alembic downgrade -1
           uv run alembic upgrade head
+
+  openapi:
+    name: OpenAPI contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install deps
+        run: uv sync --group dev --frozen
+      - name: Generate contract
+        run: make openapi
+      - name: Upload generated contract
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi-contract
+          path: |
+            docs/openapi.json
+            docs/openapi.yaml
+          if-no-files-found: error
+      - name: Check committed contract
+        run: git diff --exit-code -- docs/openapi.json docs/openapi.yaml

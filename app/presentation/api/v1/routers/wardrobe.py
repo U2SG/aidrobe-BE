@@ -40,6 +40,7 @@ from app.infrastructure.persistence.repositories.style_repo import SqlAlchemySty
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user, resolve_user_locale
+from app.presentation.api.v1.render_url import WardrobeImageUrls, wardrobe_image_urls
 from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.wardrobe import (
     DeleteWardrobeItemResponse,
@@ -55,7 +56,7 @@ from app.presentation.api.v1.schemas.wardrobe import (
 router = APIRouter(prefix="/v1/wardrobe-items", tags=["wardrobe"])
 
 
-def item_response(item: WardrobeItem, locale: str) -> WardrobeItemResponse:
+def item_response(item: WardrobeItem, locale: str, images: WardrobeImageUrls) -> WardrobeItemResponse:
     localized_names = cast(dict[str, object] | None, item.localized_names)
     return WardrobeItemResponse(
         item_id=item.id,
@@ -74,8 +75,8 @@ def item_response(item: WardrobeItem, locale: str) -> WardrobeItemResponse:
         category=item.category,
         color_main=item.color_main,
         status=item.status,
-        cover_image_url=item.cover_image_url,
-        original_image_url=item.original_image_url,
+        cover_image_url=images.cover,
+        original_image_url=images.original,
         cutout_status=item.cutout_status,
         location=item.location,
         size_label=item.size_label,
@@ -117,9 +118,10 @@ async def list_wardrobe_items(
         status=status.value if status else None, season=season, color=color,
     )
     effective_locale = await resolve_user_locale(session, current_user.id, locale)
+    images = await wardrobe_image_urls(session, items)
     return ResponseModel(
         data=WardrobeListResponse(
-            items=[item_response(item, effective_locale) for item in items],
+            items=[item_response(item, effective_locale, images[item.id]) for item in items],
             limit=limit,
             offset=offset,
             total=total,
@@ -138,7 +140,8 @@ async def get_wardrobe_item(
     if item is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Wardrobe item not found", status_code=404)
     effective_locale = await resolve_user_locale(session, current_user.id, locale)
-    return ResponseModel(data=item_response(item, effective_locale))
+    images = await wardrobe_image_urls(session, [item])
+    return ResponseModel(data=item_response(item, effective_locale, images[item.id]))
 
 
 @router.patch("/{item_id}", response_model=ResponseModel[WardrobeItemResponse])
@@ -178,7 +181,8 @@ async def update_wardrobe_item(
     )
     await invalidate_daily_recommendation_cache(redis_client, current_user.id)
     effective_locale = await resolve_user_locale(session, current_user.id)
-    return ResponseModel(data=item_response(item, effective_locale))
+    images = await wardrobe_image_urls(session, [item])
+    return ResponseModel(data=item_response(item, effective_locale, images[item.id]))
 
 
 @router.delete("/{item_id}", response_model=ResponseModel[DeleteWardrobeItemResponse])
@@ -320,7 +324,8 @@ async def mark_item_worn(
         )
     )
     if duplicate is not None:
-        return ResponseModel(data=item_response(item, effective_locale))
+        images = await wardrobe_image_urls(session, [item])
+        return ResponseModel(data=item_response(item, effective_locale, images[item.id]))
 
     session.add(
         RecommendationEvent(
@@ -348,4 +353,5 @@ async def mark_item_worn(
     await session.flush()
     await session.refresh(item)
     await invalidate_daily_recommendation_cache(redis_client, current_user.id)
-    return ResponseModel(data=item_response(item, effective_locale))
+    images = await wardrobe_image_urls(session, [item])
+    return ResponseModel(data=item_response(item, effective_locale, images[item.id]))

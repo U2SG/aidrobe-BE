@@ -19,6 +19,9 @@ from app.presentation.api.v1.routers import import_tasks as import_tasks_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
 
 
+pytestmark = pytest.mark.usefixtures("import_api_environment")
+
+
 def build_import_tasks_app(session: AsyncSession) -> FastAPI:
     app = FastAPI()
     setup_exception_handlers(app)
@@ -247,7 +250,7 @@ async def test_failed_vision_response_stores_failed_task(db_session: AsyncSessio
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         data = await wait_for_task_status(client, task_id, user_id, "failed")
     assert data["status"] == "failed"
-    assert data["error_code"] == "vision_failed"
+    assert data["error_code"] == "provider_response_invalid"
 
 
 async def test_missing_or_other_user_task_returns_404(db_session: AsyncSession) -> None:
@@ -279,10 +282,11 @@ async def _seed_task(
     user_id: uuid.UUID,
     *,
     status: str,
-    candidate_payload: dict[str, object] | None,
+    candidate_payload: dict[str, object] | None = None,
 ) -> uuid.UUID:
-    session.add(User(id=user_id))
-    await session.flush()
+    if await session.get(User, user_id) is None:
+        session.add(User(id=user_id))
+        await session.flush()
     task = ImportTask(
         user_id=user_id,
         input_type="image",
@@ -321,13 +325,13 @@ async def test_legacy_single_payload_maps_to_one_candidate_item(db_session: Asyn
     data = response.json()["data"]
     assert len(data["candidate_items"]) == 1
     assert data["candidate_items"][0]["title"] == "Black trousers"
-    assert data["candidate_items"][0]["temp_item_id"] is None
+    assert data["candidate_items"][0]["temp_item_id"] == "__single__"
     assert data["candidate_item"]["title"] == "Black trousers"
 
 
 async def test_multi_candidate_payload_returns_both_fields(db_session: AsyncSession) -> None:
     # BE#24 — a multi-candidate payload returns the full list AND a compat
-    # candidate_item set to the first should_import=True candidate.
+    # candidate_item mirrors the first candidate, matching /confirm.
     user_id = uuid.uuid4()
     task_id = await _seed_task(
         db_session,
@@ -371,9 +375,9 @@ async def test_multi_candidate_payload_returns_both_fields(db_session: AsyncSess
     data = response.json()["data"]
     assert len(data["candidate_items"]) == 2
     assert {c["temp_item_id"] for c in data["candidate_items"]} == {"cand-a", "cand-b"}
-    # first recommended (should_import) candidate is the compat candidate_item.
-    assert data["candidate_item"]["temp_item_id"] == "cand-b"
-    assert data["candidate_item"]["title"] == "White shirt"
+    # /confirm targets the same first candidate that the compatibility field shows.
+    assert data["candidate_item"]["temp_item_id"] == "cand-a"
+    assert data["candidate_item"]["title"] == "Black trousers"
 
 
 async def test_processing_and_failed_return_empty_candidate_items(db_session: AsyncSession) -> None:
@@ -509,3 +513,52 @@ async def test_pending_import_review_is_owned_and_can_skip_all(db_session: Async
             assert skipped.status_code == 200
             assert skipped.json()["data"] == {"created_items": [], "task_status": "completed"}
         assert (await client.get("/v1/import-tasks", headers=headers)).json()["data"] == []
+
+
+async def test_explicit_status_filter_preserves_default_and_isolation(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    waiting = await _seed_task(db_session, user_id, status=ImportStatus.WAITING_CONFIRM.value)
+    queued = await _seed_task(db_session, user_id, status=ImportStatus.QUEUED.value)
+    failed = await _seed_task(db_session, user_id, status=ImportStatus.FAILED.value)
+    await _seed_task(db_session, uuid.uuid4(), status=ImportStatus.FAILED.value)
+
+    app = build_import_tasks_app(db_session)
+    headers = {"X-User-Id": str(user_id)}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        default = await client.get("/v1/import-tasks", headers=headers)
+        selected = await client.get("/v1/import-tasks?status=queued&status=failed", headers=headers)
+        page = await client.get("/v1/import-tasks?status=queued&status=failed&limit=1&offset=1", headers=headers)
+
+    assert [task["task_id"] for task in default.json()["data"]] == [str(waiting)]
+    ids = [task["task_id"] for task in selected.json()["data"]]
+    assert set(ids) == {str(queued), str(failed)}
+    assert [task["task_id"] for task in page.json()["data"]] == ids[1:]
+
+
+@pytest.mark.parametrize("owner", [True, False])
+async def test_private_upload_refs_are_owned_and_never_read_during_entry(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, owner: bool,
+) -> None:
+    user_id = uuid.uuid4()
+    upload_owner = user_id if owner else uuid.uuid4()
+    key = f"users/{upload_owner}/wardrobe/photo.jpg"
+    url = f"{get_settings().LOCAL_STORAGE_BASE_URL}/files/{key}?signature=ephemeral"
+    monkeypatch.setattr(
+        import_tasks_router, "get_settings", lambda: Settings(ENABLE_IMPORT_ASYNC_JOBS=True),
+    )
+    app = build_import_tasks_app(db_session)
+    headers = {"X-User-Id": str(user_id)}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        created = await client.post(
+            "/v1/import-tasks", headers=headers,
+            json={"input_type": "image", "source_type": "album", "image_url": url},
+        )
+
+    assert created.status_code == (202 if owner else 422)
+    task = await db_session.scalar(select(ImportTask).where(ImportTask.user_id == user_id))
+    if owner:
+        assert task.input_payload["source_object_key"] == key
+        assert "signature=" not in task.input_payload["image_url"]
+    else:
+        assert task is None
+        assert await db_session.scalar(select(AsyncJob).where(AsyncJob.user_id == user_id)) is None

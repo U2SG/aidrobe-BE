@@ -10,17 +10,25 @@ Cover:
 
 from __future__ import annotations
 
+import asyncio
 import io
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.application.cost_guard import usage_today
+from app.application.import_tasks import prepare_derivatives
+from app.application.paid_generation_admission import settle_terminal_reservations
+from app.application.ports.image_cutout import CutoutResult
 from app.common.enums import CutoutStatus, ImageType
+from app.config.settings import get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
+from app.infrastructure.persistence.models.paid_generation import PaidGenerationReservation
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.workers import cutout_worker
@@ -33,7 +41,9 @@ from app.infrastructure.workers.cutout_worker import (
 from app.infrastructure.workers.job_runtime import (
     JOB_STATUS_QUEUED,
     JOB_STATUS_SUCCEEDED,
+    claim_one,
     enqueue,
+    recover_expired_leases,
 )
 
 
@@ -67,7 +77,9 @@ def _patch_render_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep image reads and writes in memory."""
     monkeypatch.setattr("app.bootstrap.container.object_storage", lambda: _FakeStorage())
 
-    async def _fake_load(source_url: str, source_key: str | None) -> bytes:
+    async def _fake_load(
+        source_url: str | None, source_key: str | None, *, user_id: uuid.UUID | None = None
+    ) -> bytes:
         return _png_bytes()
 
     monkeypatch.setattr(cutout_worker, "_load_source_bytes", _fake_load)
@@ -96,8 +108,6 @@ async def _seed_item(
         await s.flush()
         item_id = item.id
         if with_standard:
-            from datetime import UTC, datetime
-
             s.add(
                 WardrobeItemImage(
                     item_id=item_id,
@@ -140,9 +150,11 @@ async def test_drain_applies_only_accepted_product_photos(
     class RecordingCutout:
         async def extract(
             self, image_bytes: bytes, category: str, *, title: str | None = None, color: str | None = None
-        ) -> bytes | None:
+        ) -> CutoutResult:
             hints.append((title, color))
-            return image_bytes if accepted else None
+            if accepted:
+                return CutoutResult("succeeded", image_bytes, provider_cost_cents=2)
+            return CutoutResult("quality_rejected")
 
     monkeypatch.setattr("app.bootstrap.container.image_cutout_service", RecordingCutout)
     user_id, item_id = await _seed_item(patched_session_factory)
@@ -171,7 +183,8 @@ async def test_drain_applies_only_accepted_product_photos(
         item = await s.get(WardrobeItem, item_id)
         assert item is not None
         assert item.cutout_status == (CutoutStatus.READY.value if accepted else CutoutStatus.SKIPPED.value)
-        expected_cover = f"https://fake-storage/{user_id}/items/{item_id}/cutout.png" if accepted else "https://x/original.jpg"
+        key = f"users/{user_id}/items/{item_id}/cutout/{job_id}/1.png"
+        expected_cover = f"https://fake-storage/{key}" if accepted else "https://x/original.jpg"
         assert item.cover_image_url == expected_cover
         assert item.original_image_url == "https://x/original.jpg"
 
@@ -184,7 +197,7 @@ async def test_drain_applies_only_accepted_product_photos(
             )
         ).scalar_one()
         assert standard.image_url == expected_cover
-        assert standard.object_key == (f"{user_id}/items/{item_id}/cutout.png" if accepted else None)
+        assert standard.object_key == (key if accepted else None)
 
 
 async def test_drain_skips_invalid_payload(
@@ -247,7 +260,6 @@ async def test_confirm_enqueues_cutout_only_with_usable_source(
     """Confirm-import enqueues a cutout job + flips the item to 'queued' only
     when ENABLE_ITEM_CUTOUT is on. Flag is monkeypatched on the consuming
     module (get_settings is lru_cached, so the dep override path won't work)."""
-    from app.application.import_tasks import confirm_import as ci_mod
     from app.application.import_tasks.confirm_import import ConfirmImageImportTask
     from app.common.enums import ImportStatus
     from app.infrastructure.persistence.models.import_task import ImportTask
@@ -258,9 +270,9 @@ async def test_confirm_enqueues_cutout_only_with_usable_source(
         SqlAlchemyWardrobeRepository,
     )
 
-    base = ci_mod.get_settings()
+    base = get_settings()
     monkeypatch.setattr(
-        ci_mod, "get_settings", lambda: base.model_copy(update={"ENABLE_ITEM_CUTOUT": True})
+        prepare_derivatives, "get_settings", lambda: base.model_copy(update={"ENABLE_ITEM_CUTOUT": True})
     )
 
     user_id = uuid.uuid4()
@@ -319,3 +331,176 @@ async def test_confirm_enqueues_cutout_only_with_usable_source(
 def test_drain_constants_are_sane() -> None:
     assert 1 <= cutout_worker.MAX_DRAIN_PER_TICK <= 50
     assert cutout_worker.JOB_TYPE == "cutout"
+
+
+async def test_concurrent_admission_holds_queued_and_legacy_budget(
+    patched_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings().model_copy(update={
+        "ENABLE_ITEM_CUTOUT": True, "ENABLE_COST_GUARD": True, "ITEM_CUTOUT_DAILY_LIMIT": 2,
+    })
+    monkeypatch.setattr(prepare_derivatives, "get_settings", lambda: settings)
+    monkeypatch.setattr("app.application.cost_guard.get_settings", lambda: settings)
+    user_id, legacy_item_id = await _seed_item(patched_session_factory)
+    async with patched_session_factory() as s:
+        legacy, _ = await enqueue_item_cutout(
+            s,
+            item_id=legacy_item_id,
+            user_id=user_id,
+            source_url="https://x/original.jpg",
+            category="top",
+        )
+        legacy.created_at = datetime.now(UTC) - timedelta(days=2)
+        await s.commit()
+
+    async def confirm_garment(index: int) -> uuid.UUID:
+        async with patched_session_factory() as s:
+            key = f"users/{user_id}/wardrobe/crops/{index}.jpg"
+            item = WardrobeItem(user_id=user_id, category="top", title=f"Item {index}", color_main="white")
+            s.add(item)
+            await s.flush()
+            await prepare_derivatives.prepare_item_derivatives(
+                s, item, source_key=key, source_url=None, source_version=f"image-{index}",
+            )
+            await s.commit()
+            return item.id
+
+    item_ids = await asyncio.gather(*(confirm_garment(i) for i in range(4)))
+    async with patched_session_factory() as s:
+        items = (await s.scalars(select(WardrobeItem).where(WardrobeItem.id.in_(item_ids)))).all()
+        assert sorted(item.cutout_status for item in items) == ["queued", "skipped", "skipped", "skipped"]
+        admitted = next(item for item in items if item.cutout_status == CutoutStatus.QUEUED.value)
+        await prepare_derivatives.prepare_item_derivatives(
+            s, admitted, source_key=f"users/{user_id}/wardrobe/crops/replayed.jpg",
+            source_url=None, source_version=admitted.embedding_source_version or "",
+        )
+        reservations = (
+            await s.scalars(select(PaidGenerationReservation).where(PaidGenerationReservation.user_id == user_id))
+        ).all()
+        assert len(reservations) == 1
+        assert reservations[0].target_id is None
+        job = await s.get(AsyncJob, reservations[0].job_id)
+        assert job is not None and job.target_id == admitted.id
+        assert await usage_today(s, user_id, JOB_TYPE) == 2
+
+
+@pytest.mark.parametrize(
+    ("outcome", "settled", "usage"),
+    [
+        ("succeeded", "succeeded", 1),
+        ("quality_rejected", "quality_rejected", 1),
+        ("not_called", "abandoned", 0),
+        ("technical_failure", "technical_failure", 0),
+    ],
+)
+async def test_reservation_settles_cutout_outcomes(
+    patched_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    settled: str,
+    usage: int,
+) -> None:
+    _patch_render_deps(monkeypatch)
+    settings = get_settings().model_copy(update={"ENABLE_ITEM_CUTOUT": True})
+    monkeypatch.setattr(prepare_derivatives, "get_settings", lambda: settings)
+    user_id, item_id = await _seed_item(patched_session_factory)
+    async with patched_session_factory() as s:
+        item = await s.get(WardrobeItem, item_id)
+        assert item is not None
+        await prepare_derivatives.prepare_item_derivatives(
+            s, item, source_key=f"users/{user_id}/wardrobe/source.png", source_url=None, source_version="v1",
+        )
+        job = await s.scalar(select(AsyncJob).where(AsyncJob.job_type == JOB_TYPE, AsyncJob.target_id == item_id))
+        assert job is not None
+        job.max_attempts = 1
+        job_id = job.id
+        assert await usage_today(s, user_id, JOB_TYPE) == 1
+        await s.commit()
+
+    calls: list[bytes] = []
+
+    class Provider:
+        async def extract(
+            self, image: bytes, category: str, *, title: str | None, color: str | None,
+        ) -> CutoutResult:
+            calls.append(image)
+            if outcome == "technical_failure":
+                raise RuntimeError("provider credentials must never enter job.result")
+            if outcome == "quality_rejected":
+                return CutoutResult("quality_rejected")
+            return CutoutResult("succeeded", image, provider_cost_cents=3)
+
+    monkeypatch.setattr("app.bootstrap.container.image_cutout_service", Provider)
+    if outcome == "not_called":
+        async with patched_session_factory() as s:
+            item = await s.get(WardrobeItem, item_id)
+            assert item is not None
+            item.deleted_at = datetime.now(UTC)
+            await s.commit()
+
+    assert await drain_cutout_jobs(ctx=None) == 1
+    async with patched_session_factory() as s:
+        reservation = await s.scalar(
+            select(PaidGenerationReservation).where(PaidGenerationReservation.job_id == job_id)
+        )
+        assert reservation is not None and reservation.outcome == settled
+        assert await usage_today(s, user_id, JOB_TYPE) == usage
+        assert await settle_terminal_reservations(s, job_type=JOB_TYPE) == 0
+        job = await s.get(AsyncJob, job_id)
+        assert job is not None and job.result is not None
+        assert job.result["outcome"] == outcome
+        assert job.result["provider_cost_cents"] == {"succeeded": 3, "not_called": 0}.get(outcome)
+    assert len(calls) == (0 if outcome == "not_called" else 1)
+
+
+async def test_late_cutout_attempt_cannot_overwrite_current_object(
+    patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_render_deps(monkeypatch)
+    user_id, item_id = await _seed_item(patched_session_factory)
+    files: dict[str, bytes] = {}
+
+    class Storage:
+        async def put_object(self, key: str, data: bytes, content_type: str) -> str:
+            files[key] = data
+            return f"https://fake-storage/{key}"
+
+    class ReclaimingProvider:
+        calls = 0
+
+        async def extract(
+            self, image: bytes, category: str, *, title: str | None, color: str | None,
+        ) -> CutoutResult:
+            self.calls += 1
+            if self.calls == 1:
+                async with patched_session_factory() as s:
+                    row = await s.get(AsyncJob, job_id)
+                    assert row is not None
+                    row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                    await s.flush()
+                    assert await recover_expired_leases(s) == 1
+                    await s.commit()
+                assert await drain_cutout_jobs(ctx=None) == 1
+                return CutoutResult("succeeded", b"old")
+            return CutoutResult("succeeded", b"current")
+
+    provider = ReclaimingProvider()
+    monkeypatch.setattr("app.bootstrap.container.image_cutout_service", lambda: provider)
+    monkeypatch.setattr("app.bootstrap.container.object_storage", Storage)
+    async with patched_session_factory() as s:
+        job, _ = await enqueue_item_cutout(
+            s, item_id=item_id, user_id=user_id, source_url="https://x/original.jpg", category="top"
+        )
+        job_id = job.id
+        await s.commit()
+        claimed = await claim_one(s, [JOB_TYPE])
+    assert claimed is not None
+    await cutout_worker._process_one(claimed)
+    async with patched_session_factory() as s:
+        item = await s.get(WardrobeItem, item_id)
+        assert item is not None
+        winning_key = f"users/{user_id}/items/{item_id}/cutout/{job_id}/2.png"
+        assert item.cover_image_url == f"https://fake-storage/{winning_key}"
+        assert files[winning_key] == b"current"
+        assert files[f"users/{user_id}/items/{item_id}/cutout/{job_id}/1.png"] == b"old"

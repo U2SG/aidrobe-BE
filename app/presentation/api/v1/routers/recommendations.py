@@ -34,7 +34,6 @@ from app.bootstrap.container import llm_service, weather_service
 from app.common import error_codes
 from app.common.category_to_role import map_category_to_role
 from app.common.enums import (
-    ImageType,
     ItemStatus,
     RecommendationEventType,
     RecommendationGenerationSource,
@@ -53,7 +52,7 @@ from app.infrastructure.cache.client import (
 from app.infrastructure.cache.keys import build_daily_recommendation_cache_key
 from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit
 from app.infrastructure.persistence.models.user import User
-from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.operation_log_repo import (
     SqlAlchemyOperationLogRepository,
 )
@@ -65,7 +64,7 @@ from app.infrastructure.persistence.repositories.user_repo import SqlAlchemyUser
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
-from app.presentation.api.v1.render_url import resolve_render_url
+from app.presentation.api.v1.render_url import wardrobe_image_urls
 from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.recommendations import (
     AppliedContextResponse,
@@ -280,31 +279,6 @@ async def _refresh_favorite_flags(
     )
     for outfit in outfits:
         outfit.is_favorited = outfit.outfit_id in favorited
-
-
-async def _preferred_thumbnail_sources(
-    session: AsyncSession,
-    item_ids: list[uuid.UUID],
-) -> dict[uuid.UUID, tuple[str | None, str | None]]:
-    if not item_ids:
-        return {}
-    images = list(
-        await session.scalars(
-            select(WardrobeItemImage).where(WardrobeItemImage.item_id.in_(item_ids))
-        )
-    )
-    preferred: dict[uuid.UUID, WardrobeItemImage] = {}
-    for image in images:
-        existing = preferred.get(image.item_id)
-        if existing is None or (
-            existing.image_type != ImageType.STANDARD.value
-            and image.image_type == ImageType.STANDARD.value
-        ):
-            preferred[image.item_id] = image
-    return {
-        item_id: (image.object_key, image.image_url)
-        for item_id, image in preferred.items()
-    }
 
 
 async def _coverage_gap_hint(session: AsyncSession, user_id: uuid.UUID) -> str | None:
@@ -848,21 +822,16 @@ async def get_replacement_candidates(
         exclude_ids=outfit_item_ids - {item_id},
         k=8,
     )
-    thumbnail_sources = await _preferred_thumbnail_sources(
-        session, [candidate.item.id for candidate in candidates]
-    )
+    images = await wardrobe_image_urls(session, [candidate.item for candidate in candidates])
     replacements = []
     for candidate in candidates:
-        object_key, fallback_url = thumbnail_sources.get(
-            candidate.item.id, (None, candidate.item.cover_image_url)
-        )
         replacements.append(
             ReplacementCandidateResponse(
                 item_id=candidate.item.id,
                 title=candidate.item.title,
                 category=candidate.item.category,
                 color_main=candidate.item.color_main,
-                thumbnail_url=resolve_render_url(object_key, fallback_url),
+                thumbnail_url=images[candidate.item.id].cover,
                 similarity=candidate.similarity,
             )
         )

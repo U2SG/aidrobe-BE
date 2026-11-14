@@ -72,11 +72,11 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, cast
 
 import structlog
-from sqlalchemy import CursorResult, Select, func, or_, select, text, update
+from sqlalchemy import CursorResult, Select, and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common import error_codes
@@ -88,6 +88,8 @@ from app.infrastructure.persistence.models.paid_generation import PaidGeneration
 from app.infrastructure.workers.job_runtime import (
     JOB_STATUS_DEAD,
     JOB_STATUS_FAILED,
+    JOB_STATUS_QUEUED,
+    JOB_STATUS_RUNNING,
     JOB_STATUS_SUCCEEDED,
 )
 
@@ -235,10 +237,35 @@ async def counted_reservations_today(
     close.
     """
     day = usage_day or _today()
-    return int(
+    count = int(
         (await session.execute(counted_reservations_statement(user_id, job_type, day))).scalar()
         or 0
     )
+    if job_type != "cutout":
+        return count
+    # Before reservation-backed admission, cutout jobs were enqueued directly.
+    # Hold space for the pending backlog until it drains, and count its paid
+    # completions on their UTC completion day. Linked jobs use only the ledger.
+    start = datetime.combine(day, time.min, tzinfo=UTC)
+    legacy_count = await session.scalar(
+        select(func.count())
+        .select_from(AsyncJob)
+        .where(
+            AsyncJob.user_id == user_id,
+            AsyncJob.job_type == job_type,
+            ~select(PaidGenerationReservation.id).where(PaidGenerationReservation.job_id == AsyncJob.id).exists(),
+            or_(
+                AsyncJob.status.in_((JOB_STATUS_QUEUED, JOB_STATUS_RUNNING)),
+                and_(
+                    AsyncJob.status == JOB_STATUS_SUCCEEDED,
+                    AsyncJob.updated_at >= start,
+                    AsyncJob.updated_at < start + timedelta(days=1),
+                    AsyncJob.result["outcome"].astext.is_distinct_from("not_called"),
+                ),
+            ),
+        )
+    )
+    return count + int(legacy_count or 0)
 
 
 async def revive_count(session: AsyncSession, target_id: uuid.UUID) -> int:
@@ -379,7 +406,7 @@ async def attach(
     reservation_id: uuid.UUID,
     *,
     job_id: uuid.UUID,
-    target_id: uuid.UUID,
+    target_id: uuid.UUID | None,
 ) -> None:
     """Point a held reservation at the job and asset it paid for.
 
@@ -438,6 +465,7 @@ async def settle_terminal_reservations(
     *,
     job_type: str,
     target_id: uuid.UUID | None = None,
+    job_id: uuid.UUID | None = None,
 ) -> int:
     """Settle every held reservation whose job has reached a terminal state.
 
@@ -471,6 +499,7 @@ async def settle_terminal_reservations(
                 PaidGenerationReservation.id,
                 AsyncJob.status,
                 AsyncJob.attempts,
+                AsyncJob.result,
                 OutfitVisualAsset.generation_status,
                 OutfitVisualAsset.quality_signals,
             )
@@ -488,6 +517,7 @@ async def settle_terminal_reservations(
                     if target_id is not None
                     else []
                 ),
+                *([AsyncJob.id == job_id] if job_id is not None else []),
             )
         )
     ).all()
@@ -496,8 +526,15 @@ async def settle_terminal_reservations(
 
     now = datetime.now(UTC)
     settled = 0
-    for reservation_id, job_status, attempts, asset_status, quality_signals in rows:
-        if job_status == JOB_STATUS_SUCCEEDED:
+    for reservation_id, job_status, attempts, job_result, asset_status, quality_signals in rows:
+        if job_status != JOB_STATUS_SUCCEEDED:
+            outcome = PaidGenerationOutcome.TECHNICAL_FAILURE
+        elif job_type == "cutout":
+            outcome = {
+                "not_called": PaidGenerationOutcome.ABANDONED,
+                "quality_rejected": PaidGenerationOutcome.QUALITY_REJECTED,
+            }.get((job_result or {}).get("outcome"), PaidGenerationOutcome.SUCCEEDED)
+        else:
             # The join is what makes this distinguishable at all: V3-018 marks a
             # quality rejection as a SUCCEEDED job, so the job row alone would
             # report both as `succeeded`.
@@ -506,8 +543,6 @@ async def settle_terminal_reservations(
                 if asset_status == _ASSET_STATUS_REJECTED
                 else PaidGenerationOutcome.SUCCEEDED
             )
-        else:
-            outcome = PaidGenerationOutcome.TECHNICAL_FAILURE
         result = cast(
             CursorResult[Any],
             await session.execute(
@@ -518,7 +553,7 @@ async def settle_terminal_reservations(
                 )
                 .values(
                     outcome=outcome.value,
-                    attempts_used=attempts,
+                    attempts_used=0 if outcome == PaidGenerationOutcome.ABANDONED and attempts == 1 else attempts,
                     quality_regenerations=_regenerations(quality_signals),
                     settled_at=now,
                 )

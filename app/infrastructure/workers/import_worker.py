@@ -1,223 +1,325 @@
+"""Recoverable garment recognition, separate from the crop and paid-image jobs."""
+
 import asyncio
 import uuid
-from typing import Any, cast
+from typing import Any
 
+import httpx
 import structlog
-from sqlalchemy import CursorResult, select, update
+from sqlalchemy import String, cast, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.ports.link_parser import LinkParserPort
-from app.application.ports.ocr import OcrPort
-from app.application.ports.rate_limit import UserRateLimiter
-from app.application.ports.vision import VisionPort
-from app.bootstrap.container import (
-    link_parser,
-    ocr_service,
-    vision_rate_limiter,
-    vision_service,
-)
+from app.application.import_tasks.candidates import SINGLE_CANDIDATE_ID, store_candidates
+from app.application.import_tasks.failures import ImportFailure, public_error_message
+from app.application.import_tasks.source import source_version, upload_key
+from app.application.ports.vision import VisionResult
+from app.bootstrap.container import object_storage, ocr_service, vision_rate_limiter, vision_service
 from app.common.enums import ImportStatus, InputType
+from app.common.exceptions import FriendlyException
 from app.common.locale import resolve_locale
-from app.infrastructure.importers.ocr_router import OcrCandidateAdapter, ocr_adapter_for
+from app.config.settings import get_settings
+from app.infrastructure.importers.external_http import InvalidExternalSource
+from app.infrastructure.importers.ocr_router import ocr_adapter_for
+from app.infrastructure.importers.router import RoutedLinkParser
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.user import UserSettings
-from app.infrastructure.persistence.repositories.import_task_repo import (
-    SqlAlchemyImportTaskRepository,
-)
+from app.infrastructure.persistence.repositories.import_task_repo import SqlAlchemyImportTaskRepository
 from app.infrastructure.persistence.session import AsyncSessionLocal
-from app.infrastructure.workers.garment_crops import attach_garment_crops
+from app.infrastructure.storage.source_image import (
+    InvalidSourceImage,
+    download_external_source_image,
+    image_data_uri,
+    load_source_bytes,
+)
+from app.infrastructure.vision.qwen_vision import NoGarmentsDetected
+from app.infrastructure.workers.garment_crops import enqueue_garment_crop
 from app.infrastructure.workers.job_runtime import (
     JOB_STATUS_DEAD,
+    claim_is_current,
     claim_one,
     enqueue,
     mark_failed,
     mark_succeeded,
     recover_expired_leases,
+    release_cancelled_claim,
 )
 
 logger = structlog.get_logger(__name__)
 
-# BE#26 — import processing on `job_runtime` (lease / retry / dead-letter)
-# instead of FastAPI BackgroundTasks. Gated by ENABLE_IMPORT_ASYNC_JOBS; the
-# job status only tracks EXECUTION, the `import_tasks.task_status` stays the
-# business source of truth.
 IMPORT_JOB_TYPE = "import_task"
-# Vision/OCR is ~seconds and the user is polling, so drain a few per tick.
 IMPORT_MAX_DRAIN_PER_TICK = 10
 IMPORT_ATTEMPT_TIMEOUT_SECONDS = 60
-# Leave time to roll back and finalize after a timed-out attempt.
 IMPORT_LEASE_SECONDS = IMPORT_ATTEMPT_TIMEOUT_SECONDS + 15
+_ACTIVE = (ImportStatus.QUEUED.value, ImportStatus.PROCESSING.value)
 
 
-def _import_idempotency_key(task_id: uuid.UUID) -> str:
-    return f"import_task:{task_id}"
+def _candidate(result: VisionResult, url: str, candidate_id: str) -> dict[str, Any]:
+    return {
+        "title": result.display_name or result.title,
+        "canonical_name": result.canonical_name or result.title,
+        "display_name": result.display_name or result.title,
+        "localized_names": result.localized_names,
+        "category": result.category,
+        "color_main": result.color_main,
+        "confidence_score": result.confidence_score,
+        "formality_score": result.formality_score,
+        "season_tags": list(result.season_tags),
+        "material": result.material,
+        "style_tags": list(result.style_tags),
+        "original_image_url": url,
+        "temp_item_id": candidate_id,
+        "should_import": True,
+        "bbox": list(result.bbox) if result.bbox else None,
+    }
 
 
-class ProcessImageImportTask:
-    def __init__(
-        self,
-        repository: SqlAlchemyImportTaskRepository,
-        vision: VisionPort,
-        parser: LinkParserPort | None = None,
-        vision_rate_limiter: UserRateLimiter | None = None,
-        ocr: OcrPort | None = None,
-    ) -> None:
-        self.repository = repository
-        self.vision = vision
-        self.parser = parser
-        self.vision_rate_limiter = vision_rate_limiter
-        self.ocr = ocr
-
-    async def execute(self, task_id: uuid.UUID, user_id: uuid.UUID) -> None:
-        task = await self.repository.get_for_user(task_id, user_id)
-        if task is None:
-            logger.warning("import_task_not_found_for_worker", task_id=str(task_id), user_id=str(user_id))
-            return
-        # Reprocess QUEUED (first run) AND PROCESSING (a prior async-job attempt
-        # crashed mid-flight and is being retried — claim_one guarantees we're
-        # the only worker on it now). A terminal task (WAITING_CONFIRM / FAILED)
-        # no-ops so a lost finalizer's retry doesn't redo the vision call. The
-        # BackgroundTasks path always enters at QUEUED and never re-enters.
-        if task.task_status not in (ImportStatus.QUEUED.value, ImportStatus.PROCESSING.value):
-            return
-
-        task.task_status = ImportStatus.PROCESSING.value
-        task.error_code = None
-        task.error_message = None
-        await self.repository.flush()
-
-        # M18 — receipt / order-screenshot / shopping-email imports go through
-        # the OCR pipeline instead of vision: the screenshot itself is OCR'd for
-        # structured fields (title/category/color/size/price/date).
-        ocr_adapter = ocr_adapter_for(task.input_type)
-        if ocr_adapter is not None:
-            await self._process_ocr(task, task_id, user_id, ocr_adapter)
-            return
-
-        try:
-            image_url = task.input_payload.get("image_url")
-            source_url = task.input_payload.get("source_url")
-            if image_url is None and source_url is not None and self.parser is not None:
-                image_url = await self.parser.extract_image_url(source_url)
-
-            if not isinstance(image_url, str) or not image_url:
-                raise ValueError("image_url is required")
-
-            if self.vision_rate_limiter is not None:
-                self.vision_rate_limiter.check(user_id)
-            # BE#30 — name the candidate in the request locale, falling back to
-            # the user's persisted settings locale (then the zh-CN default).
-            locale = await self._resolve_locale(task, user_id)
-            if task.input_type == InputType.OUTFIT_IMAGE.value:
-                results = await self.vision.analyze_outfit(image_url, locale)
-                if not results:
-                    raise ValueError("No garments detected in outfit image")
-            else:
-                results = [await self.vision.analyze_image(image_url, locale)]
-        except Exception as exc:
-            logger.warning("import_task_processing_failed", task_id=str(task_id), error=str(exc))
-            task.task_status = ImportStatus.FAILED.value
-            task.error_code = "vision_failed"
-            task.error_message = str(exc)
-            await self.repository.flush()
-            return
-
-        task.task_status = ImportStatus.WAITING_CONFIRM.value
-        candidate_items: list[dict[str, object]] = []
-        for result in results:
-            candidate_items.append(
-                {
-                    "title": result.display_name or result.title,
-                    "canonical_name": result.canonical_name or result.title,
-                    "display_name": result.display_name or result.title,
-                    "localized_names": result.localized_names,
-                    "category": result.category,
-                    "color_main": result.color_main,
-                    "confidence_score": result.confidence_score,
-                    "formality_score": result.formality_score,
-                    "season_tags": list(result.season_tags),
-                    "material": result.material,
-                    "style_tags": list(result.style_tags),
-                    "original_image_url": image_url,
-                    "temp_item_id": uuid.uuid4().hex,
-                    "should_import": True,
-                }
-            )
-
-        if task.input_type == InputType.OUTFIT_IMAGE.value:
-            # One picture per garment instead of the whole outfit photo.
-            await attach_garment_crops(
-                candidate_items, results, image_url=image_url, user_id=user_id, task_id=task_id
-            )
-
-        # Keep the first result in the legacy top-level shape while exposing all
-        # garments through the existing multi-candidate contract.
-        first_candidate = candidate_items[0]
-        task.candidate_payload = {
-            **{key: value for key, value in first_candidate.items() if key not in {"temp_item_id", "should_import"}},
-            "candidate_items": candidate_items,
-        }
-        await self.repository.flush()
-
-    async def _resolve_locale(self, task: ImportTask, user_id: uuid.UUID) -> str:
-        request_locale = task.input_payload.get("locale")
-        request_locale = request_locale if isinstance(request_locale, str) else None
-        settings_locale = await self.repository.session.scalar(
-            select(UserSettings.locale).where(UserSettings.user_id == user_id)
-        )
-        return resolve_locale(request_locale, settings_locale)
-
-    async def _process_ocr(
-        self,
-        task: ImportTask,
-        task_id: uuid.UUID,
-        user_id: uuid.UUID,
-        adapter: OcrCandidateAdapter,
-    ) -> None:
-        try:
-            if self.ocr is None:
-                raise ValueError("OCR provider is not configured")
-            image_url = task.input_payload.get("image_url")
-            if not isinstance(image_url, str) or not image_url:
-                raise ValueError("image_url is required for OCR import")
-
-            if self.vision_rate_limiter is not None:
-                self.vision_rate_limiter.check(user_id)
-            ocr_result = await self.ocr.extract_text(image_url)
-        except Exception as exc:
-            logger.warning("import_task_ocr_failed", task_id=str(task_id), error=str(exc))
-            task.task_status = ImportStatus.FAILED.value
-            task.error_code = "ocr_failed"
-            task.error_message = str(exc)
-            await self.repository.flush()
-            return
-
-        task.task_status = ImportStatus.WAITING_CONFIRM.value
-        task.candidate_payload = adapter.to_candidate_payload(ocr_result, image_url)
-        await self.repository.flush()
+async def _current_task(
+    session: AsyncSession, task_id: uuid.UUID, user_id: uuid.UUID, generation: int, job: AsyncJob | None
+) -> ImportTask | None:
+    task = await SqlAlchemyImportTaskRepository(session).get_for_user(task_id, user_id, for_update=True)
+    if task is None or task.run_generation != generation or task.task_status not in _ACTIVE:
+        return None
+    if job is not None and not await claim_is_current(session, job):
+        return None
+    return task
 
 
-async def process_import_task_with_session(
+async def _checkpoint_source(
     session: AsyncSession,
     task_id: uuid.UUID,
     user_id: uuid.UUID,
-) -> None:
-    worker = ProcessImageImportTask(
-        SqlAlchemyImportTaskRepository(session),
-        vision_service(),
-        link_parser(),
-        vision_rate_limiter(),
-        ocr_service(),
-    )
-    await worker.execute(task_id, user_id)
+    generation: int,
+    payload: dict[str, Any],
+    job: AsyncJob | None,
+) -> tuple[str, str, bytes] | None:
+    settings = get_settings()
+    url = payload.get("image_url")
+    key = payload.get("source_object_key")
+    if not key:
+        if not url and payload.get("source_url"):
+            url = await RoutedLinkParser(settings, strict=True).extract_image_url(payload["source_url"])
+        if not isinstance(url, str) or not url:
+            raise InvalidSourceImage("Missing image")
+        key = upload_key(url, user_id)
 
+    if key:
+        data = await load_source_bytes(url, key, user_id=user_id)
+        # Legacy references may contain expired signatures; the key is authoritative.
+        if not url:
+            raise InvalidSourceImage("Missing image reference")
+        url = url.split("?", 1)[0].split("#", 1)[0]
+    else:
+        data, mime = await download_external_source_image(url, settings)
+        # A late attempt may finish writing after losing the claim. Unique
+        # object names keep its bytes away from the adopted snapshot.
+        key = f"users/{user_id}/wardrobe/imports/{task_id}/{uuid.uuid4().hex}.{mime.split('/')[-1]}"
+        url = await object_storage().put_object(key, data, mime)
 
-async def process_import_task(ctx: object, task_id: str, user_id: str) -> None:
-    """arq-compatible entry point for deployed workers."""
-    async with AsyncSessionLocal() as session:
-        await process_import_task_with_session(session, uuid.UUID(task_id), uuid.UUID(user_id))
+    if key != payload.get("source_object_key") or url != payload.get("image_url"):
+        task = await _current_task(session, task_id, user_id, generation, job)
+        if task is None:
+            await session.rollback()
+            return None
+        task.input_payload = {**task.input_payload, "source_object_key": key, "image_url": url}
         await session.commit()
+    return url, key, data
+
+
+def _classify(exc: Exception, stage: str) -> ImportFailure:
+    if isinstance(exc, ImportFailure):
+        return exc
+    if isinstance(exc, TimeoutError):
+        return ImportFailure("import_attempt_timed_out", True, stage)
+    if isinstance(exc, NoGarmentsDetected):
+        return ImportFailure("no_garments", False, stage)
+    if isinstance(exc, InvalidSourceImage | InvalidExternalSource | httpx.InvalidURL):
+        return ImportFailure("image_invalid" if stage == "decode" else "source_invalid", False, stage)
+    if isinstance(exc, httpx.RequestError | OSError):
+        if isinstance(exc, FileNotFoundError):
+            return ImportFailure("source_invalid", False, stage)
+        return ImportFailure("provider_unavailable", True, stage)
+    if isinstance(exc, httpx.HTTPStatusError | FriendlyException):
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else exc.status_code
+        if status == 429 or status >= 500:
+            return ImportFailure("provider_unavailable", True, stage, status)
+        if stage == "source":
+            return ImportFailure("source_invalid", False, stage, status)
+        if status in (401, 403, 404):
+            return ImportFailure("provider_configuration", False, stage, status)
+        if isinstance(exc, httpx.HTTPStatusError) and status in (400, 422):
+            try:
+                error = exc.response.json()
+                error = error.get("error", error) if isinstance(error, dict) else {}
+                code = error.get("code") if isinstance(error, dict) else None
+            except ValueError:
+                code = None
+            if code in ("InvalidImage", "InvalidImageFormat", "invalid_image", "invalid_image_format"):
+                return ImportFailure("image_invalid", False, stage, status)
+            return ImportFailure("provider_configuration", False, stage, status)
+    if stage == "provider_setup" and isinstance(exc, ValueError):
+        return ImportFailure("provider_configuration", False, stage)
+    if stage == "source":
+        # S3 and OSS expose HTTP status through their service errors.
+        status = getattr(exc, "status", None)
+        response = getattr(exc, "response", None)
+        if isinstance(response, dict):
+            status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if status == 404:
+            return ImportFailure("source_invalid", False, stage, status)
+        if isinstance(status, int) and (status == 429 or status >= 500):
+            return ImportFailure("provider_unavailable", True, stage, status)
+        if status in (401, 403):
+            return ImportFailure("provider_configuration", False, stage, status)
+    if stage in ("vision", "ocr") and isinstance(exc, ValueError | TypeError | KeyError | IndexError):
+        return ImportFailure("provider_response_invalid", True, stage)
+    return ImportFailure("import_failed", True, stage)
+
+
+async def _recognize(
+    session: AsyncSession, task_id: uuid.UUID, user_id: uuid.UUID, generation: int, job: AsyncJob | None
+) -> None:
+    task = await _current_task(session, task_id, user_id, generation, job)
+    if task is None:
+        if job is not None and await claim_is_current(session, job):
+            await mark_succeeded(session, job.id, claimed_attempt=job.attempts, result={"outcome": "obsolete"})
+            await session.commit()
+        else:
+            await session.rollback()
+        return
+    if task.candidate_payload:
+        # Preserve an already committed checkpoint even if its finalizer died.
+        task.task_status = ImportStatus.WAITING_CONFIRM.value
+        if job is not None:
+            await mark_succeeded(session, job.id, claimed_attempt=job.attempts, result={"outcome": "checkpoint"})
+        await session.commit()
+        return
+    task.task_status = ImportStatus.PROCESSING.value
+    task.error_code = None
+    task.error_message = None
+    task.retryable = None
+    payload = dict(task.input_payload)
+    input_type = task.input_type
+    user_locale = await session.scalar(select(UserSettings.locale).where(UserSettings.user_id == user_id))
+    request_locale = payload.get("locale")
+    locale = resolve_locale(request_locale if isinstance(request_locale, str) else None, user_locale)
+    await session.commit()
+
+    stage = "source"
+    try:
+        source = await _checkpoint_source(session, task_id, user_id, generation, payload, job)
+        if source is None:
+            return
+        url, key, data = source
+        stage = "decode"
+        image = image_data_uri(data)
+        stage = "provider_setup"
+        adapter = ocr_adapter_for(input_type)
+        if adapter is not None:
+            ocr = ocr_service()
+            stage = "ocr"
+            vision_rate_limiter().check(user_id)
+            result = await ocr.extract_text(image)
+            if not result.title.strip():
+                raise NoGarmentsDetected
+            candidates: list[dict[str, Any]] = [
+                {**adapter.to_candidate_payload(result, url), "temp_item_id": SINGLE_CANDIDATE_ID, "should_import": True}
+            ]
+        else:
+            vision = vision_service()
+            stage = "vision"
+            vision_rate_limiter().check(user_id)
+            if input_type == InputType.OUTFIT_IMAGE:
+                results = await vision.analyze_outfit(image, locale)
+            else:
+                results = [await vision.analyze_image(image, locale)]
+            if not results:
+                raise NoGarmentsDetected
+            candidates = [
+                _candidate(result, url, uuid.uuid5(task_id, str(index)).hex)
+                for index, result in enumerate(results)
+            ]
+    except Exception as exc:
+        raise _classify(exc, stage) from None
+
+    task = await _current_task(session, task_id, user_id, generation, job)
+    if task is None:
+        await session.rollback()
+        return
+    version = source_version(key, url)
+    task.input_payload = {**task.input_payload, "source_version": version}
+    store_candidates(task, candidates)
+    task.task_status = ImportStatus.WAITING_CONFIRM.value
+    if input_type == InputType.OUTFIT_IMAGE:
+        for candidate in candidates:
+            if candidate.get("bbox") and candidate.get("should_import") is not False:
+                await enqueue_garment_crop(session, task, candidate["temp_item_id"], version, job)
+    if job is not None:
+        await mark_succeeded(
+            session, job.id, claimed_attempt=job.attempts, result={"outcome": "recognized", "count": len(candidates)},
+        )
+    await session.commit()
+
+
+async def _record_failure(
+    session: AsyncSession,
+    task_id: uuid.UUID,
+    user_id: uuid.UUID,
+    generation: int,
+    failure: ImportFailure,
+    job: AsyncJob | None,
+) -> None:
+    task = await _current_task(session, task_id, user_id, generation, job)
+    if task is None:
+        await session.rollback()
+        return
+    if job is not None:
+        if failure.retryable:
+            status = await mark_failed(session, job.id, claimed_attempt=job.attempts, error=failure.code)
+            if status != JOB_STATUS_DEAD:
+                await session.commit()
+                return
+        else:
+            await mark_succeeded(
+                session, job.id, claimed_attempt=job.attempts,
+                result={"outcome": "rejected", "error_code": failure.code, "stage": failure.stage},
+            )
+    task.task_status = ImportStatus.FAILED.value
+    task.error_code = failure.code
+    task.error_message = public_error_message(failure.code)
+    task.retryable = failure.retryable
+    await session.commit()
+
+
+async def _run_import(
+    task_id: uuid.UUID, user_id: uuid.UUID, generation: int, job: AsyncJob | None = None
+) -> None:
+    with structlog.contextvars.bound_contextvars(
+        correlation_id=job.correlation_id if job else None,
+        job_id=str(job.id) if job else None,
+        task_id=str(task_id),
+    ):
+        try:
+            async with asyncio.timeout(IMPORT_ATTEMPT_TIMEOUT_SECONDS), AsyncSessionLocal() as session:
+                await _recognize(session, task_id, user_id, generation, job)
+        except asyncio.CancelledError:
+            if job is not None:
+                await release_cancelled_claim(job, AsyncSessionLocal)
+            raise
+        except Exception as exc:
+            failure = _classify(exc, "recognition")
+            logger.warning(
+                "import_task.attempt_failed",
+                error_code=failure.code, stage=failure.stage, provider_status=failure.provider_status,
+                retryable=failure.retryable,
+            )
+            async with AsyncSessionLocal() as session:
+                await _record_failure(session, task_id, user_id, generation, failure, job)
+
+
+async def process_import_task(ctx: object, task_id: str, user_id: str, generation: int = 0) -> None:
+    """Legacy arq / BackgroundTasks entry point opens an independent session."""
+    await _run_import(uuid.UUID(task_id), uuid.UUID(user_id), generation)
 
 
 async def enqueue_import_task(
@@ -226,14 +328,14 @@ async def enqueue_import_task(
     task_id: uuid.UUID,
     user_id: uuid.UUID,
     correlation_id: str | None = None,
+    generation: int = 0,
 ) -> tuple[AsyncJob, bool]:
-    """Idempotent (per-task) enqueue for import processing. Caller owns commit
-    and must have already inserted the `import_tasks` row (status QUEUED)."""
+    key = f"import_task:{task_id}"
     return await enqueue(
         session,
         job_type=IMPORT_JOB_TYPE,
-        idempotency_key=_import_idempotency_key(task_id),
-        payload={"task_id": str(task_id), "user_id": str(user_id)},
+        idempotency_key=f"{key}:{generation}" if generation else key,
+        payload={"task_id": str(task_id), "user_id": str(user_id), "generation": generation},
         user_id=user_id,
         target_id=task_id,
         correlation_id=correlation_id,
@@ -241,112 +343,66 @@ async def enqueue_import_task(
 
 
 async def _process_one_import(job: AsyncJob) -> None:
-    """Run one claimed import job in its OWN session (never the request's), then
-    finalize. Vision/OCR errors are caught inside `execute` and recorded as the
-    task's business FAILED status, so the job still SUCCEEDS — only an
-    unexpected crash fails the job (→ retry/backoff, then dead-letter)."""
-    payload: dict[str, Any] = job.payload or {}
-    task_id_str = payload.get("task_id")
-    user_id_str = payload.get("user_id")
-    if not task_id_str or not user_id_str:
+    payload = job.payload or {}
+    try:
+        task_id = uuid.UUID(payload["task_id"])
+        user_id = uuid.UUID(payload["user_id"])
+        generation = int(payload.get("generation", 0))
+    except (KeyError, ValueError, TypeError, AttributeError):
         async with AsyncSessionLocal() as session:
             await mark_failed(session, job.id, claimed_attempt=job.attempts, error="missing payload fields")
             await session.commit()
         return
-
-    task_id = uuid.UUID(task_id_str)
-    user_id = uuid.UUID(user_id_str)
-    structlog.contextvars.bind_contextvars(
-        correlation_id=job.correlation_id or "",
-        job_id=str(job.id),
-        task_id=task_id_str,
-    )
-    try:
-        # Fence the task mutation on this attempt's claim, in ONE transaction
-        # (mirrors embedding/cutout): if a slow vision/OCR call outlived the
-        # lease and the job was recovered + reclaimed elsewhere, `mark_succeeded`
-        # returns False and we roll back the task write too — so a stale worker
-        # never lands a status/candidate that could clobber the new claim's.
-        async with AsyncSessionLocal() as session:
-            async with asyncio.timeout(IMPORT_ATTEMPT_TIMEOUT_SECONDS):
-                await process_import_task_with_session(session, task_id, user_id)
-            ok = await mark_succeeded(session, job.id, claimed_attempt=job.attempts)
-            if not ok:
-                await session.rollback()
-                logger.warning("import_task.lease_lost_discarding", job_id=str(job.id))
-                return
-            await session.commit()
-    except Exception as exc:
-        error = "import_attempt_timed_out" if isinstance(exc, TimeoutError) else str(exc)
-        logger.warning("import_task.job_failed", task_id=task_id_str, error=error)
-        async with AsyncSessionLocal() as session:
-            status = await mark_failed(session, job.id, claimed_attempt=job.attempts, error=error)
-            await session.commit()
-        if status == JOB_STATUS_DEAD:
-            await reconcile_dead_import_tasks(ctx=None)
-    finally:
-        structlog.contextvars.unbind_contextvars("correlation_id", "job_id", "task_id")
+    await _run_import(task_id, user_id, generation, job)
 
 
 async def drain_import_jobs(ctx: object) -> int:
-    """Recover interrupted imports and drain the next batch."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + get_settings().ARQ_JOB_TIMEOUT_SECONDS - 5
     async with AsyncSessionLocal() as session:
         recovered = await recover_expired_leases(session, job_type=IMPORT_JOB_TYPE)
         await session.commit()
     if recovered:
-        await reconcile_dead_import_tasks(ctx=None)
+        await reconcile_dead_import_tasks(ctx)
 
     processed = 0
-    for _ in range(IMPORT_MAX_DRAIN_PER_TICK):
+    while processed < IMPORT_MAX_DRAIN_PER_TICK and deadline - loop.time() >= IMPORT_LEASE_SECONDS:
         async with AsyncSessionLocal() as session:
             job = await claim_one(session, [IMPORT_JOB_TYPE], lease_seconds=IMPORT_LEASE_SECONDS)
         if job is None:
             break
         await _process_one_import(job)
         processed += 1
-    if processed:
-        logger.info("import_task.drain_completed", processed=processed)
     return processed
 
 
 async def reconcile_dead_import_tasks(ctx: object) -> int:
-    """Flip tasks to FAILED when their import job dead-lettered (retries
-    exhausted), so a crash-looped task doesn't sit in QUEUED/PROCESSING forever
-    while the client polls it indefinitely."""
+    """Only the dead job of the current run may end an unfinished import."""
     async with AsyncSessionLocal() as session:
-        dead_task_ids = (
-            (
-                await session.execute(
-                    select(AsyncJob.target_id).where(
-                        AsyncJob.job_type == IMPORT_JOB_TYPE,
-                        AsyncJob.status == "dead",
-                        AsyncJob.target_id.is_not(None),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if not dead_task_ids:
-            return 0
-        res = cast(
-            CursorResult[Any],
+        row = (
             await session.execute(
                 update(ImportTask)
                 .where(
-                    ImportTask.id.in_(dead_task_ids),
-                    ImportTask.task_status.in_(
-                        (ImportStatus.QUEUED.value, ImportStatus.PROCESSING.value)
-                    ),
+                    ImportTask.task_status.in_(_ACTIVE),
+                    select(AsyncJob.id)
+                    .where(
+                        AsyncJob.job_type == IMPORT_JOB_TYPE,
+                        AsyncJob.status == JOB_STATUS_DEAD,
+                        AsyncJob.target_id == ImportTask.id,
+                        func.coalesce(AsyncJob.payload["generation"].astext, "0")
+                        == cast(ImportTask.run_generation, String),
+                    )
+                    .exists(),
                 )
-                .values(task_status=ImportStatus.FAILED.value, error_code="import_failed")
-            ),
-        )
+                .values(
+                    task_status=ImportStatus.FAILED.value, error_code="import_failed",
+                    error_message=public_error_message("import_failed"), retryable=True,
+                )
+                .returning(ImportTask.id)
+            )
+        ).scalars().all()
         await session.commit()
-    count = res.rowcount or 0
-    if count:
-        logger.warning("import_task.reconciled_dead", count=count)
-    return count
+    return len(row)
 
 
 class WorkerSettings:

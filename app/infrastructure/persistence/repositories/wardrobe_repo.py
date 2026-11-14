@@ -1,11 +1,72 @@
 import uuid
+from collections import defaultdict
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import cast
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.enums import ImageType
+from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
+from app.infrastructure.storage.object_key import names_internal_storage, trusted_item_image_key
+
+ImageSource = tuple[str | None, str | None]
+
+
+def _image_source(
+    images: list[WardrobeItemImage], url: str | None, preferred_types: tuple[str, ...]
+) -> ImageSource:
+    if url:
+        match = next((image for image in images if image.image_url == url and image.object_key), None)
+        return (match.object_key if match else None, url)
+    for image_type in preferred_types:
+        image = next((image for image in images if image.image_type == image_type), None)
+        if image is not None:
+            return image.object_key, image.image_url
+    return None, None
+
+
+def _checked_source(source: ImageSource, owner_id: uuid.UUID, settings: Settings) -> ImageSource:
+    key, url = source
+    if url and names_internal_storage(url, settings):
+        verified_key = trusted_item_image_key(url, owner_id, settings)
+        if verified_key is None or (key is not None and key != verified_key):
+            return None, None
+        return verified_key, None
+    if key:
+        return key, None
+    return None, url
+
+
+async def load_wardrobe_image_sources(
+    session: AsyncSession, items: Sequence[WardrobeItem]
+) -> dict[uuid.UUID, tuple[ImageSource, ImageSource]]:
+    """Resolve saved cover/original references for already-authorized wardrobe rows."""
+    if not items:
+        return {}
+    rows = await session.scalars(
+        select(WardrobeItemImage)
+        .where(WardrobeItemImage.item_id.in_([item.id for item in items]))
+        .order_by(WardrobeItemImage.created_at.desc(), WardrobeItemImage.id.desc())
+    )
+    images_by_item: dict[uuid.UUID, list[WardrobeItemImage]] = defaultdict(list)
+    for row in rows:
+        images_by_item[row.item_id].append(row)
+
+    settings = get_settings()
+    sources = {}
+    for item in items:
+        images = images_by_item[item.id]
+        original = _image_source(images, item.original_image_url, (ImageType.ORIGINAL.value,))
+        cover = _image_source(
+            images, item.cover_image_url, (ImageType.STANDARD.value, ImageType.CROP.value, ImageType.ORIGINAL.value)
+        )
+        original = _checked_source(original, item.user_id, settings)
+        cover = _checked_source(cover, item.user_id, settings)
+        sources[item.id] = (cover if cover != (None, None) else original, original)
+    return sources
 
 
 class SqlAlchemyWardrobeRepository:

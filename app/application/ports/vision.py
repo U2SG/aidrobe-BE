@@ -53,7 +53,9 @@ class StyleAnalysis:
 
 
 class VisionPort(Protocol):
-    async def analyze_image(self, image_url: str, locale: str = DEFAULT_LOCALE) -> VisionResult: ...
+    async def analyze_image(
+        self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
+    ) -> VisionResult: ...
 
     async def analyze_outfit(self, image_url: str, locale: str = DEFAULT_LOCALE) -> list[VisionResult]: ...
 

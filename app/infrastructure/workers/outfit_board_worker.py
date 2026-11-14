@@ -32,7 +32,7 @@ from app.application.ports.storage import ObjectStoragePort
 from app.config.settings import get_settings
 from app.infrastructure.importers.link_parser import BROWSER_HEADERS, is_safe_url
 from app.infrastructure.persistence.models.async_job import AsyncJob
-from app.infrastructure.storage.source_image import key_from_url
+from app.infrastructure.storage.object_key import names_internal_storage, trusted_item_image_key
 from app.infrastructure.vision.openai_image_cutout import OpenAIImageCutout
 from app.infrastructure.workers._visual_asset_runtime import (
     VisualAssetSnapshot,
@@ -123,7 +123,7 @@ async def _download_image(url: str) -> Image.Image | None:
 
 
 async def _load_snapshot_image(
-    storage: ObjectStoragePort, *, object_key: str | None, fallback_url: str | None
+    storage: ObjectStoragePort, *, object_key: str | None, fallback_url: str | None, user_id: uuid.UUID
 ) -> Image.Image | None:
     """Prefer durable object storage while keeping URL-only legacy snapshots readable."""
     if object_key:
@@ -141,14 +141,15 @@ async def _load_snapshot_image(
         # Read those from storage: the public host is for devices and may not
         # resolve from the worker (and the SSRF guard rightly blocks private
         # hosts), which left boards full of placeholders.
-        bucket = get_settings().S3_BUCKET
-        own_key = key_from_url(fallback_url, bucket) if bucket else None
+        settings = get_settings()
+        own_key = trusted_item_image_key(fallback_url, user_id, settings)
         if own_key:
             image = _image_from_bytes(await storage.get_object(own_key))
             if image is None:
                 raise ValueError(f"invalid image bytes in object storage: {own_key}")
             return image
-        return await _download_image(fallback_url)
+        if not names_internal_storage(fallback_url, settings):
+            return await _download_image(fallback_url)
     return None
 
 
@@ -213,13 +214,17 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str]:
 
     for item, role, box in zip(items, roles, boxes, strict=True):
         reference = (item.get("cutout_object_key"), item.get("cutout_image_url"))
-        img = await _load_snapshot_image(storage, object_key=reference[0], fallback_url=reference[1])
+        img = await _load_snapshot_image(
+            storage, object_key=reference[0], fallback_url=reference[1], user_id=snapshot.user_id
+        )
         if img is None:
             reference = (item.get("thumbnail_object_key"), item.get("thumbnail_url"))
             if generate and reference in references:
                 references[reference][1].append(role)
                 continue
-            img = await _load_snapshot_image(storage, object_key=reference[0], fallback_url=reference[1])
+            img = await _load_snapshot_image(
+                storage, object_key=reference[0], fallback_url=reference[1], user_id=snapshot.user_id
+            )
 
         if generate:
             if img is None:

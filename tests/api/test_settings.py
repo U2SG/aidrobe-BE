@@ -1,5 +1,6 @@
 import uuid
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -128,6 +129,7 @@ async def test_patch_user_settings_rejects_invalid_locale(db_session: AsyncSessi
     assert response.json()["code"] == 4001
 
 
+@pytest.mark.usefixtures("import_api_environment")
 async def test_import_candidate_uses_settings_locale_when_request_omits_it(
     db_session: AsyncSession,
 ) -> None:

@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.enums import FitStatus, ItemStatus
-from app.infrastructure.persistence.models.embedding import ItemEmbedding
+from app.infrastructure.persistence.models.embedding import ItemEmbedding, is_current_embedding
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 logger = structlog.get_logger(__name__)
@@ -135,10 +135,17 @@ async def _candidates_by_embedding(
     exclude: set[uuid.UUID],
     k: int,
 ) -> list[ReplacementCandidate]:
-    src_embedding = await session.scalar(select(ItemEmbedding).where(ItemEmbedding.item_id == item.id).limit(1))
-    if src_embedding is None:
+    from app.bootstrap.container import embedding_model_version
+
+    model_version = embedding_model_version()
+    current_vector = is_current_embedding(model_version)
+    src_vector = await session.scalar(
+        select(ItemEmbedding.vector)
+        .join(WardrobeItem, WardrobeItem.id == ItemEmbedding.item_id)
+        .where(WardrobeItem.id == item.id, current_vector)
+    )
+    if src_vector is None:
         return []
-    src_vector = src_embedding.vector
     stmt = (
         select(
             WardrobeItem,
@@ -152,8 +159,9 @@ async def _candidates_by_embedding(
             WardrobeItem.deleted_at.is_(None),
             WardrobeItem.fit_status != FitStatus.NO_LONGER_FITS.value,
             WardrobeItem.id.notin_(exclude),
+            current_vector,
         )
-        .order_by("dist")
+        .order_by("dist", WardrobeItem.id)
         .limit(k)
     )
     rows = (await session.execute(stmt)).all()
@@ -203,32 +211,7 @@ async def _by_embedding(
     exclude: set[uuid.UUID],
     k: int,
 ) -> list[uuid.UUID]:
-    """Cosine-distance neighbours of `item` within the same category. Requires
-    pgvector + an `ItemEmbedding` row for the source item; otherwise empty
-    and the cascade moves on."""
-    src_embedding = await session.scalar(select(ItemEmbedding).where(ItemEmbedding.item_id == item.id).limit(1))
-    if src_embedding is None:
-        return []
-    src_vector = src_embedding.vector
-    # `<->` is the L2 operator pgvector exposes. Cosine would be `<=>`; either
-    # works for top-k ranking on normalized CLIP vectors. Use `<->` because
-    # legacy migrations declared the index against the same operator.
-    stmt = (
-        select(WardrobeItem.id)
-        .join(ItemEmbedding, ItemEmbedding.item_id == WardrobeItem.id)
-        .where(
-            WardrobeItem.user_id == item.user_id,
-            WardrobeItem.category == item.category,
-            WardrobeItem.status == ItemStatus.WEARABLE.value,
-            WardrobeItem.deleted_at.is_(None),
-            WardrobeItem.fit_status != FitStatus.NO_LONGER_FITS.value,
-            WardrobeItem.id.notin_(exclude),
-        )
-        .order_by(ItemEmbedding.vector.op("<->")(src_vector))
-        .limit(k)
-    )
-    rows = (await session.execute(stmt)).scalars().all()
-    return list(rows)
+    return [candidate.item.id for candidate in await _candidates_by_embedding(session, item, exclude, k)]
 
 
 async def _by_category_color(

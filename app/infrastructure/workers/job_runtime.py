@@ -20,8 +20,9 @@ pdf_ingest, tryon, user_purge) go through this module:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -32,6 +33,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.models.async_job import AsyncJob
+from app.infrastructure.persistence.session import AsyncSessionLocal
 
 logger = structlog.get_logger(__name__)
 
@@ -221,6 +223,34 @@ async def claim_one(
     return refreshed
 
 
+async def claim_is_current(session: AsyncSession, job: AsyncJob) -> bool:
+    """Lock the job while deciding whether a business write may commit."""
+    return (
+        await session.scalar(
+            select(AsyncJob.id)
+            .where(
+                AsyncJob.id == job.id,
+                AsyncJob.status == JOB_STATUS_RUNNING,
+                AsyncJob.attempts == job.attempts,
+                AsyncJob.lease_expires_at > datetime.now(UTC),
+            )
+            .with_for_update()
+        )
+    ) is not None
+
+
+async def release_cancelled_claim(
+    job: AsyncJob, session_factory: Callable[[], AsyncSession] = AsyncSessionLocal
+) -> None:
+    """Best effort within the cancellation window, backed by lease recovery."""
+    try:
+        async with asyncio.timeout(4), session_factory() as session:
+            await mark_failed(session, job.id, claimed_attempt=job.attempts, error="attempt_cancelled")
+            await session.commit()
+    except Exception:
+        logger.warning("job.cancel_cleanup_failed", job_id=str(job.id))
+
+
 async def mark_succeeded(
     session: AsyncSession,
     job_id: uuid.UUID,
@@ -284,6 +314,7 @@ async def mark_failed(
     *,
     claimed_attempt: int,
     error: str,
+    result: dict[str, Any] | None = None,
 ) -> str | None:
     """Move a running job back to queued with backoff, or to dead if attempts
     have hit max_attempts. Returns the new status, or None if the row was no
@@ -305,6 +336,7 @@ async def mark_failed(
         )
         return None
     truncated = (error or "")[:4000]
+    result_update = {"result": result} if result is not None else {}
     if job.attempts >= job.max_attempts:
         res = cast(
             CursorResult[Any],
@@ -320,6 +352,7 @@ async def mark_failed(
                     last_error=truncated,
                     lease_expires_at=None,
                     updated_at=now,
+                    **result_update,
                 )
             ),
         )
@@ -368,6 +401,7 @@ async def mark_failed(
                 next_run_at=next_run,
                 lease_expires_at=None,
                 updated_at=now,
+                **result_update,
             )
         ),
     )

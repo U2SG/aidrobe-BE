@@ -1,6 +1,7 @@
 import re
 import uuid
 from collections.abc import Sequence
+from contextlib import closing
 from urllib.parse import urlparse
 
 import boto3
@@ -9,8 +10,15 @@ from botocore.config import Config
 
 from app.application.ports.storage import PresignResult
 from app.config.settings import Settings
+from app.infrastructure.storage.sdk_io import CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS, run_sdk
 
 logger = structlog.get_logger(__name__)
+_SDK_CONFIG = Config(
+    connect_timeout=CONNECT_TIMEOUT_SECONDS,
+    read_timeout=READ_TIMEOUT_SECONDS,
+    max_pool_connections=8,
+    retries={"total_max_attempts": 2, "mode": "standard"},
+)
 
 
 def _public_presign_target(
@@ -54,6 +62,7 @@ class S3ObjectStorage:
             region_name=settings.S3_REGION,
             aws_access_key_id=settings.S3_ACCESS_KEY_ID,
             aws_secret_access_key=settings.S3_SECRET_ACCESS_KEY,
+            config=_SDK_CONFIG,
         )
         # Read-path presigns must be generated AGAINST the device-reachable
         # host: the GET signature binds the host, so a URL signed against the
@@ -70,7 +79,7 @@ class S3ObjectStorage:
                 region_name=settings.S3_REGION,
                 aws_access_key_id=settings.S3_ACCESS_KEY_ID,
                 aws_secret_access_key=settings.S3_SECRET_ACCESS_KEY,
-                config=Config(s3={"addressing_style": addressing_style}),
+                config=_SDK_CONFIG.merge(Config(s3={"addressing_style": addressing_style})),
             )
         else:
             if settings.S3_PUBLIC_BASE_URL:
@@ -91,7 +100,8 @@ class S3ObjectStorage:
         safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", file_name).strip("._") or "upload"
         prefix = key_prefix.strip("/") + "/" if key_prefix else ""
         object_key = f"{prefix}wardrobe/{uuid.uuid4()}/{safe_name}"
-        presigned = self.client.generate_presigned_post(
+        presigned = await run_sdk(
+            self.client.generate_presigned_post,
             self.bucket,
             object_key,
             Fields={"Content-Type": content_type},
@@ -110,6 +120,9 @@ class S3ObjectStorage:
         )
 
     async def delete_objects(self, keys: Sequence[str]) -> None:
+        await run_sdk(self._delete_objects, keys)
+
+    def _delete_objects(self, keys: Sequence[str]) -> None:
         if not keys:
             return
         for i in range(0, len(keys), 1000):
@@ -131,6 +144,9 @@ class S3ObjectStorage:
                 )
 
     async def delete_prefix(self, prefix: str) -> int:
+        return await run_sdk(self._delete_prefix, prefix)
+
+    def _delete_prefix(self, prefix: str) -> int:
         if not prefix.strip("/"):
             raise ValueError("delete_prefix requires a non-root prefix")
         deleted = 0
@@ -138,12 +154,13 @@ class S3ObjectStorage:
         for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
             keys = [obj["Key"] for obj in page.get("Contents", [])]
             if keys:
-                await self.delete_objects(keys)
+                self._delete_objects(keys)
                 deleted += len(keys)
         return deleted
 
     async def put_object(self, key: str, data: bytes, content_type: str) -> str:
-        self.client.put_object(
+        await run_sdk(
+            self.client.put_object,
             Bucket=self.bucket,
             Key=key,
             Body=data,
@@ -152,8 +169,12 @@ class S3ObjectStorage:
         return self._file_url(key)
 
     async def get_object(self, key: str) -> bytes:
+        return await run_sdk(self._get_object, key)
+
+    def _get_object(self, key: str) -> bytes:
         resp = self.client.get_object(Bucket=self.bucket, Key=key)
-        return resp["Body"].read()  # type: ignore[no-any-return]
+        with closing(resp["Body"]) as body:
+            return body.read()  # type: ignore[no-any-return]
 
     def sign_render_url(
         self,

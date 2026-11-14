@@ -1,10 +1,11 @@
+import os
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer
 
 from app.infrastructure.persistence.models import Base
@@ -21,7 +22,9 @@ async def async_client() -> AsyncClient:
 
 @pytest.fixture(scope="session")
 def postgres_url() -> Iterator[str]:
-    with PostgresContainer("postgres:16-alpine") as postgres:
+    pgvector = os.getenv("PGVECTOR_ENABLED", "false").lower() in ("1", "true", "yes")
+    image = "pgvector/pgvector:pg16" if pgvector else "postgres:16-alpine"
+    with PostgresContainer(image) as postgres:
         url = postgres.get_connection_url()
         yield url.replace("postgresql+psycopg2://", "postgresql+asyncpg://").replace(
             "postgresql://", "postgresql+asyncpg://"
@@ -84,3 +87,29 @@ async def db_session(postgres_url: str) -> AsyncIterator[AsyncSession]:
             if transaction.is_active:
                 await transaction.rollback()
     await engine.dispose()
+
+
+@pytest.fixture
+def import_api_environment(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run legacy background imports with separate sessions on the fixture connection."""
+    from app.infrastructure.workers import import_worker
+
+    factory = async_sessionmaker(bind=db_session.bind, expire_on_commit=False)
+    monkeypatch.setattr(import_worker, "AsyncSessionLocal", factory)
+
+    async def download(url: str, settings: object) -> tuple[bytes, str]:
+        return url.encode(), "image/jpeg"
+
+    async def load(url: str, key: str, **kwargs: object) -> bytes:
+        return url.encode()
+
+    class Storage:
+        async def put_object(self, key: str, data: bytes, content_type: str) -> str:
+            return f"http://localhost:9000/local/files/{key}/{data.decode().rsplit('/', 1)[-1]}"
+
+    # Stub transport and encoding here. Storage security and image decoding
+    # run against real bytes in the separate import pipeline regressions.
+    monkeypatch.setattr(import_worker, "download_external_source_image", download)
+    monkeypatch.setattr(import_worker, "load_source_bytes", load)
+    monkeypatch.setattr(import_worker, "image_data_uri", bytes.decode)
+    monkeypatch.setattr(import_worker, "object_storage", Storage)

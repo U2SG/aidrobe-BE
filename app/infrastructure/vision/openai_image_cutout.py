@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from app.application.ports.image_cutout import CutoutResult
 from app.config.settings import Settings
 from app.infrastructure.vision.qwen_vision import QwenVision
 
@@ -58,14 +59,14 @@ class OpenAIImageCutout:
 
     async def extract(
         self, image_bytes: bytes, category: str, *, title: str | None = None, color: str | None = None
-    ) -> bytes | None:
+    ) -> CutoutResult:
         if not title or not color or not self.settings.QWEN_API_KEY:
-            return None
+            return CutoutResult("not_called", provider_cost_cents=0)
         generated = await self._edit([image_bytes], _prompt(category, title, color))
         reviewer = QwenVision(self.settings)
         if await reviewer.matches_product_photo(image_bytes, generated, category=category, title=title, color=color):
-            return generated
-        return None
+            return CutoutResult("succeeded", generated)
+        return CutoutResult("quality_rejected")
 
     async def render_outfit(self, images: list[bytes], roles: list[str]) -> bytes:
         pieces = ", ".join(f"image {index}: {role}" for index, role in enumerate(roles, 1))

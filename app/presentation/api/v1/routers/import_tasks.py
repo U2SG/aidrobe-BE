@@ -8,12 +8,14 @@ from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.avatar.enqueue_candidate_detection import enqueue_candidate_detection
+from app.application.import_tasks.candidates import confirmed_item_ids, normalize_candidates
 from app.application.import_tasks.confirm_import import (
     ConfirmImageImportTask,
     ConfirmItemInput,
-    confirmed_item_ids,
 )
 from app.application.import_tasks.create_import import CreateImageImportTask
+from app.application.import_tasks.failures import public_error_message
+from app.application.import_tasks.source import upload_key
 from app.application.purchase.garment_type import garment_type
 from app.common import error_codes
 from app.common.enums import AvatarSourceType, ImportStatus, InputType
@@ -35,10 +37,10 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
 from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
-from app.infrastructure.storage.object_key import extract_internal_object_key, is_owned_object_key
-from app.infrastructure.workers.import_worker import enqueue_import_task, process_import_task_with_session
+from app.infrastructure.storage.source_image import InvalidSourceImage
+from app.infrastructure.workers.import_worker import enqueue_import_task, process_import_task
 from app.presentation.api.v1.deps import get_current_user
-from app.presentation.api.v1.render_url import resolve_render_url
+from app.presentation.api.v1.render_url import resolve_render_url, wardrobe_image_urls
 from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.import_tasks import (
     CandidateItem,
@@ -63,57 +65,49 @@ _BLUE_SHADES = frozenset({"blue", "light_blue", "light blue", "dark_blue", "dark
 router = APIRouter(prefix="/v1/import-tasks", tags=["import-tasks"])
 
 
+def _image_for_review(url: str | None, user_id: uuid.UUID, key: str | None = None) -> str | None:
+    try:
+        return resolve_render_url(key or upload_key(url, user_id), url)
+    except InvalidSourceImage:
+        return None
+
+
 def to_response(task: ImportTask) -> ImportTaskResponse:
-    candidate_items = _candidate_items_from_payload(task.candidate_payload, confirmed_item_ids(task))
-    # Compat: `candidate_item` mirrors the first recommended candidate
-    # (`should_import`), falling back to the first one overall.
-    candidate_item = next(
-        (item for item in candidate_items if item.should_import),
-        candidate_items[0] if candidate_items else None,
-    )
+    confirmed = confirmed_item_ids(task)
+    candidates: list[CandidateItem] = []
+    for raw in normalize_candidates(task):
+        candidate = CandidateItem(**raw)
+        candidate_id = candidate.temp_item_id
+        if candidate_id is not None and candidate_id in confirmed:
+            candidate.confirmed_item_id = uuid.UUID(confirmed[candidate_id])
+        original = _image_for_review(
+            candidate.original_image_url, task.user_id, task.input_payload.get("source_object_key"),
+        )
+        candidate.original_image_url = original or ""
+        candidate.crop_image_url = _image_for_review(candidate.crop_image_url, task.user_id, raw.get("crop_object_key"))
+        candidate.cutout_image_url = _image_for_review(candidate.cutout_image_url, task.user_id)
+        candidates.append(candidate)
     return ImportTaskResponse(
         task_id=task.id,
         status=task.task_status,
-        candidate_item=candidate_item,
-        candidate_items=candidate_items,
+        candidate_item=candidates[0] if candidates else None,
+        candidate_items=candidates,
         error_code=task.error_code,
-        error_message=task.error_message,
+        error_message=public_error_message(task.error_code),
+        retryable=_is_retryable(task) if task.task_status == ImportStatus.FAILED.value else None,
     )
 
 
-def _candidate_items_from_payload(
-    payload: dict[str, object] | None, confirmed: dict[str, str] | None = None
-) -> list[CandidateItem]:
-    if not payload:
-        return []
-    # BE#24 — new multi-candidate payloads nest the list under `candidate_items`.
-    raw_items = payload.get("candidate_items")
-    if isinstance(raw_items, list):
-        candidates = [CandidateItem(**item) for item in raw_items]
-        for candidate in candidates:
-            if candidate.temp_item_id and confirmed and candidate.temp_item_id in confirmed:
-                candidate.confirmed_item_id = uuid.UUID(confirmed[candidate.temp_item_id])
-        return candidates
-    # Legacy / OCR payloads store a single candidate at the top level; the
-    # nested key is absent, so map the top-level shape to a length-1 list.
-    legacy = {key: value for key, value in payload.items() if key != "candidate_items"}
-    return [CandidateItem(**legacy)]
+def _is_retryable(task: ImportTask) -> bool:
+    # Dead-letter reconciliation in earlier releases used this stable code.
+    if task.retryable is None:
+        return task.error_code == "import_failed"
+    return task.retryable
 
 
-def _image_for_review(url: str | None, user_id: uuid.UUID) -> str | None:
-    key = extract_internal_object_key(url, get_settings())
-    if key is not None and is_owned_object_key(key, user_id):
-        return resolve_render_url(key, url)
-    return url
-
-
-def _review_photos(response: ImportTaskResponse, user_id: uuid.UUID) -> None:
-    for candidate in response.candidate_items:
-        candidate.original_image_url = _image_for_review(candidate.original_image_url, user_id) or (
-            candidate.original_image_url
-        )
-        candidate.crop_image_url = _image_for_review(candidate.crop_image_url, user_id)
-        candidate.cutout_image_url = _image_for_review(candidate.cutout_image_url, user_id)
+def _correlation_id() -> str | None:
+    value = structlog.contextvars.get_contextvars().get("correlation_id")
+    return value if isinstance(value, str) else None
 
 
 async def _attach_duplicates(
@@ -140,6 +134,7 @@ async def _attach_duplicates(
         .order_by(WardrobeItem.created_at.desc(), WardrobeItem.id.desc())
     )
     items = list(matching)
+    images = await wardrobe_image_urls(session, items)
     for candidate in pending:
         same_type = garment_type(candidate.canonical_name, candidate.title)
         if same_type is None:
@@ -148,12 +143,12 @@ async def _attach_duplicates(
             item for item in items
             if item.category == candidate.category
             and item.color_main in matching_colors[candidate.color_main]
-            and garment_type(item.canonical_name, item.title) == same_type
+            and garment_type(item.title, item.canonical_name if item.name_source != "user" else None) == same_type
         ]
         candidate.possible_duplicates = [
             ImportDuplicateHint(
                 item_id=item.id, title=item.title,
-                image_url=_image_for_review(item.cover_image_url or item.original_image_url, user_id),
+                image_url=images[item.id].cover or images[item.id].original,
             )
             for item in matches[:3]
         ]
@@ -165,13 +160,13 @@ async def list_pending_import_tasks(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
+    statuses: Annotated[list[ImportStatus] | None, Query(alias="status")] = None,
 ) -> ResponseModel[list[ImportTaskResponse]]:
-    """List this account's recognised imports that still need review."""
-    tasks = await SqlAlchemyImportTaskRepository(session).list_pending(current_user.id, limit=limit, offset=offset)
-    results = [to_response(task) for task in tasks]
-    for result in results:
-        _review_photos(result, current_user.id)
-    return ResponseModel(data=results)
+    """List this account's imports. Defaults to tasks waiting for confirmation."""
+    tasks = await SqlAlchemyImportTaskRepository(session).list_for_user(
+        current_user.id, limit=limit, offset=offset, statuses=statuses,
+    )
+    return ResponseModel(data=[to_response(task) for task in tasks])
 
 
 @router.post(
@@ -222,10 +217,45 @@ async def create_import_task(
     # the request lifecycle on the request's session. The import_tasks row is
     # already persisted, so the job (or legacy path) only drives processing.
     if get_settings().ENABLE_IMPORT_ASYNC_JOBS:
-        await enqueue_import_task(session, task_id=task.id, user_id=current_user.id)
+        await enqueue_import_task(
+            session, task_id=task.id, user_id=current_user.id, correlation_id=_correlation_id(),
+        )
     else:
-        background_tasks.add_task(process_import_task_with_session, session, task.id, current_user.id)
+        # FastAPI runs BackgroundTasks before request-scoped dependencies
+        # exit. Publish the row before handing it to an independent session.
+        task_id, user_id = str(task.id), str(current_user.id)
+        await session.commit()
+        background_tasks.add_task(process_import_task, None, task_id, user_id)
     return ResponseModel(data=response)
+
+
+@router.post("/{task_id}/retry", response_model=ResponseModel[ImportTaskResponse])
+async def retry_import_task(
+    task_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[ImportTaskResponse]:
+    repository = SqlAlchemyImportTaskRepository(session)
+    task = await repository.get_for_user(task_id, current_user.id, for_update=True)
+    if task is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Import task not found", 404)
+    if task.task_status in (ImportStatus.QUEUED.value, ImportStatus.PROCESSING.value):
+        return ResponseModel(data=to_response(task))
+    if task.task_status != ImportStatus.FAILED.value or not _is_retryable(task):
+        raise FriendlyException(
+            error_codes.STATE_CONFLICT, "Import task cannot be retried", 409,
+            data={"reason": task.error_code or "task_already_processed"},
+        )
+    task.run_generation += 1
+    task.task_status = ImportStatus.QUEUED.value
+    task.error_code = None
+    task.error_message = None
+    task.retryable = None
+    await enqueue_import_task(
+        session, task_id=task.id, user_id=current_user.id, generation=task.run_generation,
+        correlation_id=_correlation_id(),
+    )
+    return ResponseModel(data=to_response(task))
 
 
 @router.post("/{task_id}/confirm", response_model=ResponseModel[ConfirmImportResponse])
@@ -354,14 +384,14 @@ async def _offer_outfit_import_as_avatar_candidate(
     image_url = (task.input_payload or {}).get("image_url")
     if not isinstance(image_url, str):
         return
-    correlation_id = structlog.contextvars.get_contextvars().get("correlation_id")
     await enqueue_candidate_detection(
         session,
         user_id=user_id,
         source_type=AvatarSourceType.OUTFIT_IMPORT,
         image_url=image_url,
         settings=settings,
-        correlation_id=correlation_id if isinstance(correlation_id, str) else None,
+        correlation_id=_correlation_id(),
+        object_key=task.input_payload.get("source_object_key"),
     )
 
 
@@ -380,7 +410,6 @@ async def get_import_task(
             status_code=404,
         )
     result = to_response(task)
-    _review_photos(result, current_user.id)
     if task.task_status == ImportStatus.WAITING_CONFIRM.value:
         await _attach_duplicates(result, session, current_user.id)
     return ResponseModel(data=result)
