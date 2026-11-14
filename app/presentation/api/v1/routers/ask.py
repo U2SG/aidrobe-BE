@@ -19,7 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.ask import answer_question as ask_uc
 from app.application.ask.answer_question import ItemRefSnapshot, build_item_ref_snapshots
 from app.application.ports.llm import LlmPort
-from app.bootstrap.container import llm_service
+from app.application.ports.weather import WeatherPort
+from app.bootstrap.container import llm_service, weather_service
 from app.common import error_codes
 from app.common.enums import FeedbackType, RecommendationEventType
 from app.common.exceptions import FriendlyException
@@ -66,6 +67,10 @@ def _gate() -> None:
         )
 
 
+def _ask_weather_service() -> WeatherPort | None:
+    return weather_service() if get_settings().ENABLE_ASK_TOOLS else None
+
+
 def _to_schema(snapshots: list[ItemRefSnapshot]) -> list[AskItemRefSnapshot]:
     """Sign each snapshot's thumbnail at request time (never persist a
     TTL-bound URL) and project to the response schema."""
@@ -87,6 +92,7 @@ async def ask(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     llm: Annotated[LlmPort, Depends(llm_service)],
+    weather: Annotated[WeatherPort | None, Depends(_ask_weather_service)],
 ) -> AskResponse:
     _gate()
     context = payload.context.model_dump(exclude_none=True) if payload.context else None
@@ -96,6 +102,7 @@ async def ask(
         question=payload.question,
         context=context,
         llm=llm,
+        weather=weather,
         locale=payload.locale,
         focused_item_id=payload.focused_item_id,
         conversation_id=payload.conversation_id,
