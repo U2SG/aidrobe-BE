@@ -243,6 +243,41 @@ async def seed_multi_candidate_task(
     return task
 
 
+async def test_confirm_reimport_of_same_outfit_photo_reuses_item_even_if_color_changes(
+    db_session: AsyncSession,
+) -> None:
+    user_id = uuid.uuid4()
+    first = await seed_multi_candidate_task(db_session, user_id)
+    first.input_type = "outfit_image"
+    assert first.candidate_payload is not None
+    reidentified = dict(first.candidate_payload["candidate_items"][0], color_main="cream")
+    second = ImportTask(
+        user_id=user_id, input_type="outfit_image", source_type="album", task_status="waiting_confirm",
+        input_payload=first.input_payload,
+        candidate_payload={"candidate_items": [reidentified]},
+    )
+    db_session.add(second)
+    await db_session.flush()
+    transport = ASGITransport(app=build_import_confirm_app(db_session))
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        headers = {"X-User-Id": str(user_id)}
+        item = {"temp_item_id": "tmp_1", "title": "白色衬衫", "category": "top", "color_main": "white"}
+        first_reply = await client.post(
+            f"/v1/import-tasks/{first.id}/confirm-items", headers=headers, json={"items": [item]}
+        )
+        original_id = first_reply.json()["data"]["created_items"][0]["item_id"]
+        pending = await client.get(f"/v1/import-tasks/{second.id}", headers=headers)
+        assert pending.json()["data"]["candidate_items"][0]["confirmed_item_id"] == original_id
+        second_reply = await client.post(
+            f"/v1/import-tasks/{second.id}/confirm-items",
+            headers=headers,
+            json={"items": [{**item, "color_main": "cream"}]},
+        )
+        assert second_reply.json()["data"]["created_items"][0]["item_id"] == original_id
+        colors = await db_session.scalars(select(WardrobeItem.color_main).where(WardrobeItem.user_id == user_id))
+        assert list(colors) == ["white"]
+
+
 async def test_confirm_items_creates_multiple_wardrobe_items(db_session: AsyncSession) -> None:
     user_id = uuid.uuid4()
     task = await seed_multi_candidate_task(db_session, user_id)

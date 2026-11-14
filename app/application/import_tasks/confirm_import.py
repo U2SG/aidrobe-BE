@@ -7,6 +7,7 @@ from typing import Any
 import structlog
 
 from app.application.cost_guard import assert_within_quota
+from app.application.import_tasks.same_photo import existing_photo_item
 from app.application.recommendations.background import schedule_today_recompute
 from app.common import error_codes
 from app.common.enums import CutoutStatus, ImageType, ImportStatus, InputType, ItemStatus
@@ -105,10 +106,22 @@ class ConfirmImageImportTask:
             if existing is not None:
                 return ConfirmedEntry(_SINGLE_KEY, existing, created=False)
         self._require_waiting(task)
+        candidate = task.candidate_payload or {}
+        source = candidate.get("original_image_url") or task.input_payload.get("image_url")
+        existing = None
+        if task.input_type in (InputType.IMAGE.value, InputType.OUTFIT_IMAGE.value):
+            existing = await existing_photo_item(
+                self.wardrobe_repository.session, user_id, source, candidate, [], category
+            )
+        if existing is not None:
+            _store_confirmed_map(task, {**confirmed, _SINGLE_KEY: str(existing.id)})
+            task.task_status = ImportStatus.COMPLETED.value
+            await self.import_task_repository.flush()
+            return ConfirmedEntry(_SINGLE_KEY, existing, created=False)
 
         item = await self._create_item(
             user_id=user_id,
-            candidate=task.candidate_payload or {},
+            candidate=candidate,
             fallback_image_url=task.input_payload.get("image_url"),
             outfit_photo=task.input_type == InputType.OUTFIT_IMAGE.value,
             title=title,
@@ -193,6 +206,7 @@ class ConfirmImageImportTask:
                 )
 
         results: list[ConfirmedEntry] = []
+        outfit_photo = task.input_type == InputType.OUTFIT_IMAGE.value
         for entry in items:
             if entry.temp_item_id in confirmed:
                 existing = await self._existing_item(confirmed[entry.temp_item_id], user_id)
@@ -200,11 +214,27 @@ class ConfirmImageImportTask:
                     results.append(ConfirmedEntry(entry.temp_item_id, existing, created=False))
                     continue
                 self._require_waiting(task)
+            candidate = candidate_by_temp_id[entry.temp_item_id]
+            source = candidate.get("original_image_url") or task.input_payload.get("image_url")
+            existing = None
+            if outfit_photo:
+                existing = await existing_photo_item(
+                    self.wardrobe_repository.session,
+                    user_id,
+                    source,
+                    candidate,
+                    list(candidate_by_temp_id.values()),
+                    entry.category,
+                )
+            if existing is not None:
+                confirmed[entry.temp_item_id] = str(existing.id)
+                results.append(ConfirmedEntry(entry.temp_item_id, existing, created=False))
+                continue
             item = await self._create_item(
                 user_id=user_id,
-                candidate=candidate_by_temp_id[entry.temp_item_id],
+                candidate=candidate,
                 fallback_image_url=task.input_payload.get("image_url"),
-                outfit_photo=task.input_type == InputType.OUTFIT_IMAGE.value,
+                outfit_photo=outfit_photo,
                 title=entry.title,
                 category=entry.category,
                 color_main=entry.color_main,
@@ -274,7 +304,11 @@ class ConfirmImageImportTask:
         # neither field, so it falls back to original (behavior unchanged).
         cutout_image_url = candidate.get("cutout_image_url")
         crop_image_url = candidate.get("crop_image_url")
-        if is_legacy_garment_crop(crop_image_url, user_id):
+        # A corrected category means the model may have boxed a different item.
+        if candidate.get("category") != category:
+            cutout_image_url = None
+            crop_image_url = None
+        elif is_legacy_garment_crop(crop_image_url, user_id):
             crop_image_url = None
         standard_image_url = cutout_image_url or crop_image_url or original_image_url
         # A garment crop we stored ourselves: keep its key so reads can be
@@ -355,7 +389,12 @@ class ConfirmImageImportTask:
         # V4 — kick off the async product-shot cutout. Best-effort: a blown
         # daily quota just leaves the item on its original photo (skipped),
         # never blocks the import. Gated by the flag; data already persisted.
-        if get_settings().ENABLE_ITEM_CUTOUT and original_image_url and (not outfit_photo or crop_image_url):
+        if (
+            not cutout_image_url
+            and get_settings().ENABLE_ITEM_CUTOUT
+            and original_image_url
+            and (not outfit_photo or crop_image_url)
+        ):
             session = self.wardrobe_repository.session
             try:
                 await assert_within_quota(session, user_id, "cutout")
