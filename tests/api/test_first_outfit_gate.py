@@ -5,18 +5,28 @@ testcontainers Postgres, per-test truncate (from conftest autouse),
 dependency_overrides for session + settings, ASGITransport/AsyncClient.
 """
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
+from decimal import Decimal
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.recommendations.first_outfit_gate import missing_core_slots
 from app.application.recommendations.generator import RecommendationGenerator
-from app.common.enums import ItemStatus
+from app.common import error_codes
+from app.common.enums import ItemStatus, RecommendationStatus
 from app.common.local_time import local_datetime, utc_now
 from app.config.settings import Settings, get_settings
+from app.infrastructure.persistence.models.recommendation import (
+    DailyRecommendation,
+    Outfit,
+    OutfitFeedback,
+    OutfitItem,
+    WearHistory,
+)
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.recommendation_repo import (
@@ -78,12 +88,16 @@ async def _add_item(
     return item
 
 
+def _local_today() -> date:
+    return local_datetime(utc_now(), None, Settings().DEFAULT_TIMEZONE).date()
+
+
 async def _generate(session: AsyncSession, user_id: uuid.UUID) -> None:
     await RecommendationGenerator(
         SqlAlchemyRecommendationRepository(session)
     ).generate_for_user(
         user_id,
-        local_datetime(utc_now(), None, Settings().DEFAULT_TIMEZONE).date(),
+        _local_today(),
         "nightly_fallback",
     )
 
@@ -325,82 +339,145 @@ async def test_no_outfit_gate_does_not_fabricate_recommendation_identity(
     assert data["trace_id"] is None
 
 
-@pytest.mark.parametrize("n_outfits_hint", [1, 2])
-async def test_state_derivation_n1_and_n2(n_outfits_hint: int, db_session: AsyncSession) -> None:
-    """Unit-level check for n→state derivation inside FirstOutfitGate.execute.
-
-    We can't reliably fixture exactly-1 outfit through the real engine because
-    the combination count depends on wardrobe depth. Instead we test the
-    derivation function in isolation by patching the repository to return a
-    synthetic DailyRecommendation with n Outfit rows.
-    """
-    from datetime import UTC, datetime
-    from decimal import Decimal
-    from unittest.mock import AsyncMock
-
+@pytest.mark.parametrize("count", [1, 2])
+async def test_state_derivation_n1_and_n2(count: int, db_session: AsyncSession) -> None:
     from app.application.recommendations.first_outfit_gate import FirstOutfitGate
-    from app.common.enums import RecommendationStatus
-    from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit
 
     user_id = uuid.uuid4()
-    today = date.today()
-
-    # Build synthetic outfit rows
-    def make_outfit(outfit_type: str, score: float) -> Outfit:
-        o = Outfit(
-            daily_recommendation_id=uuid.uuid4(),
-            user_id=user_id,
-            outfit_type=outfit_type,
-            title=f"Test {outfit_type}",
-            reason_text="test",
-            score_total=Decimal(str(score)),
-            rank_order=1,
-            time_sensitivity="standard",
-            created_at=datetime.now(UTC),
-        )
-        o.id = uuid.uuid4()
-        o.items = []
-        return o
-
-    outfits = [make_outfit("safe", 0.8)] if n_outfits_hint == 1 else [
-        make_outfit("safe", 0.8),
-        make_outfit("fast", 0.6),
+    today = _local_today()
+    await _add_user(db_session, user_id)
+    items = [
+        await _add_item(db_session, user_id, category=category)
+        for category in ("top", "bottom", "shoes")
     ]
-
-    daily = DailyRecommendation(
-        user_id=user_id,
-        recommendation_date=today,
-        status=RecommendationStatus.READY.value,
-        generation_source="test",
-    )
-    daily.id = uuid.uuid4()
-    daily.outfits = outfits
-
-    # Synthetic wearable items (slots complete so slot check passes)
-    def make_wardrobe_item(category: str) -> WardrobeItem:
-        item = WardrobeItem(
+    repository = SqlAlchemyRecommendationRepository(db_session)
+    daily = await repository.archive_current_and_revise(
+        DailyRecommendation(
             user_id=user_id,
-            title=category,
-            category=category,
-            color_main="black",
-            status="wearable",
-            cover_image_url="https://example.com/img.jpg",
+            recommendation_date=today,
+            status=RecommendationStatus.READY.value,
+            generation_source="test",
         )
-        item.id = uuid.uuid4()
-        item.images = []
-        return item
+    )
+    now = datetime.now(UTC)
+    for index, outfit_type in enumerate(("safe", "fast")[:count], start=1):
+        outfit = await repository.add_outfit(
+            Outfit(
+                daily_recommendation_id=daily.id,
+                user_id=user_id,
+                outfit_type=outfit_type,
+                title=outfit_type,
+                reason_text="test",
+                score_total=Decimal(index),
+                rank_order=index,
+                time_sensitivity="standard",
+                created_at=now,
+            )
+        )
+        for order, item in enumerate(items):
+            await repository.add_outfit_item(
+                OutfitItem(outfit_id=outfit.id, item_id=item.id, role=item.category, display_order=order, created_at=now)
+            )
 
-    wearable_items = [make_wardrobe_item(c) for c in ["top", "bottom", "shoes"]]
+    result = await FirstOutfitGate(repository).execute(user_id, today)
 
-    repo = AsyncMock(spec=SqlAlchemyRecommendationRepository)
-    repo.get_wearable_items.return_value = wearable_items
-    repo.get_daily.return_value = daily
-
-    result = await FirstOutfitGate(repo).execute(user_id, today)
-    expected_state = "single_outfit" if n_outfits_hint == 1 else "ready"
-    assert result.state == expected_state
-    assert result.feasible_outfit_count == n_outfits_hint
+    assert result.state == ("single_outfit" if count == 1 else "ready")
+    assert result.feasible_outfit_count == count
     assert result.first_outfit is not None
+    assert result.first_outfit.outfit_type == "safe"
+    assert not result.generated
+
+
+@pytest.mark.parametrize("stale_status", ["insufficient_items", "ready"])
+async def test_first_outfit_replaces_stale_daily_without_losing_history(
+    stale_status: str, db_session: AsyncSession
+) -> None:
+    user_id = uuid.uuid4()
+    today = _local_today()
+    await _add_user(db_session, user_id)
+    top = await _add_item(db_session, user_id, category="top", color="white")
+    bottom = await _add_item(db_session, user_id, category="bottom")
+    shoes = (
+        await _add_item(db_session, user_id, category="shoes")
+        if stale_status == "ready"
+        else None
+    )
+    repository = SqlAlchemyRecommendationRepository(db_session)
+    await _generate(db_session, user_id)
+    previous = await repository.get_daily(user_id, today)
+    assert previous is not None and previous.status == stale_status
+    previous_id = previous.id
+    old_outfit_id = None
+    if shoes is not None:
+        old_outfit_id = previous.outfits[0].id
+        await repository.add_outfit_favorite(user_id, old_outfit_id)
+        await repository.add_feedback(
+            OutfitFeedback(
+                user_id=user_id, outfit_id=old_outfit_id, feedback_type="dislike", created_at=datetime.now(UTC)
+            )
+        )
+        db_session.add(
+            WearHistory(
+                user_id=user_id,
+                outfit_id=old_outfit_id,
+                worn_date=today,
+                selected_at=datetime.now(UTC),
+                created_at=datetime.now(UTC),
+            )
+        )
+        shoes.status = ItemStatus.UNAVAILABLE.value
+        await db_session.flush()
+    current_shoes = await _add_item(db_session, user_id, category="shoes", color="white")
+    app = build_recommendations_app(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.get("/v1/recommendations/first-outfit", headers={"X-User-Id": str(user_id)})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["state"] == "single_outfit"
+    assert data["generation_source"] == "read_time"
+    assert data["recommendation_id"] != str(previous_id)
+    assert {row["item_id"] for row in data["first_outfit"]["items"]} == {
+        str(top.id), str(bottom.id), str(current_shoes.id)
+    }
+    assert not previous.is_current
+    assert await repository.count_current_dailies(user_id, today) == 1
+    assert await repository.count_revisions_for_date(user_id, today) == 1
+    if old_outfit_id is not None:
+        assert await repository.list_favorited_outfit_ids(user_id, [old_outfit_id]) == {old_outfit_id}
+        assert await repository.get_feedback_for_user(old_outfit_id, user_id) is not None
+        assert await repository.get_wear_history(old_outfit_id, user_id, today) is not None
+
+
+async def test_first_outfit_timeout_returns_technical_error(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.application.recommendations.background import schedule_today_recompute
+    from app.infrastructure.persistence.models.async_job import AsyncJob
+
+    user_id = uuid.uuid4()
+    await _add_user(db_session, user_id)
+    for category in ("top", "bottom", "shoes"):
+        await _add_item(db_session, user_id, category=category)
+    repository = SqlAlchemyRecommendationRepository(db_session)
+    await schedule_today_recompute(user_id, repository)
+
+    async def timed_out_generation(*args: object, **kwargs: object) -> None:
+        # Expire the current budget without any wall-clock sleep.
+        raise TimeoutError
+
+    monkeypatch.setattr(RecommendationGenerator, "generate_for_user", timed_out_generation)
+    app = build_recommendations_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.get("/v1/recommendations/first-outfit", headers={"X-User-Id": str(user_id)})
+
+    assert response.status_code == 504
+    assert response.json()["code"] == error_codes.INTERNAL_ERROR
+    assert response.json()["data"] is None
+    assert await repository.get_daily(user_id, _local_today()) is None
+    job_status = await db_session.scalar(select(AsyncJob.status).where(AsyncJob.user_id == user_id))
+    assert job_status == "queued"
 
 
 async def test_image_unavailable_blocks_untrustworthy_first_outfit(

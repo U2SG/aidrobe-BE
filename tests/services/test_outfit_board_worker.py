@@ -422,15 +422,24 @@ async def test_render_keeps_legacy_url_only_snapshot_compatible(monkeypatch: pyt
 
 
 async def test_download_image_rejects_unsafe_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.infrastructure.importers import external_http
+
     async_client = httpx.AsyncClient
     fetches: list[str] = []
 
+    async def resolve(host: str, port: int) -> str:
+        if host == "169.254.169.254":
+            raise external_http.InvalidExternalSource("External URL must resolve to public addresses")
+        return "203.0.114.2"
+
     async def handler(request: httpx.Request) -> httpx.Response:
-        fetches.append(str(request.url))
+        fetches.append(f"{request.url.scheme}://{request.headers['host']}{request.url.path}")
         return httpx.Response(302, request=request, headers={"location": "http://169.254.169.254/meta"})
 
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: async_client(transport=httpx.MockTransport(handler)))
-    monkeypatch.setattr(outfit_board_worker, "is_safe_url", lambda url: "169.254" not in url)
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kwargs: async_client(transport=httpx.MockTransport(handler), **kwargs)
+    )
+    monkeypatch.setattr(external_http, "_resolve_public_address", resolve)
 
     assert await outfit_board_worker._download_image("https://images.example/top.jpg") is None
     assert fetches == ["https://images.example/top.jpg"]

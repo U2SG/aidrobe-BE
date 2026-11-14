@@ -11,6 +11,7 @@ from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
 from app.infrastructure.persistence.session import get_db_session as get_db
 from app.presentation.api.v1.deps import get_current_user
+from app.presentation.api.v1.render_url import wardrobe_image_urls
 from app.presentation.api.v1.schemas.insights import (
     ColorPaletteResponse,
     CostPerWearItem,
@@ -41,12 +42,13 @@ async def top_items(
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> list[TopItemResponse]:
     items = await wardrobe_insights.get_top_items(current_user.id, db, limit)
+    images = await wardrobe_image_urls(db, items)
     return [
         TopItemResponse(
             item_id=i.id,
             title=i.title,
             category=i.category,
-            cover_image_url=i.cover_image_url,
+            cover_image_url=images[i.id].cover,
             wear_count=i.wear_count,
         )
         for i in items
@@ -60,12 +62,13 @@ async def idle_items(
     threshold_days: Annotated[int, Query(ge=1)] = 60,
 ) -> list[IdleItemResponse]:
     items = await wardrobe_insights.get_idle_items(current_user.id, db, threshold_days)
+    images = await wardrobe_image_urls(db, items)
     return [
         IdleItemResponse(
             item_id=i.id,
             title=i.title,
             category=i.category,
-            cover_image_url=i.cover_image_url,
+            cover_image_url=images[i.id].cover,
             wear_count=i.wear_count,
         )
         for i in items

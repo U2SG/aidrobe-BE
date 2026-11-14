@@ -21,18 +21,16 @@ from __future__ import annotations
 
 import io
 import uuid
-from urllib.parse import urljoin
 
-import httpx
 import structlog
 from PIL import Image, ImageDraw
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.storage import ObjectStoragePort
 from app.config.settings import get_settings
-from app.infrastructure.importers.link_parser import BROWSER_HEADERS, is_safe_url
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.storage.object_key import names_internal_storage, trusted_item_image_key
+from app.infrastructure.storage.source_image import download_external_source_image
 from app.infrastructure.vision.openai_image_cutout import OpenAIImageCutout
 from app.infrastructure.workers._visual_asset_runtime import (
     VisualAssetSnapshot,
@@ -104,20 +102,9 @@ def _image_from_bytes(data: bytes) -> Image.Image | None:
 
 
 async def _download_image(url: str) -> Image.Image | None:
-    if not is_safe_url(url):
-        return None
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=False, headers=BROWSER_HEADERS) as client:
-            resp = await client.get(url)
-            hops = 0
-            while resp.is_redirect and hops < 5:
-                redirect_url = urljoin(str(resp.url), resp.headers.get("location", ""))
-                if not is_safe_url(redirect_url):
-                    return None
-                resp = await client.get(redirect_url)
-                hops += 1
-            resp.raise_for_status()
-            return _image_from_bytes(resp.content)
+        data, _ = await download_external_source_image(url, get_settings())
+        return _image_from_bytes(data)
     except Exception:
         return None
 

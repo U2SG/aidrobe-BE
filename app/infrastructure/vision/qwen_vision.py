@@ -171,11 +171,13 @@ class QwenVision:
             ]
         )
 
-    async def analyze_style(self, image_url: str, locale: str = DEFAULT_LOCALE) -> StyleAnalysis:
+    async def analyze_style(
+        self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
+    ) -> StyleAnalysis:
         # `locale` is accepted for interface parity but ignored: style tags must
         # be stable English so the recommendation template matcher can key on
         # them (same reason category/color stay English in analyze_image).
-        image_payload_url = await self._to_data_uri(image_url)
+        image_payload_url = await self._to_data_uri(image_url, source_key)
         payload = {
             "model": self.settings.QWEN_VISION_MODEL,
             "messages": [
