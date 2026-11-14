@@ -12,7 +12,7 @@ from app.application.wardrobe.delete_item import DeleteWardrobeItem
 from app.application.wardrobe.list_items import ListWardrobeItems
 from app.application.wardrobe.update_item import UpdateWardrobeItem
 from app.common import error_codes
-from app.common.enums import RecommendationEventType, WardrobeItemStatus
+from app.common.enums import CutoutStatus, RecommendationEventType, WardrobeItemStatus
 from app.common.exceptions import FriendlyException
 from app.common.item_labels import localized_item_name
 from app.common.local_time import local_datetime, utc_now
@@ -22,6 +22,7 @@ from app.infrastructure.cache.client import (
     get_redis_client,
     invalidate_daily_recommendation_cache,
 )
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.recommendation import (
     Outfit,
     OutfitItem,
@@ -56,7 +57,24 @@ from app.presentation.api.v1.schemas.wardrobe import (
 router = APIRouter(prefix="/v1/wardrobe-items", tags=["wardrobe"])
 
 
-def item_response(item: WardrobeItem, locale: str) -> WardrobeItemResponse:
+async def _rejected_product_images(
+    session: AsyncSession, user_id: uuid.UUID, items: list[WardrobeItem]
+) -> set[uuid.UUID]:
+    legacy_ids = [item.id for item in items if item.cutout_status == CutoutStatus.SKIPPED.value]
+    if not legacy_ids:
+        return set()
+    rejected = await session.scalars(
+        select(AsyncJob.target_id).where(
+            AsyncJob.user_id == user_id,
+            AsyncJob.job_type == "cutout",
+            AsyncJob.target_id.in_(legacy_ids),
+            AsyncJob.result["review"].as_string() == "rejected",
+        )
+    )
+    return {item_id for item_id in rejected if item_id is not None}
+
+
+def item_response(item: WardrobeItem, locale: str, *, rejected: bool = False) -> WardrobeItemResponse:
     localized_names = cast(dict[str, object] | None, item.localized_names)
     return WardrobeItemResponse(
         item_id=item.id,
@@ -81,7 +99,7 @@ def item_response(item: WardrobeItem, locale: str) -> WardrobeItemResponse:
             else item.cover_image_url
         ),
         original_image_url=item.original_image_url,
-        cutout_status=item.cutout_status,
+        cutout_status=CutoutStatus.REJECTED.value if rejected else item.cutout_status,
         location=item.location,
         size_label=item.size_label,
         size_region=item.size_region,
@@ -122,9 +140,10 @@ async def list_wardrobe_items(
         status=status.value if status else None, season=season, color=color,
     )
     effective_locale = await resolve_user_locale(session, current_user.id, locale)
+    rejected = await _rejected_product_images(session, current_user.id, items)
     return ResponseModel(
         data=WardrobeListResponse(
-            items=[item_response(item, effective_locale) for item in items],
+            items=[item_response(item, effective_locale, rejected=item.id in rejected) for item in items],
             limit=limit,
             offset=offset,
             total=total,
@@ -143,7 +162,8 @@ async def get_wardrobe_item(
     if item is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Wardrobe item not found", status_code=404)
     effective_locale = await resolve_user_locale(session, current_user.id, locale)
-    return ResponseModel(data=item_response(item, effective_locale))
+    rejected = await _rejected_product_images(session, current_user.id, [item])
+    return ResponseModel(data=item_response(item, effective_locale, rejected=item.id in rejected))
 
 
 @router.patch("/{item_id}", response_model=ResponseModel[WardrobeItemResponse])

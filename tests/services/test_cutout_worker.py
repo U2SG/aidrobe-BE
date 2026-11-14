@@ -170,7 +170,7 @@ async def test_drain_applies_only_accepted_product_photos(
 
         item = await s.get(WardrobeItem, item_id)
         assert item is not None
-        assert item.cutout_status == (CutoutStatus.READY.value if accepted else CutoutStatus.SKIPPED.value)
+        assert item.cutout_status == (CutoutStatus.READY.value if accepted else CutoutStatus.REJECTED.value)
         expected_cover = f"https://fake-storage/{user_id}/items/{item_id}/cutout.png" if accepted else "https://x/original.jpg"
         assert item.cover_image_url == expected_cover
         assert item.original_image_url == "https://x/original.jpg"
