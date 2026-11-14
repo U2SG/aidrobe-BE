@@ -430,7 +430,7 @@ async def test_outfit_confirm_enqueues_only_the_two_candidates_with_real_crops(
     db_session.add(User(id=owner))
     await db_session.flush()
     source_key = f"users/{owner}/wardrobe/outfit.jpg"
-    crop_keys = [f"users/{owner}/wardrobe/crops/{i}.jpg" for i in range(2)]
+    crop_keys = [f"users/{owner}/wardrobe/verified-crops/{i}.jpg" for i in range(2)]
     task = ImportTask(
         user_id=owner,
         input_type="outfit_image",

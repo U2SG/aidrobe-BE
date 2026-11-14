@@ -260,7 +260,7 @@ async def test_generated_board_reviews_the_single_garment_crop(db_session: Async
     top = await db_session.scalar(
         select(WardrobeItem).where(WardrobeItem.user_id == user_id, WardrobeItem.category == "top")
     )
-    crop_key = f"users/{user_id}/wardrobe/crops/top.jpg"
+    crop_key = f"users/{user_id}/wardrobe/verified-crops/top.jpg"
     db_session.add(
         WardrobeItemImage(
             item_id=top.id,

@@ -387,7 +387,7 @@ async def test_concurrent_admission_holds_queued_and_legacy_budget(
 
     async def confirm_garment(index: int) -> uuid.UUID:
         async with patched_session_factory() as s:
-            key = f"users/{user_id}/wardrobe/crops/{index}.jpg"
+            key = f"users/{user_id}/wardrobe/verified-crops/{index}.jpg"
             item = WardrobeItem(user_id=user_id, category="top", title=f"Item {index}", color_main="white")
             s.add(item)
             await s.flush()
@@ -403,7 +403,7 @@ async def test_concurrent_admission_holds_queued_and_legacy_budget(
         assert sorted(item.cutout_status for item in items) == ["queued", "skipped", "skipped", "skipped"]
         admitted = next(item for item in items if item.cutout_status == CutoutStatus.QUEUED.value)
         await prepare_derivatives.prepare_item_derivatives(
-            s, admitted, source_key=f"users/{user_id}/wardrobe/crops/replayed.jpg",
+            s, admitted, source_key=f"users/{user_id}/wardrobe/verified-crops/replayed.jpg",
             source_url=None, source_version=admitted.embedding_source_version or "",
         )
         reservations = (
