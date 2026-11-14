@@ -7,8 +7,8 @@ on:
 
 # Newer pushes to the same ref cancel in-flight runs (the test job is long).
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/fix/import-pipeline-hardening' }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
