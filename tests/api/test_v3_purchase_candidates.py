@@ -20,13 +20,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ports.vision import VisionResult
 from app.config.settings import Settings
 from app.infrastructure.importers.link_parser import ProductPage
 from app.infrastructure.ocr.fake_ocr import FakeOcr
 from app.infrastructure.persistence.models.purchase_decision import PurchaseCandidate
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.session import get_db_session
-from app.application.ports.vision import VisionResult
 from app.infrastructure.vision.fake_vision import FakeVision
 from app.presentation.api.v1.routers import purchase_candidates
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
