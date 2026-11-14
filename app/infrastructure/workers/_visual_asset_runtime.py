@@ -28,7 +28,7 @@ from app.infrastructure.workers.job_runtime import (
 
 logger = structlog.get_logger(__name__)
 
-RenderFn = Callable[["VisualAssetSnapshot"], Awaitable[tuple[str, str]]]
+RenderFn = Callable[["VisualAssetSnapshot"], Awaitable[tuple[str, str] | None]]
 
 
 @dataclass
@@ -36,6 +36,7 @@ class VisualAssetSnapshot:
     id: uuid.UUID
     user_id: uuid.UUID
     input_snapshot: dict[str, Any]
+    attempt: int = 1
 
 
 async def process_visual_asset_job(
@@ -86,13 +87,14 @@ async def process_visual_asset_job(
                 id=asset.id,
                 user_id=asset.user_id,
                 input_snapshot=dict(asset.input_snapshot or {}),
+                attempt=job.attempts,
             )
             await repo.update_status(asset_id, "processing")
             await session.commit()
 
         # 2. Render + upload (no DB session held during slow IO / external gen).
         try:
-            image_url, object_key = await render_fn(snapshot)
+            rendered = await render_fn(snapshot)
         except Exception as exc:
             logger.warning(f"{log_prefix}_render_failed", error=str(exc))
             # Asset stays in 'processing' so a retry can flip it back; only on
@@ -117,7 +119,11 @@ async def process_visual_asset_job(
         # `dead`), and the asset would race against the retry's own write.
         async with AsyncSessionLocal() as session:
             repo = SqlAlchemyOutfitVisualRepository(session)
-            await repo.update_status(asset_id, "completed", image_url=image_url, object_key=object_key)
+            if rendered is None:
+                await repo.update_status(asset_id, "rejected_by_quality_gate")
+            else:
+                image_url, object_key = rendered
+                await repo.update_status(asset_id, "completed", image_url=image_url, object_key=object_key)
             ok = await mark_succeeded(session, job.id, claimed_attempt=job.attempts)
             if not ok:
                 await session.rollback()
@@ -128,11 +134,10 @@ async def process_visual_asset_job(
                 )
                 return
             await session.commit()
-            logger.info(
-                f"{log_prefix}_generated",
-                asset_id=str(asset_id),
-                image_url=image_url,
-            )
+            if rendered is None:
+                logger.info(f"{log_prefix}_rejected_by_quality_gate", asset_id=str(asset_id))
+            else:
+                logger.info(f"{log_prefix}_generated", asset_id=str(asset_id))
     finally:
         structlog.contextvars.unbind_contextvars("correlation_id", "job_id", "asset_id")
 

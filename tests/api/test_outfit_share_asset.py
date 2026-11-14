@@ -198,7 +198,9 @@ async def test_gpt_outfit_board_uses_a_separate_reusable_asset(
     monkeypatch.setattr(
         outfit_visual,
         "get_settings",
-        lambda: Settings(ENABLE_ITEM_CUTOUT=True, IMAGE_CUTOUT_PROVIDER="openai", OPENAI_API_KEY="test"),
+        lambda: Settings(
+            ENABLE_ITEM_CUTOUT=True, IMAGE_CUTOUT_PROVIDER="openai", OPENAI_API_KEY="test", QWEN_API_KEY="test"
+        ),
     )
 
     async def allow(*args: object, **kwargs: object) -> None:
@@ -207,10 +209,33 @@ async def test_gpt_outfit_board_uses_a_separate_reusable_asset(
     monkeypatch.setattr(outfit_visual, "assert_within_quota", allow)
     user_id = uuid.uuid4()
     outfit_id = await _seed_outfit(db_session, user_id)
+    old_asset = OutfitVisualAsset(
+        user_id=user_id,
+        outfit_id=outfit_id,
+        visual_type=VisualType.OUTFIT_BOARD.value,
+        generation_status="completed",
+        image_url="https://storage.example/old.png",
+        input_snapshot={"generate": True},
+    )
+    db_session.add(old_asset)
+    await db_session.flush()
+    db_session.add(
+        AsyncJob(
+            job_type="outfit_board",
+            idempotency_key=f"outfit_board:{outfit_id}:gpt-v1",
+            target_id=old_asset.id,
+            user_id=user_id,
+            payload={"layout_version": "gpt-v1"},
+        )
+    )
+    await db_session.flush()
     path = f"/v1/outfits/{outfit_id}/share-asset"
     headers = {"X-User-Id": str(user_id)}
     async with AsyncClient(transport=ASGITransport(app=_app(db_session)), base_url="http://testserver") as client:
         assert (await client.get(path, headers=headers)).status_code == 404
+        legacy = await client.get(f"/v1/outfit-visual-assets/{old_asset.id}", headers=headers)
+        assert legacy.json()["generation_status"] == "rejected_by_quality_gate"
+        assert legacy.json()["image_url"] is None
         board = await client.post(path, headers=headers)
         generated = await client.post(path, headers=headers, params={"generate": "true"})
         assert generated.status_code == 202
@@ -220,6 +245,9 @@ async def test_gpt_outfit_board_uses_a_separate_reusable_asset(
         replay = await client.post(path, headers=headers, params={"generate": "true"})
         assert replay.json()["asset_id"] == generated.json()["asset_id"]
 
-    job = (await db_session.scalars(select(AsyncJob).where(AsyncJob.idempotency_key.endswith(":gpt-v1")))).one()
+    job = (await db_session.scalars(
+        select(AsyncJob).where(AsyncJob.target_id == uuid.UUID(generated.json()["asset_id"]))
+    )).one()
+    assert job.payload["layout_version"] == outfit_visual._GENERATED_OUTFIT_LAYOUT_VERSION
     asset = await db_session.get(OutfitVisualAsset, job.target_id)
     assert asset is not None and asset.input_snapshot["generate"] is True
