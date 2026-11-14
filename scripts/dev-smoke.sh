@@ -28,7 +28,10 @@ import_item() { # $1 = name hint (top|pants), $2 = category, $3 = title
   for _ in $(seq 1 60); do
     status=$(curl -fsS "${hdr[@]}" "$api/v1/import-tasks/$task" | jqr "d['status']")
     [[ "$status" == waiting_confirm ]] && break
-    [[ "$status" == failed ]] && { echo "import $1 failed" >&2; exit 1; }
+    [[ "$status" == failed ]] && {
+      echo "import $1 failed (with AIDROBE_VISION_PROVIDER=qwen the 1x1 test image is rejected by real recognition; run the smoke with fake vision)" >&2
+      exit 1
+    }
     sleep 2
   done
   [[ "$status" == waiting_confirm ]] || { echo "import $1 stuck in $status (is the worker running?)" >&2; exit 1; }
