@@ -264,6 +264,7 @@ class Settings(BaseSettings):
     # Per-user-per-day call cap (call-count quota, like tryon/ootd). Enforced
     # only when ENABLE_COST_GUARD=True.
     ITEM_CUTOUT_DAILY_LIMIT: int = 50
+    OUTFIT_IMAGE_DAILY_LIMIT: int = 3
 
     # V4 Outfit Calendar — plan/calendar endpoints. Off by default; plans
     # persist regardless of the flag, the flag only gates exposure.

@@ -59,6 +59,7 @@ def _limit_for(settings: Settings, job_type: str) -> int | None:
         "tryon": settings.TRYON_DAILY_CALL_LIMIT,
         "ootd_poster": settings.OOTD_POSTER_DAILY_CALL_LIMIT,
         "cutout": settings.ITEM_CUTOUT_DAILY_LIMIT,
+        "outfit_image": settings.OUTFIT_IMAGE_DAILY_LIMIT,
     }.get(job_type)
 
 

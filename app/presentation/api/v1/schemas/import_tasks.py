@@ -20,6 +20,12 @@ class CreateImportTaskRequest(BaseModel):
     locale: str | None = Field(default=None, max_length=16)
 
 
+class ImportDuplicateHint(BaseModel):
+    item_id: UUID
+    title: str
+    image_url: str | None = None
+
+
 class CandidateItem(BaseModel):
     title: str
     category: str
@@ -58,6 +64,7 @@ class CandidateItem(BaseModel):
     # Set once this candidate has been confirmed (batches / retries); the
     # client skips it and can resume with the remaining ones.
     confirmed_item_id: UUID | None = None
+    possible_duplicates: list[ImportDuplicateHint] = Field(default_factory=list)
 
 
 class ConfirmItemInput(BaseModel):
@@ -75,7 +82,7 @@ class ConfirmItemInput(BaseModel):
 
 
 class ConfirmItemsRequest(BaseModel):
-    items: list[ConfirmItemInput] = Field(min_length=1)
+    items: list[ConfirmItemInput]
     # Close the task after this batch even if other candidates are left
     # unconfirmed. By default the task stays waiting_confirm until every
     # candidate is confirmed, so the rest can be imported in a later batch.

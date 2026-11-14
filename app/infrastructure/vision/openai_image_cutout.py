@@ -52,11 +52,26 @@ class OpenAIImageCutout:
         self.settings = settings
 
     async def extract(self, image_bytes: bytes, category: str) -> bytes:
+        return await self._edit([image_bytes], _prompt(category))
+
+    async def render_outfit(self, images: list[bytes], roles: list[str]) -> bytes:
+        pieces = ", ".join(f"image {index}: {role}" for index, role in enumerate(roles, 1))
+        return await self._edit(
+            images,
+            "Create one cohesive fashion flat lay on a clean light neutral background. "
+            f"The images are clothing references for these slots: {pieces}. Show exactly one "
+            "garment per slot and a pair for shoes. Keep the exact colours, prints, fabrics and "
+            "silhouettes. Remove all people, phones, hangers and surroundings. Arrange the outfit "
+            "as a full, coordinated look with all pieces fully in view. Use no text or labels.",
+        )
+
+    async def _edit(self, images: list[bytes], prompt: str) -> bytes:
         s = self.settings
-        files = {"image": ("source.jpg", image_bytes, "image/jpeg")}
+        field = "image" if len(images) == 1 else "image[]"
+        files = [(field, (f"source-{index}.jpg", image, "image/jpeg")) for index, image in enumerate(images)]
         data: dict[str, Any] = {
             "model": s.OPENAI_IMAGE_MODEL,
-            "prompt": _prompt(category),
+            "prompt": prompt,
             "quality": s.IMAGE_CUTOUT_QUALITY,
             "size": "auto",
             "n": "1",

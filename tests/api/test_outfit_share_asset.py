@@ -4,12 +4,14 @@ import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.enums import ItemStatus, RecommendationStatus, VisualType
+from app.config.settings import Settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
 from app.infrastructure.persistence.models.recommendation import (
@@ -188,3 +190,36 @@ async def test_share_asset_hides_foreign_and_missing_outfits(db_session: AsyncSe
     assert foreign.json()["code"] == missing.json()["code"] == 4041
     assert await db_session.scalar(select(func.count()).select_from(OutfitVisualAsset)) == 0
     assert await db_session.scalar(select(func.count()).select_from(AsyncJob)) == 0
+
+
+async def test_gpt_outfit_board_uses_a_separate_reusable_asset(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        outfit_visual,
+        "get_settings",
+        lambda: Settings(ENABLE_ITEM_CUTOUT=True, IMAGE_CUTOUT_PROVIDER="openai", OPENAI_API_KEY="test"),
+    )
+
+    async def allow(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(outfit_visual, "assert_within_quota", allow)
+    user_id = uuid.uuid4()
+    outfit_id = await _seed_outfit(db_session, user_id)
+    path = f"/v1/outfits/{outfit_id}/share-asset"
+    headers = {"X-User-Id": str(user_id)}
+    async with AsyncClient(transport=ASGITransport(app=_app(db_session)), base_url="http://testserver") as client:
+        assert (await client.get(path, headers=headers)).status_code == 404
+        board = await client.post(path, headers=headers)
+        generated = await client.post(path, headers=headers, params={"generate": "true"})
+        assert generated.status_code == 202
+        assert board.json()["asset_id"] != generated.json()["asset_id"]
+        lookup = await client.get(path, headers=headers)
+        assert lookup.json()["asset_id"] == generated.json()["asset_id"]
+        replay = await client.post(path, headers=headers, params={"generate": "true"})
+        assert replay.json()["asset_id"] == generated.json()["asset_id"]
+
+    job = (await db_session.scalars(select(AsyncJob).where(AsyncJob.idempotency_key.endswith(":gpt-v1")))).one()
+    asset = await db_session.get(OutfitVisualAsset, job.target_id)
+    assert asset is not None and asset.input_snapshot["generate"] is True
