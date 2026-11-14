@@ -68,14 +68,14 @@ class OpenAIImageCutout:
         return None
 
     async def render_outfit(
-        self, images: list[bytes], garments: list[str], *, preserve_shoe_cover: bool = False
+        self, images: list[bytes], garments: list[str], *, emphasize_shoe_details: bool = False
     ) -> bytes:
         pieces = "; ".join(f"image {index}: {garment}" for index, garment in enumerate(garments, 1))
         footwear = (
-            "Place only the verifiable front toe shapes below the hems for partially covered shoes. "
-            "Preserve the photographed curved toe seams and any asymmetry; extend the hem to conceal "
-            "the entire remaining shoe area, especially the lacing area. "
-            if preserve_shoe_cover else ""
+            "Copy the visible toe panels, curved seams, and outsole edges from the shoe photo before "
+            "completing the rear. Keep the photographed toe proportions, stitch paths and surface pattern. "
+            "A smooth visible panel stays smooth. Keep any identifiable pair differences. "
+            if emphasize_shoe_details else ""
         )
         return await self._edit(
             images,
@@ -83,13 +83,11 @@ class OpenAIImageCutout:
             f"The numbered references show these garments: {pieces}. Show every listed garment and no extras. "
             "Match the actual color, fabric, cut, seams, fasteners and markings visible in each reference. "
             "Preserve which side each detail appears on. Do not mirror the garments. "
-            "Keep any areas hidden by fabric, cropping or framing hidden in the finished outfit. "
-            "For partly covered shoes, trace the photographed toe outlines and seams, and pull the trouser "
-            "hems far enough over each shoe to keep all unverified details covered. Preserve asymmetry "
-            "and partial framing. Do not reconstruct hidden shoe openings, laces, heels, logos, perforations, "
-            "sides or soles, and do not show detached shoe fragments. Keep the shoes naturally aligned under "
-            f"the trouser hems. {footwear}Leave a visible background margin below the tips of both shoes. "
-            "Keep the other garments recognizable as a full coordinated look. "
+            "Complete portions hidden by fabric, cropping or framing in a simple way consistent with "
+            "the visible design. For shoes keep every photographed feature like toe shape, panel seams, "
+            "perforations or lack of them, laces where visible, and sole edge. Use a plain coherent design "
+            "for the unshown heel and opening. Show complete pairs. "
+            f"{footwear}Leave background margin around the garments. "
             "Remove people, phones, hangers and surroundings. Use no text or labels.",
         )
 

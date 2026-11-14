@@ -40,7 +40,7 @@ logger = structlog.get_logger(__name__)
 _STALE_QUEUED_MINUTES = 15
 # v2: used slots are centred as a group (v1 left blank bands for missing roles).
 _OUTFIT_BOARD_LAYOUT_VERSION = "v2"
-_GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-reviewed-v3"
+_GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-reviewed-v5"
 _IMAGE_TYPE_PRIORITY = ("cutout", "thumbnail", "standard", "original")
 
 

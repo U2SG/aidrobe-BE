@@ -269,9 +269,9 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] |
         provider = OpenAIImageCutout(settings)
         reviewer = QwenVision(settings)
         attempts = (False, True) if footwear_reference is not None else (False,)
-        for preserve_shoe_cover in attempts:
+        for emphasize_visible_details in attempts:
             generated = await provider.render_outfit(
-                generation_images, garments, preserve_shoe_cover=preserve_shoe_cover
+                generation_images, garments, emphasize_shoe_details=emphasize_visible_details
             )
             if not await reviewer.matches_outfit_photo(review_images, generated, garments=garments):
                 continue

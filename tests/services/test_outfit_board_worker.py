@@ -442,13 +442,14 @@ async def test_generated_outfit_uses_original_shoe_reference_and_only_uploads_on
     )
     monkeypatch.setattr(outfit_board_worker, "get_settings", lambda: settings)
 
-    async def generate(images: list[bytes], garments: list[str], *, preserve_shoe_cover: bool) -> bytes:
+    async def generate(images: list[bytes], garments: list[str], *, emphasize_shoe_details: bool) -> bytes:
         assert len(images) == 1
         assert garments == ["shoes: White sneakers (white)"]
         return _png_bytes()
 
     async def check_outfit(sources: list[bytes], generated: bytes, *, garments: list[str]) -> bool:
-        assert storage.get_calls == ["generated-shoes.png", "original-shoes.jpg"]
+        expected = ["generated-shoes.png", "original-shoes.jpg"]
+        assert storage.get_calls == expected
         assert len(sources) == 1
         assert generated == _png_bytes()
         return True

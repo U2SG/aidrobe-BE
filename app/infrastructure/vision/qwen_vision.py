@@ -239,17 +239,16 @@ class QwenVision:
             f"The reference garments in order are {json.dumps(garments, ensure_ascii=False)}. "
             "Check each target garment separately. Match the visible color, neckline or collar, sleeves, "
             "hem, leg width, fabric, pockets, seams, fasteners, and the side and position of marks. "
-            "Reject mirrored or moved details, changed construction, "
-            "extra pieces, and any concealed feature that the render introduces. A change in angle or "
-            "more overlap is acceptable if the exposed parts still match. Specifically compare the "
-            "shoe toe shape and seams, allowing more of the lacing to be covered by the trousers. "
-            "If shoes were partly concealed, reject an exposed opening, heel, insole, sole side, "
-            "full lacing, invented perforations or logos. Detached shoe fragments also fail. "
+            "Reject mirrored or moved visible details, changed visible construction, or extra pieces. "
+            "Allow a new angle and completion of areas genuinely hidden in the references. "
+            "Check for material changes to any area visible in both images. Specifically compare shoe "
+            "toe shape, visible seams and surface markings. A smooth visible toe panel cannot gain holes "
+            "or a logo. The previously hidden heel or opening may now be visible. Detached shoe fragments fail. "
             "Decide whether each item is present independently from whether its details match. "
             "Mark uncertainty as false. "
             'Return JSON with "composition_matches" (boolean for every piece present and no extras) and '
             '"garment_matches" (array of one boolean per reference, in reference order, true only if '
-            "visible features match and the concealed parts remain hidden).",
+            "the photographed visible features match).",
             *(_image_data_uri(source) for source in sources),
         )
         result = json.loads(self._strip_json_fence(content))
@@ -269,19 +268,20 @@ class QwenVision:
             _image_data_uri(source),
             "Compare the actual shoe photo in image 1 with the shoes at the bottom of the outfit in image 2. "
             "Ignore all other garments except where they occlude the shoes. Compare the two photos visually. "
-            "Check whether the toe shape, edge seam, visible sole and color match. Confirm that image 2 "
-            "does not show a larger exposed shoe area or newly visible regions of lacing, eyelets, tongue, "
-            "collar, insole, heel or side, and does not add logos or perforations. Keep the shoes attached to "
-            "the trouser hems if they are covered; detached fragments fail. More coverage is allowed when "
-            "the visible part still matches. If a feature is too blurry or hidden in image 1, do not guess. "
-            'Return JSON with boolean fields "visible_design_matches" and "no_newly_exposed_details".',
+            "Allow reconstruction of the photographed shoe's hidden areas, including its heel, collar and "
+            "opening. Compare the same regions in both images, accounting for viewpoint. Check toe shape, "
+            "panel contours, edge seams, visible laces and sole. Reject changes to those features, including "
+            "perforations, logos or decoration on a surface visible without them in image 1. "
+            "A complete shoe may look different in the previously hidden areas; score only the visible evidence. "
+            "Detached shoe fragments fail. "
+            'Return JSON with boolean fields "visible_design_matches" and "no_changes_on_visible_regions".',
             _image_data_uri(generated),
         )
         result = json.loads(self._strip_json_fence(content))
         if not isinstance(result, dict):
             raise ValueError("Invalid footwear quality review response")
         visible_design = result.get("visible_design_matches")
-        details_preserved = result.get("no_newly_exposed_details")
+        details_preserved = result.get("no_changes_on_visible_regions")
         if not isinstance(visible_design, bool) or not isinstance(details_preserved, bool):
             raise ValueError("Invalid footwear quality review response")
         return visible_design and details_preserved
