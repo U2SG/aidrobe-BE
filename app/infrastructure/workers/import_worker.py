@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.ports.link_parser import LinkParserPort
 from app.application.ports.ocr import OcrPort
 from app.application.ports.rate_limit import UserRateLimiter
-from app.application.ports.vision import VisionPort
+from app.application.ports.vision import VisionPort, VisionResult
 from app.bootstrap.container import (
     link_parser,
     ocr_service,
@@ -52,6 +52,15 @@ IMPORT_LEASE_SECONDS = IMPORT_ATTEMPT_TIMEOUT_SECONDS + 15
 
 def _import_idempotency_key(task_id: uuid.UUID) -> str:
     return f"import_task:{task_id}"
+
+
+def _is_unverified_layer(candidate: dict[str, object], result: VisionResult) -> bool:
+    if result.style_unverified:
+        return True
+    if candidate.get("crop_image_url"):
+        return False
+    name = f"{result.title} {result.display_name} {result.canonical_name}".casefold()
+    return any(word in name for word in ("内搭", "打底", "inner layer", "base layer", "undershirt"))
 
 
 class ProcessImageImportTask:
@@ -126,11 +135,12 @@ class ProcessImageImportTask:
         task.task_status = ImportStatus.WAITING_CONFIRM.value
         candidate_items: list[dict[str, object]] = []
         for result in results:
+            display_name = result.display_name or result.title
             candidate_items.append(
                 {
-                    "title": result.display_name or result.title,
+                    "title": display_name,
                     "canonical_name": result.canonical_name or result.title,
-                    "display_name": result.display_name or result.title,
+                    "display_name": display_name,
                     "localized_names": result.localized_names,
                     "category": result.category,
                     "color_main": result.color_main,
@@ -152,6 +162,17 @@ class ProcessImageImportTask:
             )
             if fingerprint:
                 task.input_payload = {**task.input_payload, "photo_fingerprint": fingerprint}
+            candidate_items = [
+                candidate
+                for candidate, result in zip(candidate_items, results, strict=True)
+                if not _is_unverified_layer(candidate, result)
+            ]
+            if not candidate_items:
+                task.task_status = ImportStatus.FAILED.value
+                task.error_code = "vision_failed"
+                task.error_message = "No separately identifiable garments are visible"
+                await self.repository.flush()
+                return
 
         # Keep the first result in the legacy top-level shape while exposing all
         # garments through the existing multi-candidate contract.

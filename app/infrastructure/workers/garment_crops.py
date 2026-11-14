@@ -72,7 +72,7 @@ async def attach_garment_crops(
 ) -> str | None:
     """Add `bbox`, `crop_image_url` and `crop_object_key` to the candidates
     whose garment was boxed. Candidates and results are parallel lists."""
-    boxes = [result.bbox for result in results]
+    boxes = [None if result.style_unverified else result.bbox for result in results]
     for candidate, box in zip(candidates, boxes, strict=True):
         if box is not None:
             candidate["bbox"] = list(box)

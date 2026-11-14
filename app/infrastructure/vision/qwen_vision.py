@@ -93,6 +93,9 @@ def build_outfit_vision_prompt(locale: str) -> str:
         "For shorts the bottom edge is the shorts hem, never the knee, lower leg or foot. "
         "For shoes include both visible shoes, stopping at the shoe opening. For layered garments "
         "include only the specific layer. Use null if the item cannot be separately located. "
+        "Omit an inner layer when only a narrow strip at the hem or collar is visible. "
+        "A strip of fabric is insufficient to determine whether a separate garment exists, "
+        "or to call it a T-shirt, tank or blouse. If an uncertain layer is returned, set style_unverified=true. "
         "If no garment is visible, return {\"items\": []}."
     )
 
@@ -165,6 +168,7 @@ class QwenVision:
                         garment_box(raw["box_2d"], scale=1000)
                         if "box_2d" in raw else garment_box(raw.get("box"))
                     ),
+                    style_unverified=raw.get("style_unverified") is True,
                 )
                 for raw in raw_items
             ]
