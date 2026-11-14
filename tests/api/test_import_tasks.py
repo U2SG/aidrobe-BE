@@ -12,6 +12,7 @@ from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.session import get_db_session
 from app.infrastructure.workers.import_worker import IMPORT_JOB_TYPE
 from app.presentation.api.v1.routers import import_tasks as import_tasks_router
@@ -447,3 +448,51 @@ async def test_outfit_vision_worker_writes_each_detected_garment(db_session: Asy
     assert len({item["temp_item_id"] for item in candidate_items}) == 2
     assert all(item["should_import"] is True for item in candidate_items)
     assert data["candidate_item"]["title"] == candidate_items[0]["title"]
+
+
+async def test_pending_import_review_is_owned_and_can_skip_all(db_session: AsyncSession) -> None:
+    user_id, other_user = uuid.uuid4(), uuid.uuid4()
+    candidate = {
+        "title": "黄色针织毛衣",
+        "category": "top",
+        "color_main": "yellow",
+        "confidence_score": 0.9,
+        "original_image_url": "https://cdn/candidate.jpg",
+        "temp_item_id": "sweater",
+    }
+    own_task = await _seed_task(
+        db_session, user_id, status="waiting_confirm", candidate_payload={"candidate_items": [candidate]}
+    )
+    await _seed_task(
+        db_session, other_user, status="waiting_confirm", candidate_payload={"candidate_items": [candidate]}
+    )
+    owned_sweater = WardrobeItem(user_id=user_id, title="黄色毛衣", category="top", color_main="yellow")
+    db_session.add_all([
+        owned_sweater,
+        WardrobeItem(user_id=user_id, title="黄色 T恤", category="top", color_main="yellow"),
+        WardrobeItem(user_id=other_user, title="黄色毛衣", category="top", color_main="yellow"),
+    ])
+    await db_session.flush()
+
+    headers = {"X-User-Id": str(user_id)}
+    async with AsyncClient(
+        transport=ASGITransport(app=build_import_tasks_app(db_session)), base_url="http://testserver"
+    ) as client:
+        inbox = await client.get("/v1/import-tasks", headers=headers)
+        assert inbox.status_code == 200
+        assert [task["task_id"] for task in inbox.json()["data"]] == [str(own_task)]
+
+        path = f"/v1/import-tasks/{own_task}"
+        detail = await client.get(path, headers=headers)
+        matches = detail.json()["data"]["candidate_items"][0]["possible_duplicates"]
+        assert [match["item_id"] for match in matches] == [str(owned_sweater.id)]
+
+        invalid = await client.post(f"{path}/confirm-items", headers=headers, json={"items": []})
+        assert invalid.status_code == 422
+        for _ in range(2):
+            skipped = await client.post(
+                f"{path}/confirm-items", headers=headers, json={"items": [], "dismiss_remaining": True}
+            )
+            assert skipped.status_code == 200
+            assert skipped.json()["data"] == {"created_items": [], "task_status": "completed"}
+        assert (await client.get("/v1/import-tasks", headers=headers)).json()["data"] == []

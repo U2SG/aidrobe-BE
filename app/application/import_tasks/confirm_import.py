@@ -145,8 +145,16 @@ class ConfirmImageImportTask:
         confirmed or the caller passes `dismiss_remaining`. Re-sending an
         already confirmed candidate returns its existing item (retry-safe).
         """
+        if not items and not dismiss_remaining:
+            raise FriendlyException(
+                error_codes.VALIDATION_ERROR, "Select items or dismiss the remaining candidates", status_code=422
+            )
         task = await self._load_task(task_id, user_id)
         confirmed = confirmed_item_ids(task)
+        if not items:
+            if task.task_status == ImportStatus.COMPLETED.value:
+                return []
+            self._require_waiting(task)
         if task.task_status != ImportStatus.WAITING_CONFIRM.value and not all(
             entry.temp_item_id in confirmed for entry in items
         ):
@@ -350,7 +358,8 @@ class ConfirmImageImportTask:
                     session,
                     item_id=item.id,
                     user_id=user_id,
-                    source_url=original_image_url,
+                    source_url=crop_image_url or original_image_url,
+                    source_key=candidate.get("crop_object_key") if crop_image_url else None,
                     category=category,
                 )
             except FriendlyException:

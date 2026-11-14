@@ -4,6 +4,7 @@ from typing import cast
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.enums import ImportStatus
 from app.infrastructure.persistence.models.import_task import ImportTask
 
 
@@ -28,6 +29,16 @@ class SqlAlchemyImportTaskRepository:
         if for_update:
             stmt = stmt.with_for_update()
         return cast(ImportTask | None, await self.session.scalar(stmt))
+
+    async def list_pending(self, user_id: uuid.UUID, *, limit: int, offset: int) -> list[ImportTask]:
+        result = await self.session.scalars(
+            select(ImportTask)
+            .where(ImportTask.user_id == user_id, ImportTask.task_status == ImportStatus.WAITING_CONFIRM.value)
+            .order_by(ImportTask.created_at.desc(), ImportTask.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result)
 
     async def flush(self) -> None:
         await self.session.flush()

@@ -33,6 +33,7 @@ from app.config.settings import get_settings
 from app.infrastructure.importers.link_parser import BROWSER_HEADERS, is_safe_url
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.storage.source_image import key_from_url
+from app.infrastructure.vision.openai_image_cutout import OpenAIImageCutout
 from app.infrastructure.workers._visual_asset_runtime import (
     VisualAssetSnapshot,
     drain_visual_jobs,
@@ -204,6 +205,11 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str]:
     storage = object_storage()
     roles = [(item.get("role") or item.get("category") or "top").lower() for item in items]
     boxes = centered_boxes([LAYOUT.get(role, DEFAULT_BOX) for role in roles])
+    generate = snapshot.input_snapshot.get("generate") is True
+    settings = get_settings()
+    if generate and (not settings.ENABLE_ITEM_CUTOUT or settings.IMAGE_CUTOUT_PROVIDER != "openai"):
+        raise ValueError("Outfit image generation is disabled")
+    references: list[bytes] = []
 
     for item, role, box in zip(items, roles, boxes, strict=True):
 
@@ -219,10 +225,24 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str]:
                 fallback_url=item.get("thumbnail_url"),
             )
 
-        if img is not None:
+        if generate:
+            if img is None:
+                raise ValueError("Missing garment photo for the outfit")
+            img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+            frame = io.BytesIO()
+            img.convert("RGB").save(frame, format="JPEG", quality=90)
+            references.append(frame.getvalue())
+        elif img is not None:
             _paste_item(canvas, img, box)
         else:
             _draw_placeholder(canvas, box, role)
+
+    if generate:
+        if not references:
+            raise ValueError("No garment photos for the outfit")
+        generated = await OpenAIImageCutout(settings).render_outfit(references, roles)
+        key = f"users/{snapshot.user_id}/outfit_boards/{snapshot.id}.png"
+        return await storage.put_object(key, generated, "image/png"), key
 
     rgb = canvas.convert("RGB")
     buf = io.BytesIO()

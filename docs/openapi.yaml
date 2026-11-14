@@ -365,6 +365,59 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1/import-tasks:
+    get:
+      tags:
+      - import-tasks
+      summary: List Pending Import Tasks
+      description: List this account's recognised imports that still need review.
+      operationId: list_pending_import_tasks_v1_import_tasks_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 50
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_list_ImportTaskResponse__'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     post:
       tags:
       - import-tasks
@@ -2670,11 +2723,55 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1/outfits/{outfit_id}/share-asset:
+    get:
+      tags:
+      - outfit-visual
+      summary: Get Generated Outfit Image
+      description: Look up an existing generated image without creating any work.
+      operationId: get_generated_outfit_image_v1_outfits__outfit_id__share_asset_get
+      parameters:
+      - name: outfit_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Outfit Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutfitVisualAssetResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     post:
       tags:
       - outfit-visual
       summary: Create Outfit Share Asset
-      description: Create or reuse the deterministic board for an owned outfit.
+      description: Create or reuse an outfit board. The opt-in generation mode uses
+        GPT image editing.
       operationId: create_outfit_share_asset_v1_outfits__outfit_id__share_asset_post
       parameters:
       - name: outfit_id
@@ -2684,6 +2781,13 @@ paths:
           type: string
           format: uuid
           title: Outfit Id
+      - name: generate
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Generate
       - name: Authorization
         in: header
         required: false
@@ -5356,6 +5460,11 @@ components:
             format: uuid
           - type: 'null'
           title: Confirmed Item Id
+        possible_duplicates:
+          items:
+            $ref: '#/components/schemas/ImportDuplicateHint'
+          type: array
+          title: Possible Duplicates
       type: object
       required:
       - title
@@ -5556,7 +5665,6 @@ components:
           items:
             $ref: '#/components/schemas/ConfirmItemInput'
           type: array
-          minItems: 1
           title: Items
         dismiss_remaining:
           type: boolean
@@ -6296,6 +6404,25 @@ components:
       - category
       - wear_count
       title: IdleItemResponse
+    ImportDuplicateHint:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          type: string
+          title: Title
+        image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Url
+      type: object
+      required:
+      - item_id
+      - title
+      title: ImportDuplicateHint
     ImportTaskResponse:
       properties:
         task_id:
@@ -8423,6 +8550,25 @@ components:
           - type: 'null'
       type: object
       title: ResponseModel[WearOutfitResponse]
+    ResponseModel_list_ImportTaskResponse__:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ImportTaskResponse'
+            type: array
+          - type: 'null'
+          title: Data
+      type: object
+      title: ResponseModel[list[ImportTaskResponse]]
     ResurfaceInsightResponse:
       properties:
         id:

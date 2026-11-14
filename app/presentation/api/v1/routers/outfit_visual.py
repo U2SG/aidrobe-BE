@@ -10,9 +10,12 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.cost_guard import assert_within_quota
 from app.common import error_codes
 from app.common.enums import VisualType
 from app.common.exceptions import FriendlyException
+from app.config.settings import get_settings
+from app.infrastructure.cache.client import get_redis_client
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
 from app.infrastructure.persistence.models.recommendation import OutfitItem
@@ -37,6 +40,7 @@ logger = structlog.get_logger(__name__)
 _STALE_QUEUED_MINUTES = 15
 # v2: used slots are centred as a group (v1 left blank bands for missing roles).
 _OUTFIT_BOARD_LAYOUT_VERSION = "v2"
+_GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-v1"
 _IMAGE_TYPE_PRIORITY = ("cutout", "thumbnail", "standard", "original")
 
 
@@ -74,10 +78,10 @@ def _response_for_asset(asset: OutfitVisualAsset) -> OutfitVisualAssetResponse:
 
 
 async def _existing_outfit_board_asset(
-    db: AsyncSession, *, user_id: uuid.UUID, outfit_id: uuid.UUID
+    db: AsyncSession, *, user_id: uuid.UUID, outfit_id: uuid.UUID, layout_version: str
 ) -> OutfitVisualAsset | None:
     job = await db.scalar(
-        select(AsyncJob).where(AsyncJob.idempotency_key == f"outfit_board:{outfit_id}:{_OUTFIT_BOARD_LAYOUT_VERSION}")
+        select(AsyncJob).where(AsyncJob.idempotency_key == f"outfit_board:{outfit_id}:{layout_version}")
     )
     if job is None or job.target_id is None:
         return None
@@ -160,6 +164,21 @@ async def _outfit_board_item_list(
     return item_list
 
 
+@router.get("/outfits/{outfit_id}/share-asset", response_model=OutfitVisualAssetResponse)
+async def get_generated_outfit_image(
+    outfit_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+) -> OutfitVisualAssetResponse:
+    """Look up an existing generated image without creating any work."""
+    asset = await _existing_outfit_board_asset(
+        db, user_id=current_user.id, outfit_id=outfit_id, layout_version=_GENERATED_OUTFIT_LAYOUT_VERSION
+    )
+    if asset is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Generated image not found", status_code=404)
+    return await get_outfit_visual_asset(asset.id, db, current_user)
+
+
 @router.post(
     "/outfits/{outfit_id}/share-asset",
     response_model=OutfitVisualAssetResponse,
@@ -170,22 +189,38 @@ async def create_outfit_share_asset(
     outfit_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
+    generate: bool = False,
 ) -> OutfitVisualAssetResponse:
-    """Create or reuse the deterministic board for an owned outfit."""
+    """Create or reuse an outfit board. The opt-in generation mode uses GPT image editing."""
     outfit = await SqlAlchemyRecommendationRepository(db).get_outfit_for_user(outfit_id, current_user.id)
     if outfit is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Outfit not found", status_code=404)
 
-    existing = await _existing_outfit_board_asset(db, user_id=current_user.id, outfit_id=outfit_id)
+    layout_version = _GENERATED_OUTFIT_LAYOUT_VERSION if generate else _OUTFIT_BOARD_LAYOUT_VERSION
+    existing = await _existing_outfit_board_asset(
+        db, user_id=current_user.id, outfit_id=outfit_id, layout_version=layout_version
+    )
     if existing is not None:
         return _response_for_asset(existing)
 
+    if generate:
+        settings = get_settings()
+        if not settings.ENABLE_ITEM_CUTOUT or settings.IMAGE_CUTOUT_PROVIDER != "openai" or not settings.OPENAI_API_KEY:
+            raise FriendlyException(error_codes.FORBIDDEN, "Outfit image generation is not enabled", status_code=503)
+
+    item_list = await _outfit_board_item_list(db, outfit_id=outfit_id, user_id=current_user.id)
+    if generate:
+        if not item_list or len(item_list) > 16 or len(item_list) != len(outfit.items):
+            raise FriendlyException(
+                error_codes.VALIDATION_ERROR, "Outfit has missing or unsupported pieces", status_code=422
+            )
+        await assert_within_quota(db, current_user.id, "outfit_image", redis_client=get_redis_client())
     asset = OutfitVisualAsset(
         user_id=current_user.id,
         outfit_id=outfit_id,
         visual_type=VisualType.OUTFIT_BOARD.value,
         generation_status="queued",
-        input_snapshot={"item_list": await _outfit_board_item_list(db, outfit_id=outfit_id, user_id=current_user.id)},
+        input_snapshot={"item_list": item_list, **({"generate": True} if generate else {})},
     )
     await SqlAlchemyOutfitVisualRepository(db).add(asset)
     correlation_id = structlog.contextvars.get_contextvars().get("correlation_id")
@@ -193,7 +228,7 @@ async def create_outfit_share_asset(
         db,
         asset_id=asset.id,
         outfit_id=outfit_id,
-        layout_version=_OUTFIT_BOARD_LAYOUT_VERSION,
+        layout_version=layout_version,
         user_id=current_user.id,
         correlation_id=correlation_id if isinstance(correlation_id, str) else None,
     )
@@ -204,7 +239,9 @@ async def create_outfit_share_asset(
     # this transaction's contender asset before commit, then return the winner.
     await db.delete(asset)
     await db.flush()
-    existing = await _existing_outfit_board_asset(db, user_id=current_user.id, outfit_id=outfit_id)
+    existing = await _existing_outfit_board_asset(
+        db, user_id=current_user.id, outfit_id=outfit_id, layout_version=layout_version
+    )
     if existing is not None:
         return _response_for_asset(existing)
     logger.error("outfit_board_idempotency_target_missing", outfit_id=str(outfit_id))
