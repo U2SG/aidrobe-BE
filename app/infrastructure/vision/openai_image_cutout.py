@@ -87,6 +87,7 @@ class OpenAIImageCutout:
             "the visible design. For shoes keep every photographed feature like toe shape, panel seams, "
             "perforations or lack of them, laces where visible, and sole edge. Use a plain coherent design "
             "for the unshown heel and opening. Show complete pairs. "
+            "Treat the visible seam color and routing as construction details, even where the seam is thin. "
             f"{footwear}Leave background margin around the garments. "
             "Remove people, phones, hangers and surroundings. Use no text or labels.",
         )
