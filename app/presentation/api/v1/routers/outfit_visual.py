@@ -143,8 +143,13 @@ async def _outfit_board_item_list(
         board_item = {"role": roles[item_id], "category": item.category}
         if generate:
             board_item.update(title=item.title, color=item.color_main)
+            crop = images.get("crop")
             source = review_sources.get(item_id, {})
-            if source.get("source_key"):
+            if crop is not None and crop.object_key:
+                board_item["review_object_key"] = crop.object_key
+            elif crop is not None and crop.image_url:
+                board_item["review_image_url"] = crop.image_url
+            elif source.get("source_key"):
                 board_item["review_object_key"] = source["source_key"]
             elif source.get("source_url"):
                 board_item["review_image_url"] = source["source_url"]

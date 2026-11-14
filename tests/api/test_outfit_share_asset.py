@@ -251,3 +251,27 @@ async def test_gpt_outfit_board_uses_a_separate_reusable_asset(
     assert job.payload["layout_version"] == outfit_visual._GENERATED_OUTFIT_LAYOUT_VERSION
     asset = await db_session.get(OutfitVisualAsset, job.target_id)
     assert asset is not None and asset.input_snapshot["generate"] is True
+
+
+
+async def test_generated_board_reviews_the_single_garment_crop(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    outfit_id = await _seed_outfit(db_session, user_id)
+    top = await db_session.scalar(
+        select(WardrobeItem).where(WardrobeItem.user_id == user_id, WardrobeItem.category == "top")
+    )
+    crop_key = f"users/{user_id}/wardrobe/crops/top.jpg"
+    db_session.add(
+        WardrobeItemImage(
+            item_id=top.id,
+            image_type="crop",
+            image_url=f"https://storage.example/{crop_key}",
+            object_key=crop_key,
+            created_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    items = await outfit_visual._outfit_board_item_list(db_session, outfit_id=outfit_id, user_id=user_id, generate=True)
+    assert items[0]["cutout_object_key"].endswith("/cutout.png")
+    assert items[0]["review_object_key"] == crop_key
