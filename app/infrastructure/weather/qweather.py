@@ -52,7 +52,8 @@ class QWeatherProvider:
             asyncio.create_task(self._lookup_name(location_id)) if location_name is None else None
         )
         now_fields = await now_task
-        rain_probability = await pop_task
+        pop = await pop_task
+        rain_probability = pop if pop is not None else 0.0
         if name_task is not None:
             location_name = await name_task
 
@@ -68,7 +69,13 @@ class QWeatherProvider:
             icon=now_fields["icon"],
             location_name=location_name,
         )
-        await self._set_cached(cache_key, weather)
+        # A best-effort part that failed (pop / place name) must not be pinned
+        # for the whole cache TTL: an hour of "0% rain" while it rains. Serve
+        # it once and let the next request try again.
+        if pop is not None and location_name is not None:
+            await self._set_cached(cache_key, weather)
+        else:
+            logger.info("qweather_partial_result_not_cached", pop_ok=pop is not None, name_ok=location_name is not None)
         return weather
 
     async def _resolve_location_id(self, location: str) -> tuple[str, str | None]:
@@ -86,7 +93,7 @@ class QWeatherProvider:
         try:
             match = await self._geo_top_match(query)
         except Exception as exc:
-            logger.warning("qweather_geo_name_failed", error=str(exc))
+            logger.warning("qweather_geo_name_failed", error=repr(exc))
             return None
         return match[1] if match else None
 
@@ -189,10 +196,10 @@ class QWeatherProvider:
             "icon": _opt_str(now.get("icon")),
         }
 
-    async def _fetch_pop(self, location_id: str) -> float:
+    async def _fetch_pop(self, location_id: str) -> float | None:
         """Max precipitation probability over the near-term hourly window.
-        Best-effort: a forecast failure degrades to 0.0 rather than sinking the
-        whole weather fetch (temp/condition are still useful)."""
+        Best-effort: a forecast failure returns None (the caller shows 0.0 and
+        skips caching) rather than sinking the whole weather fetch."""
         try:
             async with httpx.AsyncClient(timeout=self.settings.WEATHER_TIMEOUT_SECONDS) as client:
                 response = await client.get(
@@ -208,8 +215,8 @@ class QWeatherProvider:
             ]
             return _clamp_probability(max(values) / 100.0) if values else 0.0
         except Exception as exc:
-            logger.warning("qweather_pop_fetch_failed", error=str(exc))
-            return 0.0
+            logger.warning("qweather_pop_fetch_failed", error=repr(exc))
+            return None
 
     async def _get_cached(self, cache_key: str) -> WeatherInfo | None:
         cached = await self._safe_redis_get(cache_key)

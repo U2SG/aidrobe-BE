@@ -151,3 +151,29 @@ async def test_weather_result_is_cached(monkeypatch) -> None:
     await provider.get_weather("杭州")
 
     assert calls["count"] == first  # second call served from cache, no HTTP
+
+
+async def test_a_failed_rain_lookup_is_not_cached(monkeypatch) -> None:
+    # Seen locally (2026-11-14): one transient 24h failure was cached for the
+    # whole TTL, so Today said 0% rain for an hour while it was raining.
+    calls = {"24h": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/geo/v2/city/lookup":
+            return httpx.Response(200, request=request, json={"location": [{"id": "x", "name": "城"}]})
+        if path == "/v7/weather/24h":
+            calls["24h"] += 1
+            if calls["24h"] == 1:
+                return httpx.Response(500, request=request, text="boom")
+            return httpx.Response(200, request=request, json=_HOURLY)
+        return httpx.Response(200, request=request, json=_NOW)
+
+    _route(monkeypatch, handler)
+    provider = _provider()
+    first = await provider.get_weather("116.41,39.92")
+    second = await provider.get_weather("116.41,39.92")
+
+    assert first.rain_probability == 0.0
+    assert second.rain_probability == 0.4
+    assert calls["24h"] == 2
