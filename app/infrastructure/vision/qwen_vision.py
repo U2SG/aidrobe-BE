@@ -75,7 +75,9 @@ def build_outfit_vision_prompt(locale: str) -> str:
         "Analyze this outfit photo and identify every distinct wearable garment. "
         "Return only valid JSON with one key, items, whose value is an array of objects. "
         "Each object must contain canonical_name, display_name, category, color_main, "
-        "and confidence_score. Do not merge a top and bottom into one item. Exclude the "
+        "and confidence_score. Do not merge a top and bottom into one item. A pair "
+        "(shoes, socks, gloves) is ONE item: never list the left and right one "
+        "separately. Exclude the "
         "person, body parts, background, and non-wearable objects. Return at most 12 items. "
         "category must be one of top, bottom, outerwear, dress, shoes, accessory, other "
         "(stable English snake_case; never translate it). color_main must be a stable "
@@ -149,13 +151,15 @@ class QwenVision:
             raise ValueError("Outfit response contains no garments")
         if len(raw_items) > 12:
             raise ValueError("Outfit response contains too many garments")
-        return [
-            replace(
-                self._vision_result(self._validate_vision_data(raw), resolved),
-                bbox=garment_box(raw.get("box")),
-            )
-            for raw in raw_items
-        ]
+        return merge_paired_garments(
+            [
+                replace(
+                    self._vision_result(self._validate_vision_data(raw), resolved),
+                    bbox=garment_box(raw.get("box")),
+                )
+                for raw in raw_items
+            ]
+        )
 
     async def analyze_style(self, image_url: str, locale: str = DEFAULT_LOCALE) -> StyleAnalysis:
         # `locale` is accepted for interface parity but ignored: style tags must
@@ -333,6 +337,50 @@ def garment_attributes(data: dict[str, Any]) -> dict[str, Any]:
 
 
 _MIN_BOX_SIDE = 0.05
+
+
+# Categories worn as a pair. Vision models often report each foot separately;
+# confirming both would put two pairs of the same shoes in the wardrobe.
+_PAIRED_CATEGORIES = {"shoes"}
+
+
+def merge_paired_garments(results: list[VisionResult]) -> list[VisionResult]:
+    """Collapse left/right halves of one pair into a single candidate.
+
+    Two shoes with the same name and colour are one pair: keep the first, take
+    the higher confidence and the union of both boxes. Different shoes (other
+    name or colour) stay separate.
+    """
+    merged: list[VisionResult] = []
+    index: dict[tuple[str, str, str], int] = {}
+    for result in results:
+        if result.category not in _PAIRED_CATEGORIES:
+            merged.append(result)
+            continue
+        key = (
+            result.category,
+            (result.canonical_name or result.title).strip().lower(),
+            result.color_main.strip().lower(),
+        )
+        if key not in index:
+            index[key] = len(merged)
+            merged.append(result)
+            continue
+        first = merged[index[key]]
+        box = first.bbox
+        if first.bbox and result.bbox:
+            box = (
+                min(first.bbox[0], result.bbox[0]),
+                min(first.bbox[1], result.bbox[1]),
+                max(first.bbox[2], result.bbox[2]),
+                max(first.bbox[3], result.bbox[3]),
+            )
+        merged[index[key]] = replace(
+            first,
+            bbox=box or result.bbox,
+            confidence_score=max(first.confidence_score, result.confidence_score),
+        )
+    return merged
 
 
 def garment_box(raw: Any) -> tuple[float, float, float, float] | None:

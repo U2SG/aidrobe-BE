@@ -36,7 +36,8 @@ class Settings(BaseSettings):
     VISION_MAX_CALLS_PER_USER_HOUR: int = 60
     VISION_TIMEOUT_SECONDS: float = 10.0
     QWEN_API_KEY: str | None = None
-    QWEN_VISION_MODEL: str = "qwen-vl-max"
+    # qwen-vl-max and qwen-turbo were retired on DashScope (model_not_found, 2026-11).
+    QWEN_VISION_MODEL: str = "qwen3-vl-plus"
     QWEN_VISION_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     # wanx image edit (V4 OOTD poster) — async ImageSynthesis API, same
     # DashScope key as vision. Background-only mask repaint keeps the
@@ -84,7 +85,7 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "none"
     OPENAI_API_KEY: str | None = None
     OPENAI_LLM_MODEL: str = "gpt-5.2"
-    QWEN_LLM_MODEL: str = "qwen-turbo"
+    QWEN_LLM_MODEL: str = "qwen3.8-flash"
     QWEN_LLM_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     LLM_TIMEOUT_SECONDS: float = 3.0
     # Ask answers a free-form question over up to _MAX_ITEMS wardrobe items
