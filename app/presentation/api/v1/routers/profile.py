@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,7 +37,7 @@ from app.infrastructure.persistence.repositories.preference_memory_repo import (
     SqlAlchemyPreferenceMemoryRepository,
 )
 from app.infrastructure.persistence.session import get_db_session
-from app.presentation.api.v1.deps import get_current_user
+from app.presentation.api.v1.deps import get_current_user, resolve_user_locale
 from app.presentation.api.v1.schemas.common import ResponseModel
 
 router = APIRouter(prefix="/v1/profile", tags=["profile"])
@@ -55,12 +55,41 @@ _SOURCE_LABELS = {
 
 # Functional replacement labels when a stored fit value is unsafe to display.
 _SAFE_FIT_LABELS = {"positive": "偏好这类版型", "negative": "不偏好这类版型", "neutral": "版型偏好"}
+_SAFE_FIT_TEXTS = {
+    "zh-CN": _SAFE_FIT_LABELS,
+    "en-US": {
+        "positive": "Likes this kind of fit",
+        "negative": "Dislikes this kind of fit",
+        "neutral": "Fit preference",
+    },
+}
+
+# `display_text` for the canonical tokens feedback learning stores as
+# `preference_value` (feedback_learning._SIGNAL_TO_PREFERENCE), worded as a
+# preference statement rather than the feedback-reason wording in
+# feedback_tags.yaml ("偏正式" would read as "prefers formal" here).
+_TOKEN_TEXTS = {
+    "zh-CN": {
+        "too_formal": "不喜欢太正式",
+        "too_casual": "不喜欢太随意",
+        "wrong_fit": "对版型挑剔",
+        "not_my_style": "不喜欢某些风格",
+    },
+    "en-US": {
+        "too_formal": "Prefers less formal looks",
+        "too_casual": "Prefers less casual looks",
+        "wrong_fit": "Particular about fit",
+        "not_my_style": "Avoids certain styles",
+    },
+}
+_FALLBACK_TEXTS = {"zh-CN": "已记录的偏好", "en-US": "Learned preference"}
 
 
 class MemoryItemResponse(BaseModel):
     id: uuid.UUID
     type: str
     label: str
+    display_text: str
     polarity: str
     source: str
     confidence: str
@@ -96,26 +125,44 @@ def _confidence_bucket(confidence: float) -> str:
     return "low"
 
 
-def _safe_label(row: UserPreferenceMemory) -> str:
-    value = row.preference_value
+def _is_unsafe(value: str) -> bool:
     lowered = value.lower()
-    if find_forbidden_terms(value) or any(term in lowered for term in _BODY_SHAPE_TERMS):
+    return bool(find_forbidden_terms(value)) or any(term in lowered for term in _BODY_SHAPE_TERMS)
+
+
+def _safe_label(row: UserPreferenceMemory) -> str:
+    if _is_unsafe(row.preference_value):
         return _SAFE_FIT_LABELS.get(row.polarity, _SAFE_FIT_LABELS["neutral"])
-    return value
+    return row.preference_value
+
+
+def _display_text(row: UserPreferenceMemory, locale: str) -> str:
+    if (text := _TOKEN_TEXTS[locale].get(row.preference_value)) is not None:
+        return text
+    if row.source != "explicit_user_statement":
+        return _FALLBACK_TEXTS[locale]
+    # The user's own (sanitized) words are not a token; keep them readable as-is.
+    if _is_unsafe(row.preference_value):
+        fit_texts = _SAFE_FIT_TEXTS[locale]
+        return fit_texts.get(row.polarity, fit_texts["neutral"])
+    return row.preference_value
 
 
 @router.get("/memory", response_model=ResponseModel[MemoryListResponse])
 async def list_learned_memory(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    locale: Annotated[str | None, Query(max_length=16)] = None,
 ) -> ResponseModel[MemoryListResponse]:
     _require_data_trust()
+    resolved_locale = await resolve_user_locale(session, current_user.id, locale)
     rows = await SqlAlchemyPreferenceMemoryRepository(session).list_live(current_user.id)
     items = [
         MemoryItemResponse(
             id=row.id,
             type=row.preference_type,
             label=_safe_label(row),
+            display_text=_display_text(row, resolved_locale),
             polarity=row.polarity,
             source=_SOURCE_LABELS.get(row.source, "inferred"),
             confidence=_confidence_bucket(float(row.confidence)),

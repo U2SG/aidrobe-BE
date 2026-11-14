@@ -23,6 +23,7 @@ from decimal import Decimal
 from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.insights.idle import idle_since_expr
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
 from app.infrastructure.persistence.models.recommendation import (
@@ -366,8 +367,8 @@ async def _longest_idle_item(
 ) -> IdleEntry | None:
     """Item idle the longest as of period end.
 
-    Point-in-time: never-worn items (last_worn_at IS NULL) rank first, then by
-    oldest last_worn_at. Only items that existed by period end are considered.
+    Ranked by the shared idle definition (last worn, else date added), oldest
+    first; see ``insights.idle``.
     """
     result = await session.execute(
         select(
@@ -376,22 +377,19 @@ async def _longest_idle_item(
             WardrobeItem.category,
             WardrobeItem.cover_image_url,
             WardrobeItem.last_worn_at,
+            idle_since_expr().label("idle_since"),
         )
         .where(
             WardrobeItem.user_id == user_id,
             WardrobeItem.deleted_at.is_(None),
         )
-        .order_by(
-            WardrobeItem.last_worn_at.is_(None).desc(),
-            WardrobeItem.last_worn_at.asc(),
-            WardrobeItem.id,
-        )
+        .order_by(idle_since_expr().asc(), WardrobeItem.id)
         .limit(1)
     )
     r = result.first()
     if r is None:
         return None
-    idle_days = None if r.last_worn_at is None else (w.end - r.last_worn_at).days
+    idle_days = (w.end - r.idle_since).days
     return IdleEntry(
         item_id=r.id,
         title=r.title,

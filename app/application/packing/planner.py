@@ -29,6 +29,74 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 _RAIN_THRESHOLD = 0.5
 
+# Plan copy is rendered in the user's locale at generation time and frozen into
+# `plan_json` (same approach as purchase_decision_rules).
+_TEXTS: dict[str, dict[str, str]] = {
+    "en-US": {
+        "cold": "cold",
+        "warm": "warm",
+        "rain_likely": "rain likely",
+        "list_sep": ", ",
+        "trip": "trip",
+        "summary": "{days}-day {destination} packing plan ({scenes})",
+        "suited": "suited to {occasion}",
+        "layered_cold": "layered for the cold",
+        "light_heat": "light enough for the heat",
+        "holds_rain": "holds up in rain",
+        "reuses": "reuses pieces already packed",
+        "no_wearable": "No wearable {category} for {scene}",
+        "rain_shoes": "Rain is likely and current shoes are light-colored",
+        "worn_day": "worn across {count} day",
+        "worn_days": "worn across {count} days",
+        "handles_rain": "; handles rain",
+    },
+    "zh-CN": {
+        "cold": "偏冷",
+        "warm": "偏热",
+        "rain_likely": "可能有雨",
+        "list_sep": "，",
+        "trip": "出行",
+        "summary": "{days}天{destination}行李清单（{scenes}）",
+        "suited": "适合{occasion}",
+        "layered_cold": "叠穿保暖",
+        "light_heat": "轻薄透气，适合炎热天气",
+        "holds_rain": "雨天也能应对",
+        "reuses": "复用已打包的单品",
+        "no_wearable": "{scene}缺少可穿的{category}",
+        "rain_shoes": "可能有雨，现有鞋子颜色偏浅",
+        "worn_day": "{count}天都会穿到",
+        "worn_days": "{count}天都会穿到",
+        "handles_rain": "；可应对雨天",
+    },
+}
+_SCENE_LABELS_ZH = {
+    "business": "商务",
+    "dinner": "聚餐",
+    "casual": "休闲",
+    "sport": "运动",
+    "beach": "海滩",
+    "formal": "正式场合",
+    "commute": "通勤",
+    "travel": "旅行",
+    "date": "约会",
+    "leisure": "休闲",
+}
+_CATEGORY_LABELS_ZH = {
+    "top": "上装",
+    "bottom": "下装",
+    "outerwear": "外套",
+    "dress": "连衣裙",
+    "shoes": "鞋子",
+}
+
+
+def _scene_label(scene: str, locale: str) -> str:
+    return _SCENE_LABELS_ZH.get(scene.lower(), scene) if locale == "zh-CN" else scene
+
+
+def _category_label(category: str, locale: str) -> str:
+    return _CATEGORY_LABELS_ZH.get(category, category) if locale == "zh-CN" else category
+
 
 @dataclass(frozen=True)
 class PackingPlanItem:
@@ -88,17 +156,18 @@ def parse_weather_hint(hint: str | None) -> WeatherInfo | None:
     )
 
 
-def _weather_summary(weather: WeatherInfo | None) -> str | None:
+def _weather_summary(weather: WeatherInfo | None, locale: str) -> str | None:
     if weather is None:
         return None
+    t = _TEXTS[locale]
     parts: list[str] = []
     if weather.temperature_c <= 10:
-        parts.append("cold")
+        parts.append(t["cold"])
     elif weather.temperature_c >= 27:
-        parts.append("warm")
+        parts.append(t["warm"])
     if weather.rain_probability > _RAIN_THRESHOLD:
-        parts.append("rain likely")
-    return ", ".join(parts) if parts else weather.condition or None
+        parts.append(t["rain_likely"])
+    return t["list_sep"].join(parts) if parts else weather.condition or None
 
 
 def _to_engine_item(item: WardrobeItem) -> EngineItem:
@@ -117,25 +186,30 @@ def _to_engine_item(item: WardrobeItem) -> EngineItem:
 
 
 def _daily_reasoning(
-    occasion: str, weather: WeatherInfo | None, *, reuses: bool
+    occasion: str, weather: WeatherInfo | None, *, reuses: bool, locale: str
 ) -> list[str]:
-    reasoning = [f"suited to {occasion}"]
+    t = _TEXTS[locale]
+    reasoning = [t["suited"].format(occasion=_scene_label(occasion, locale))]
     if weather is not None:
         if weather.temperature_c <= 10:
-            reasoning.append("layered for the cold")
+            reasoning.append(t["layered_cold"])
         elif weather.temperature_c >= 27:
-            reasoning.append("light enough for the heat")
+            reasoning.append(t["light_heat"])
         if weather.rain_probability > _RAIN_THRESHOLD:
-            reasoning.append("holds up in rain")
+            reasoning.append(t["holds_rain"])
     if reuses:
-        reasoning.append("reuses pieces already packed")
+        reasoning.append(t["reuses"])
     return reasoning
 
 
 def _missing_items(
-    candidate_items: list[WardrobeItem], scenes: list[str], weather: WeatherInfo | None
+    candidate_items: list[WardrobeItem],
+    scenes: list[str],
+    weather: WeatherInfo | None,
+    locale: str,
 ) -> list[MissingItem]:
     """Category-coverage gaps per scene + a rain/light-shoe heuristic."""
+    t = _TEXTS[locale]
     owned_categories = {item.category.lower() for item in candidate_items}
     missing: list[MissingItem] = []
     seen: set[str] = set()
@@ -146,7 +220,10 @@ def _missing_items(
                 missing.append(
                     MissingItem(
                         category=category,
-                        reason=f"No wearable {category} for {scene}",
+                        reason=t["no_wearable"].format(
+                            category=_category_label(category, locale),
+                            scene=_scene_label(scene, locale),
+                        ),
                     )
                 )
     # Rain heuristic (issue example): rain likely but every shoe is light-colored.
@@ -156,7 +233,7 @@ def _missing_items(
             missing.append(
                 MissingItem(
                     category="waterproof shoes",
-                    reason="Rain is likely and current shoes are light-colored",
+                    reason=t["rain_shoes"],
                 )
             )
     return missing
@@ -175,6 +252,7 @@ async def build_trip_plan(
     fit_profile: dict[str, Any] | None = None,
     destination: str | None = None,
     daily_weather: list[WeatherInfo | None] | None = None,
+    locale: str = "en-US",
 ) -> TripPlan:
     """Build a per-day outfit plan + packing list + missing-item warnings.
 
@@ -200,9 +278,14 @@ async def build_trip_plan(
 
     occasions = scenes or ["casual"]
     engine_items = [_to_engine_item(i) for i in candidate_items]
-    weather_summary = _weather_summary(trip_weather)
-    summary = f"{days}-day {destination or 'trip'} packing plan ({', '.join(occasions)})"
-    missing = _missing_items(candidate_items, occasions, trip_weather)
+    t = _TEXTS[locale]
+    weather_summary = _weather_summary(trip_weather, locale)
+    summary = t["summary"].format(
+        days=days,
+        destination=destination or t["trip"],
+        scenes=t["list_sep"].join(_scene_label(o, locale) for o in occasions),
+    )
+    missing = _missing_items(candidate_items, occasions, trip_weather, locale)
 
     daily_outfits: list[DailyOutfit] = []
     prior_signatures: list[set[str]] = []
@@ -232,7 +315,7 @@ async def build_trip_plan(
                 day=day,
                 occasion=occasion,
                 item_ids=list(top.item_ids),
-                reasoning=_daily_reasoning(occasion, weather_for(day), reuses=reuses),
+                reasoning=_daily_reasoning(occasion, weather_for(day), reuses=reuses, locale=locale),
             )
         )
         prior_signatures.append(set(top.item_ids))
@@ -240,7 +323,7 @@ async def build_trip_plan(
             item_use_count[item_id] = item_use_count.get(item_id, 0) + 1
             seen_items.add(item_id)
 
-    packing_items = _packing_items(item_use_count, candidate_items, trip_weather)
+    packing_items = _packing_items(item_use_count, candidate_items, trip_weather, locale)
     return TripPlan(
         summary=summary,
         weather_summary=weather_summary,
@@ -254,7 +337,9 @@ def _packing_items(
     item_use_count: dict[str, int],
     candidate_items: list[WardrobeItem],
     weather: WeatherInfo | None,
+    locale: str,
 ) -> list[PackingPlanItem]:
+    t = _TEXTS[locale]
     by_id = {str(i.id): i for i in candidate_items}
     rainy = weather is not None and weather.rain_probability > _RAIN_THRESHOLD
     packing: list[PackingPlanItem] = []
@@ -263,8 +348,8 @@ def _packing_items(
         item = by_id.get(item_id)
         if item is None:
             continue
-        reason = f"worn across {count} day{'s' if count != 1 else ''}"
+        reason = t["worn_day" if count == 1 else "worn_days"].format(count=count)
         if rainy and item.category.lower() == Category.OUTERWEAR.value:
-            reason += "; handles rain"
+            reason += t["handles_rain"]
         packing.append(PackingPlanItem(item_id=item_id, role=item.category, reason=reason))
     return packing

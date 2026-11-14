@@ -16,7 +16,6 @@ from app.common.enums import RecommendationEventType, WardrobeItemStatus
 from app.common.exceptions import FriendlyException
 from app.common.item_labels import localized_item_name
 from app.common.local_time import local_datetime, utc_now
-from app.common.locale import resolve_locale
 from app.common.season import SeasonName
 from app.config.settings import get_settings
 from app.infrastructure.cache.client import (
@@ -40,7 +39,7 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
 from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
-from app.presentation.api.v1.deps import get_current_user
+from app.presentation.api.v1.deps import get_current_user, resolve_user_locale
 from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.wardrobe import (
     DeleteWardrobeItemResponse,
@@ -54,15 +53,6 @@ from app.presentation.api.v1.schemas.wardrobe import (
 )
 
 router = APIRouter(prefix="/v1/wardrobe-items", tags=["wardrobe"])
-
-
-async def _effective_locale(
-    session: AsyncSession,
-    user_id: uuid.UUID,
-    request_locale: str | None = None,
-) -> str:
-    settings_locale = await session.scalar(select(UserSettings.locale).where(UserSettings.user_id == user_id))
-    return resolve_locale(request_locale, settings_locale)
 
 
 def item_response(item: WardrobeItem, locale: str) -> WardrobeItemResponse:
@@ -126,7 +116,7 @@ async def list_wardrobe_items(
         current_user.id, category, limit, offset,
         status=status.value if status else None, season=season, color=color,
     )
-    effective_locale = await _effective_locale(session, current_user.id, locale)
+    effective_locale = await resolve_user_locale(session, current_user.id, locale)
     return ResponseModel(
         data=WardrobeListResponse(
             items=[item_response(item, effective_locale) for item in items],
@@ -147,7 +137,7 @@ async def get_wardrobe_item(
     item = await SqlAlchemyWardrobeRepository(session).get_for_user(item_id, current_user.id)
     if item is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Wardrobe item not found", status_code=404)
-    effective_locale = await _effective_locale(session, current_user.id, locale)
+    effective_locale = await resolve_user_locale(session, current_user.id, locale)
     return ResponseModel(data=item_response(item, effective_locale))
 
 
@@ -187,7 +177,7 @@ async def update_wardrobe_item(
         ),
     )
     await invalidate_daily_recommendation_cache(redis_client, current_user.id)
-    effective_locale = await _effective_locale(session, current_user.id)
+    effective_locale = await resolve_user_locale(session, current_user.id)
     return ResponseModel(data=item_response(item, effective_locale))
 
 
@@ -316,7 +306,7 @@ async def mark_item_worn(
         user_settings.timezone if user_settings else None,
         get_settings().DEFAULT_TIMEZONE,
     ).date()
-    effective_locale = await _effective_locale(session, current_user.id)
+    effective_locale = await resolve_user_locale(session, current_user.id)
 
     # Idempotent per (item, worn_date), mirroring the outfit wear path — a
     # double-tap must not double-count.

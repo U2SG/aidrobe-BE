@@ -26,7 +26,7 @@ from app.infrastructure.persistence.models.recommendation import (
     OutfitItem,
     WearHistory,
 )
-from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import packing_list
@@ -377,7 +377,11 @@ async def test_planner_returns_persisted_plan_with_daily_outfits_and_missing_ite
         assert [d["occasion"] for d in plan["daily_outfits"]] == ["business", "casual"]
         referenced = {iid for d in plan["daily_outfits"] for iid in d["item_ids"]}
         assert referenced and referenced <= owned
-        assert "rain" in (plan["weather_summary"] or "")
+        # No user settings → product default zh-CN; copy is rendered in Chinese.
+        assert plan["weather_summary"] == "偏冷，可能有雨"
+        assert plan["summary"] == "2天Tokyo行李清单（商务，休闲）"
+        assert all("天" in p["reason"] for p in plan["packing_items"])
+        assert plan["daily_outfits"][0]["reasoning"][0] == "适合商务"
         # business needs outerwear (absent) + rain/light-shoes → missing warnings.
         categories = {m["category"] for m in plan["missing_items"]}
         assert "outerwear" in categories
@@ -442,6 +446,96 @@ async def test_planner_patch_items_clears_stale_plan(
             f"/v1/packing-lists/{pl_id}", headers={"X-User-Id": str(user_id)}
         )
     assert fetched.json()["plan"] is None
+
+
+async def test_planner_copy_follows_user_locale_en_us(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_planner(monkeypatch)
+    user_id = uuid.uuid4()
+    await _ensure_user(db_session, user_id)
+    db_session.add(UserSettings(user_id=user_id, locale="en-US"))
+    await db_session.flush()
+    await _seed_item(db_session, user_id, "top")
+    await _seed_item(db_session, user_id, "bottom")
+    await _seed_item(db_session, user_id, "shoes")
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        created = await client.post(
+            "/v1/packing-lists",
+            headers={"X-User-Id": str(user_id)},
+            json={"destination": "Tokyo", "days": 2, "scenes": ["casual"], "weather_hint": "cold and rainy"},
+        )
+    plan = created.json()["plan"]
+    assert plan["summary"] == "2-day Tokyo packing plan (casual)"
+    assert plan["weather_summary"] == "cold, rain likely"
+    assert plan["packing_items"][0]["reason"].startswith("worn across")
+
+
+async def test_planner_patch_toggle_packed_keeps_plan(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_planner(monkeypatch)
+    user_id = uuid.uuid4()
+    await _ensure_user(db_session, user_id)
+    await _seed_item(db_session, user_id, "top")
+    await _seed_item(db_session, user_id, "bottom")
+    await _seed_item(db_session, user_id, "shoes")
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        created = (
+            await client.post(
+                "/v1/packing-lists",
+                headers={"X-User-Id": str(user_id)},
+                json={"days": 1, "scenes": ["casual"]},
+            )
+        ).json()
+        pl_id = created["packing_list_id"]
+        assert created["plan"] is not None
+        items = created["items"]
+        items[0]["packed"] = True
+        items[0]["notes"] = "wear on the plane"
+        toggled = await client.patch(
+            f"/v1/packing-lists/{pl_id}",
+            headers={"X-User-Id": str(user_id)},
+            json={"items": items},
+        )
+        assert toggled.status_code == 200
+        assert toggled.json()["plan"] == created["plan"]  # selection unchanged → plan kept
+        assert toggled.json()["items"][0]["packed"] is True
+
+        # Dropping an item changes the selection → plan is cleared.
+        changed = await client.patch(
+            f"/v1/packing-lists/{pl_id}",
+            headers={"X-User-Id": str(user_id)},
+            json={"items": items[1:]},
+        )
+    assert changed.json()["plan"] is None
+
+
+def test_scene_aliases_resolve_and_unknown_scene_is_logged(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.application.packing.generate import (
+        DEFAULT_CATEGORIES,
+        SCENE_CATEGORIES,
+        _categories_for_scene,
+    )
+
+    # structlog caches bound loggers, so record on a stub instead of capture_logs.
+    events: list[tuple[str, str]] = []
+
+    class _Recorder:
+        def info(self, event: str, **kw: str) -> None:
+            events.append((event, kw["scene"]))
+
+    monkeypatch.setattr(packing_generate, "logger", _Recorder())
+
+    assert _categories_for_scene("commute") == SCENE_CATEGORIES["business"]
+    assert _categories_for_scene("Travel") == SCENE_CATEGORIES["casual"]
+    assert _categories_for_scene("date") == SCENE_CATEGORIES["dinner"]
+    assert _categories_for_scene("leisure") == SCENE_CATEGORIES["casual"]
+    assert events == []
+    assert _categories_for_scene("skydiving") == DEFAULT_CATEGORIES
+    assert events == [("packing.unknown_scene", "skydiving")]
 
 
 async def test_planner_excludes_recently_worn(

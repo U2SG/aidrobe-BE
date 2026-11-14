@@ -4,12 +4,14 @@ from typing import Annotated
 import jwt
 import sentry_sdk
 from fastapi import Depends, Header
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
+from app.common.locale import resolve_locale
 from app.config.settings import Settings, get_settings
-from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.repositories.user_repo import SqlAlchemyUserRepository
 from app.infrastructure.persistence.session import get_db_session
 from app.infrastructure.security.jwt.tokens import JwtTokenService
@@ -94,6 +96,16 @@ async def get_current_user(
         )
     sentry_sdk.set_user({"id": str(user.id)})
     return user
+
+
+async def resolve_user_locale(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    request_locale: str | None = None,
+) -> str:
+    """Request locale > user-settings locale > product default (zh-CN)."""
+    settings_locale = await session.scalar(select(UserSettings.locale).where(UserSettings.user_id == user_id))
+    return resolve_locale(request_locale, settings_locale)
 
 
 def _parse_admin_ids(raw: str) -> set[uuid.UUID]:

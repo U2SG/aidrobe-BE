@@ -3,7 +3,7 @@ insights sufficiency fields, commute_exposure round-trip, data-export
 polling."""
 
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi import FastAPI
@@ -355,11 +355,16 @@ class _FakeSigningStorage:
 
 
 async def _seed_export_job(
-    session: AsyncSession, user_id: uuid.UUID, *, status: str, result: dict | None = None
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    status: str,
+    result: dict | None = None,
+    idempotency_key: str | None = None,
 ) -> AsyncJob:
     job = AsyncJob(
         job_type="user_export",
-        idempotency_key=f"user_export:{user_id}:{uuid.uuid4()}",
+        idempotency_key=idempotency_key or f"user_export:{user_id}:{uuid.uuid4()}",
         user_id=user_id,
         target_id=user_id,
         status=status,
@@ -404,6 +409,49 @@ async def test_export_polling_states(
     f = failed_resp.json()["data"]
     assert f["status"] == "failed"
     assert "failed" in f["message"].lower()
+
+
+def _todays_export_key(user_id: uuid.UUID) -> str:
+    return f"user_export:{user_id}:{datetime.now(UTC).date().isoformat()}"
+
+
+async def test_export_post_returns_real_status(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    headers = {"X-User-Id": str(user_id)}
+    app = build_app(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        fresh = (await client.post("/v1/me/data-export", headers=headers)).json()["data"]
+        # Today's job finished: POST reports its real status, not "pending".
+        job = await db_session.get(AsyncJob, uuid.UUID(fresh["job_id"]))
+        assert job is not None
+        job.status = "succeeded"
+        await db_session.flush()
+        done = (await client.post("/v1/me/data-export", headers=headers)).json()["data"]
+
+    assert fresh["status"] == "queued"
+    assert done["job_id"] == fresh["job_id"]
+    assert done["status"] == "succeeded"
+
+
+async def test_export_post_after_dead_job_starts_fresh_job(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    dead = await _seed_export_job(
+        db_session, user_id, status="dead", idempotency_key=_todays_export_key(user_id)
+    )
+    headers = {"X-User-Id": str(user_id)}
+    app = build_app(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        retry = (await client.post("/v1/me/data-export", headers=headers)).json()["data"]
+        again = (await client.post("/v1/me/data-export", headers=headers)).json()["data"]
+
+    assert retry["job_id"] != str(dead.id)
+    assert retry["status"] == "queued"
+    # The new job is now in flight, so a further POST returns it rather than a third job.
+    assert again["job_id"] == retry["job_id"]
 
 
 async def test_export_polling_404_for_foreign_or_wrong_type_job(

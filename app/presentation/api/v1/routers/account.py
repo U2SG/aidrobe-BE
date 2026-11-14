@@ -89,13 +89,14 @@ async def request_my_data_export(
     """PIPL DSAR — kick off an asynchronous export of the user's personal
     data. Bundle path runs as a `user_export` async-job; the user receives
     a download link (push / email) when ready. Idempotent per pending
-    request: re-calling while one is in flight returns the same job_id."""
-    job_id = await request_data_export(session, current_user)
+    request: re-calling while one is in flight returns the same job_id, with
+    its real `status`; a `dead` job is replaced by a fresh one."""
+    job = await request_data_export(session, current_user)
     # No explicit commit — get_db_session commits on yield-exit.
     return ResponseModel(
         data=DataExportResponse(
-            job_id=job_id,
-            status="pending",
+            job_id=job.id,
+            status=job.status,
             message="Data export started. You'll be notified when it's ready.",
         )
     )
@@ -130,7 +131,7 @@ async def get_data_export_status(
                 object_key, ttl_seconds=_EXPORT_DOWNLOAD_TTL_SECONDS
             )
 
-    status_label = job.status  # queued | running | succeeded | failed | dead
+    status_label = job.status  # queued | running | succeeded | dead
     if job.status in ("queued", "running"):
         message = "Your export is being prepared."
     elif job.status == "succeeded" and download_url:
