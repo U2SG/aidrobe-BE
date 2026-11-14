@@ -10,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.enums import ItemStatus, RecommendationStatus, VisualType
+from app.common.enums import CutoutStatus, ItemStatus, RecommendationStatus, VisualType
 from app.config.settings import Settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.outfit_visual import OutfitVisualAsset
@@ -251,3 +251,76 @@ async def test_gpt_outfit_board_uses_a_separate_reusable_asset(
     assert job.payload["layout_version"] == outfit_visual._GENERATED_OUTFIT_LAYOUT_VERSION
     asset = await db_session.get(OutfitVisualAsset, job.target_id)
     assert asset is not None and asset.input_snapshot["generate"] is True
+
+
+
+async def test_generated_board_reviews_the_single_garment_crop(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    outfit_id = await _seed_outfit(db_session, user_id)
+    top = await db_session.scalar(
+        select(WardrobeItem).where(WardrobeItem.user_id == user_id, WardrobeItem.category == "top")
+    )
+    crop_key = f"users/{user_id}/wardrobe/verified-crops/top.jpg"
+    db_session.add(
+        WardrobeItemImage(
+            item_id=top.id,
+            image_type="crop",
+            image_url=f"https://storage.example/{crop_key}",
+            object_key=crop_key,
+            created_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    items = await outfit_visual._outfit_board_item_list(db_session, outfit_id=outfit_id, user_id=user_id, generate=True)
+    assert items[0]["cutout_object_key"].endswith("/cutout.png")
+    assert items[0]["review_object_key"] == crop_key
+
+
+@pytest.mark.parametrize("status,result,current,owned,uses_crop", [
+    ("succeeded", None, True, True, True),
+    ("running", None, True, True, False),
+    ("succeeded", {"review": "rejected"}, True, True, False),
+    ("succeeded", None, False, True, False),
+    ("succeeded", None, True, False, False),
+])
+async def test_generated_board_keeps_legacy_crop_only_for_a_current_reviewed_cutout(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    result: dict[str, str] | None,
+    current: bool,
+    owned: bool,
+    uses_crop: bool,
+) -> None:
+    base = "http://localhost:9000/local"
+    monkeypatch.setattr(outfit_visual, "get_settings", lambda: Settings(STORAGE_PROVIDER="local"))
+    user_id = uuid.uuid4()
+    outfit_id = await _seed_outfit(db_session, user_id)
+    item = (await db_session.scalars(
+        select(WardrobeItem).where(WardrobeItem.user_id == user_id, WardrobeItem.category == "bottom")
+    )).one()
+    cutout_key = f"{user_id}/items/{item.id}/cutout.png"
+    cutout_url = f"{base}/files/{cutout_key}"
+    crop_key = f"users/{user_id}/wardrobe/crops/recognized.jpg"
+    item.cutout_status = CutoutStatus.READY.value
+    item.cover_image_url = cutout_url if current else item.original_image_url
+    db_session.add_all([
+        WardrobeItemImage(
+            item_id=item.id, image_type="standard", image_url=cutout_url,
+            object_key=cutout_key, created_at=datetime.now(UTC),
+        ),
+        AsyncJob(
+            job_type="cutout", idempotency_key=f"cutout:{item.id}", target_id=item.id, user_id=user_id,
+            status=status, result=result, payload={
+                "source_key": crop_key if owned else f"users/{uuid.uuid4()}/wardrobe/crops/recognized.jpg",
+                "source_url": f"{base}/files/{crop_key}",
+            },
+        ),
+    ])
+    await db_session.flush()
+
+    items = await outfit_visual._outfit_board_item_list(db_session, outfit_id=outfit_id, user_id=user_id, generate=True)
+    bottom = next(entry for entry in items if entry["role"] == "bottom")
+    assert bottom["thumbnail_object_key"] == cutout_key
+    assert bottom.get("review_object_key") == (crop_key if uses_crop else None)

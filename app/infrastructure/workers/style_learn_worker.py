@@ -6,6 +6,7 @@ import structlog
 
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.session import AsyncSessionLocal
+from app.infrastructure.storage.source_image import resolve_import_source_key
 
 logger = structlog.get_logger(__name__)
 
@@ -59,7 +60,8 @@ async def _learn_from_image(
         # /style/sources/batch (up to 20 URLs) can't bypass it. Over budget →
         # degrade to the heuristic rather than failing the inspiration.
         vision_rate_limiter().check(user_id)
-        analysis = await vision_service().analyze_style(image_url)
+        source_key = resolve_import_source_key(image_url, user_id, settings)
+        analysis = await vision_service().analyze_style(image_url, source_key=source_key)
     except Exception as exc:
         logger.warning("style_learn_vision_failed", profile_id=profile_id, error=str(exc))
         return None

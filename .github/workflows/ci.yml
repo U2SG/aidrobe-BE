@@ -47,6 +47,49 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: uv run pytest -q
 
+  import-pipeline:
+    name: Import pipeline regressions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install deps
+        run: uv sync --group dev --frozen
+      - name: Run import pipeline regressions
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+          IMPORT_PIPELINE_EVIDENCE_DIR: ci-artifacts/import-pipeline
+        run: |
+          uv run pytest -q \
+            tests/api/test_import_tasks.py tests/api/test_import_confirm.py tests/api/test_receipt_import.py \
+            tests/api/test_first_outfit_gate.py tests/api/test_wardrobe.py tests/api/test_link_router.py \
+            tests/api/test_sense_check.py tests/api/test_v3_avatar_candidate_nonblocking.py \
+            tests/api/test_v3_purchase_candidates.py tests/api/test_wardrobe_report.py \
+            tests/api/test_outfit_share_asset.py tests/services/test_outfit_board_worker.py \
+            tests/api/test_wear_history_endpoint.py tests/unit/test_v3_outfit_composition.py \
+            tests/unit/test_v3_similarity_query_count.py tests/services/test_v3_similarity_evidence.py \
+            tests/services/test_import_worker.py tests/services/test_cutout_worker.py \
+            tests/services/test_import_generation_fence.py tests/services/test_import_crop_concurrency.py \
+            tests/services/test_embedding_worker.py tests/services/test_recommendation_recompute_worker.py \
+            tests/services/test_v3_paid_generation_admission.py tests/services/test_current_vector_consumers.py \
+            tests/unit/test_object_key.py tests/unit/test_source_image_key.py tests/unit/test_storage_sdk_io.py
+      - name: Upload import pipeline evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: import-pipeline-evidence
+          path: ci-artifacts/import-pipeline/A23.json
+          if-no-files-found: warn
+      - name: Verify vector consumers on pgvector
+        if: always()
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+          PGVECTOR_ENABLED: "true"
+        run: uv run pytest -q tests/services/test_current_vector_consumers.py
+
   recommendation-eval:
     name: Recommendation eval
     runs-on: ubuntu-latest
@@ -100,3 +143,27 @@ jobs:
           uv run alembic upgrade head
           uv run alembic downgrade -1
           uv run alembic upgrade head
+
+  openapi:
+    name: OpenAPI contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install deps
+        run: uv sync --group dev --frozen
+      - name: Generate contract
+        run: make openapi
+      - name: Upload generated contract
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi-contract
+          path: |
+            docs/openapi.json
+            docs/openapi.yaml
+          if-no-files-found: error
+      - name: Check committed contract
+        run: git diff --exit-code -- docs/openapi.json docs/openapi.yaml

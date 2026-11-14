@@ -12,9 +12,10 @@ import structlog
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.outfits.replacements import find_replacements
+from app.application.outfits.replacements import find_replacements, find_replacements_batch
 from app.application.outfits.scoring.rules import get_freshness_rules
 from app.common.i18n import I18nMessage, make_message
+from app.infrastructure.persistence.models.embedding import pgvector_enabled
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 logger = structlog.get_logger(__name__)
@@ -216,11 +217,6 @@ async def attach_replacement_candidates(
     rank in-memory per obstacle. Embedding-similarity tier (which is
     per-item by nature) still takes its own query when pgvector is on,
     but tier-2/tier-3 fallbacks become O(1) total queries instead of O(N)."""
-    from app.application.outfits.replacements import (
-        _pgvector_enabled,
-        find_replacements_batch,
-    )
-
     items_by_id = {str(i.id): i for i in items}
     targeted = [
         o
@@ -241,7 +237,7 @@ async def attach_replacement_candidates(
     # tier-1 (embedding similarity) chance via the per-item function. When
     # it's off, the batch result already exhausted every tier we have, so
     # fallback would be wasted SQL.
-    pgvector_on = _pgvector_enabled()
+    pgvector_on = pgvector_enabled()
     for o in targeted:
         item_id = o["item_id"]
         if item_id not in items_by_id:

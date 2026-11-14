@@ -16,6 +16,8 @@ from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import import_tasks as import_tasks_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
 
+pytestmark = pytest.mark.usefixtures("import_api_environment")
+
 
 def build_import_confirm_app(session: AsyncSession) -> FastAPI:
     app = FastAPI()
@@ -287,6 +289,28 @@ async def test_confirm_reimport_reuses_item_even_if_color_changes(
         assert list(colors) == ["white"]
 
 
+async def test_confirming_a_corrected_category_discards_the_boxed_garment(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    task = await seed_multi_candidate_task(db_session, user_id)
+    task.input_type = "outfit_image"
+    app = build_import_confirm_app(db_session)
+    headers = {"X-User-Id": str(user_id)}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        result = await client.post(
+            f"/v1/import-tasks/{task.id}/confirm-items",
+            headers=headers,
+            json={"items": [{"temp_item_id": "tmp_2", "title": "Boots", "category": "shoes", "color_main": "blue"}]},
+        )
+
+    assert result.status_code == 200
+    item_id = uuid.UUID(result.json()["data"]["created_items"][0]["item_id"])
+    item = await db_session.get(WardrobeItem, item_id)
+    assert item is not None and item.category == "shoes"
+    assert item.cover_image_url == item.original_image_url == "https://cdn/jeans-orig.jpg"
+    assert item.embedding_source_version is None
+    assert await db_session.scalar(select(AsyncJob.id).where(AsyncJob.target_id == item_id)) is None
+
+
 async def test_confirm_items_creates_multiple_wardrobe_items(db_session: AsyncSession) -> None:
     user_id = uuid.uuid4()
     task = await seed_multi_candidate_task(db_session, user_id)
@@ -351,6 +375,7 @@ async def test_confirm_items_image_rows_prefer_cutout_for_standard(db_session: A
     assert by_type == {
         "original": "https://cdn/jeans-orig.jpg",
         "standard": "https://cdn/jeans-cutout.jpg",
+        "crop": "https://cdn/jeans-crop.jpg",
     }
 
 
@@ -568,3 +593,43 @@ async def test_correcting_the_category_drops_recognised_attributes(db_session: A
     assert item.season_tags is None
     assert item.material is None
     assert item.style_tags is None
+
+
+async def test_cross_route_confirmation_keeps_remaining_and_never_revives_deleted_item(
+    db_session: AsyncSession,
+) -> None:
+    user_id = uuid.uuid4()
+    task = await seed_multi_candidate_task(db_session, user_id)
+    first, second = task.candidate_payload["candidate_items"]
+    task.candidate_payload = {"candidate_items": [{k: v for k, v in first.items() if k != "temp_item_id"}, second]}
+    await db_session.flush()
+
+    app = build_import_confirm_app(db_session)
+    headers = {"X-User-Id": str(user_id)}
+    prefix = f"/v1/import-tasks/{task.id}"
+    title = {"title": "White t-shirt", "category": "top", "color_main": "white"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        pending = (await client.get(prefix, headers=headers)).json()["data"]
+        first_id = pending["candidate_item"]["temp_item_id"]
+        assert first_id == uuid.uuid5(task.id, "0").hex
+
+        single = await client.post(f"{prefix}/confirm", headers=headers, json=title)
+        item_id = single.json()["data"]["item_id"]
+        batch = await client.post(
+            f"{prefix}/confirm-items", headers=headers,
+            json={"items": [{**title, "temp_item_id": first_id}]},
+        )
+        assert batch.json()["data"] == {
+            "created_items": [{"temp_item_id": first_id, "item_id": item_id}], "task_status": "waiting_confirm",
+        }
+        item = await db_session.get(WardrobeItem, uuid.UUID(item_id))
+        assert item.name_source == "user"
+        from datetime import UTC, datetime
+
+        item.deleted_at = datetime.now(UTC)
+        await db_session.flush()
+        replay = await client.post(f"{prefix}/confirm", headers=headers, json=title)
+        assert replay.status_code == 409
+
+    rows = await db_session.scalars(select(WardrobeItem).where(WardrobeItem.user_id == user_id))
+    assert [str(item.id) for item in rows] == [item_id]

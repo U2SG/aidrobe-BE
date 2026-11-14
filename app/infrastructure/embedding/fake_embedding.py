@@ -1,6 +1,8 @@
 import hashlib
 import struct
 
+from app.config.embedding import FAKE_MODEL_VERSION
+
 
 class FakeEmbedding:
     """Deterministic mock embedding for dev/test.
@@ -10,7 +12,7 @@ class FakeEmbedding:
     """
 
     DIM = 512
-    model_version = "fake:512"
+    model_version = FAKE_MODEL_VERSION
 
     async def embed_image(self, image_url: str) -> list[float]:
         digest = hashlib.sha256(image_url.encode()).digest()

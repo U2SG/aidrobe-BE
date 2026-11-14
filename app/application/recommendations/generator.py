@@ -31,6 +31,7 @@ from app.application.style.build_style_profile import build_style_profile
 from app.common.enums import (
     OutfitType,
     RecommendationEventType,
+    RecommendationGenerationSource,
     RecommendationStatus,
     TimeSensitivity,
 )
@@ -82,6 +83,7 @@ class RecommendationGenerator:
         refresh: bool = False,
         context_constraints: list[str] | None = None,
         preserve_refresh_after: datetime | None = None,
+        wardrobe_snapshot: tuple[datetime, list[WardrobeItem]] | None = None,
     ) -> DailyRecommendation:
         """`refresh=True` archives the current daily as `is_current=False`
         and writes a new revision. Engagement on the old revision (wear /
@@ -102,14 +104,17 @@ class RecommendationGenerator:
                 )
                 return existing
 
-        items = await self.repository.get_wearable_items(user_id)
+        if wardrobe_snapshot is None:
+            wardrobe_read_at, items = await self.repository.get_wearable_snapshot(user_id)
+        else:
+            wardrobe_read_at, items = wardrobe_snapshot
         recent = await self.repository.recent_worn_main_item_ids(user_id, target_date)
         settings = get_settings()
         user_settings = await self.repository.session.scalar(
             select(UserSettings).where(UserSettings.user_id == user_id)
         )
         relationship_repository = SqlAlchemyWardrobeRelationshipRepository(self.repository.session)
-        if settings.ENABLE_WARDROBE_GRAPH:
+        if settings.ENABLE_WARDROBE_GRAPH and wardrobe_snapshot is None:
             # Rule-based edges are 100% derived from current item metadata (no
             # user data, no rollback concern), so the "persist regardless of
             # flag" convention does not apply — gating keeps the O(n^2) upsert
@@ -234,11 +239,21 @@ class RecommendationGenerator:
         pending_daily = daily
         should_write_outfits = True
         if refresh:
-            daily = await self.repository.archive_current_and_revise(daily)
+            daily = await self.repository.archive_current_and_revise(
+                daily,
+                preserve_refresh_after=preserve_refresh_after,
+                wardrobe_read_at=(
+                    None
+                    if generation_source == RecommendationGenerationSource.REFRESH.value
+                    else wardrobe_read_at
+                ),
+            )
+            should_write_outfits = daily is pending_daily
         else:
             daily, should_write_outfits = await self.repository.replace_daily(
                 daily,
-                preserve_refresh_after=preserve_refresh_after,
+                preserve_refresh_after=preserve_refresh_after or wardrobe_read_at,
+                wardrobe_read_at=wardrobe_read_at,
             )
 
         if not should_write_outfits:
@@ -360,6 +375,7 @@ class RecommendationGenerator:
             llm_model=llm_model,
             deterministic_seed=None,
         )
+        trace_payload["context"]["wardrobe_read_at"] = wardrobe_read_at.isoformat()
         trace = existing_trace or RecommendationTrace(
             id=trace_id,
             daily_recommendation_id=daily.id,
@@ -534,13 +550,10 @@ class RecommendationGenerator:
             return {}
 
     async def _load_fit_profile(self, user_id: uuid.UUID) -> dict[str, Any]:
+        session = self.repository.session
         try:
-            from app.infrastructure.persistence.session import AsyncSessionLocal
-
-            async with AsyncSessionLocal() as session:
-                settings = await session.scalar(
-                    select(UserSettings).where(UserSettings.user_id == user_id)
-                )
+            async with session.begin_nested():
+                settings = await session.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
                 if settings is not None and isinstance(settings.preferences_json, dict):
                     fit_profile = settings.preferences_json.get("fit_profile")
                     if isinstance(fit_profile, dict):

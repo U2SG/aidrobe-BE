@@ -369,7 +369,7 @@ paths:
       tags:
       - import-tasks
       summary: List Pending Import Tasks
-      description: List this account's recognised imports that still need review.
+      description: List this account's imports. Defaults to tasks waiting for confirmation.
       operationId: list_pending_import_tasks_v1_import_tasks_get
       parameters:
       - name: limit
@@ -389,6 +389,16 @@ paths:
           minimum: 0
           default: 0
           title: Offset
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              $ref: '#/components/schemas/ImportStatus'
+          - type: 'null'
+          title: Status
       - name: Authorization
         in: header
         required: false
@@ -457,6 +467,49 @@ paths:
               $ref: '#/components/schemas/CreateImportTaskRequest'
       responses:
         '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_ImportTaskResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/import-tasks/{task_id}/retry:
+    post:
+      tags:
+      - import-tasks
+      summary: Retry Import Task
+      operationId: retry_import_task_v1_import_tasks__task_id__retry_post
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Task Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
           description: Successful Response
           content:
             application/json:
@@ -6423,6 +6476,15 @@ components:
       - item_id
       - title
       title: ImportDuplicateHint
+    ImportStatus:
+      type: string
+      enum:
+      - queued
+      - processing
+      - waiting_confirm
+      - completed
+      - failed
+      title: ImportStatus
     ImportTaskResponse:
       properties:
         task_id:
@@ -6441,7 +6503,6 @@ components:
             $ref: '#/components/schemas/CandidateItem'
           type: array
           title: Candidate Items
-          default: []
         error_code:
           anyOf:
           - type: string
@@ -6452,6 +6513,11 @@ components:
           - type: string
           - type: 'null'
           title: Error Message
+        retryable:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Retryable
       type: object
       required:
       - task_id

@@ -21,18 +21,16 @@ from __future__ import annotations
 
 import io
 import uuid
-from urllib.parse import urljoin
 
-import httpx
 import structlog
 from PIL import Image, ImageDraw
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.storage import ObjectStoragePort
 from app.config.settings import get_settings
-from app.infrastructure.importers.link_parser import BROWSER_HEADERS, is_safe_url
 from app.infrastructure.persistence.models.async_job import AsyncJob
-from app.infrastructure.storage.source_image import key_from_url
+from app.infrastructure.storage.object_key import names_internal_storage, trusted_item_image_key
+from app.infrastructure.storage.source_image import download_external_source_image
 from app.infrastructure.vision.openai_image_cutout import OpenAIImageCutout
 from app.infrastructure.vision.qwen_vision import QwenVision
 from app.infrastructure.workers._visual_asset_runtime import (
@@ -105,26 +103,15 @@ def _image_from_bytes(data: bytes) -> Image.Image | None:
 
 
 async def _download_image(url: str) -> Image.Image | None:
-    if not is_safe_url(url):
-        return None
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=False, headers=BROWSER_HEADERS) as client:
-            resp = await client.get(url)
-            hops = 0
-            while resp.is_redirect and hops < 5:
-                redirect_url = urljoin(str(resp.url), resp.headers.get("location", ""))
-                if not is_safe_url(redirect_url):
-                    return None
-                resp = await client.get(redirect_url)
-                hops += 1
-            resp.raise_for_status()
-            return _image_from_bytes(resp.content)
+        data, _ = await download_external_source_image(url, get_settings())
+        return _image_from_bytes(data)
     except Exception:
         return None
 
 
 async def _load_snapshot_image(
-    storage: ObjectStoragePort, *, object_key: str | None, fallback_url: str | None
+    storage: ObjectStoragePort, *, object_key: str | None, fallback_url: str | None, user_id: uuid.UUID
 ) -> Image.Image | None:
     """Prefer durable object storage while keeping URL-only legacy snapshots readable."""
     if object_key:
@@ -142,14 +129,15 @@ async def _load_snapshot_image(
         # Read those from storage: the public host is for devices and may not
         # resolve from the worker (and the SSRF guard rightly blocks private
         # hosts), which left boards full of placeholders.
-        bucket = get_settings().S3_BUCKET
-        own_key = key_from_url(fallback_url, bucket) if bucket else None
+        settings = get_settings()
+        own_key = trusted_item_image_key(fallback_url, user_id, settings)
         if own_key:
             image = _image_from_bytes(await storage.get_object(own_key))
             if image is None:
                 raise ValueError(f"invalid image bytes in object storage: {own_key}")
             return image
-        return await _download_image(fallback_url)
+        if not names_internal_storage(fallback_url, settings):
+            return await _download_image(fallback_url)
     return None
 
 
@@ -227,11 +215,17 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] |
 
     for item, role, box in zip(items, roles, boxes, strict=True):
         img = await _load_snapshot_image(
-            storage, object_key=item.get("cutout_object_key"), fallback_url=item.get("cutout_image_url")
+            storage,
+            object_key=item.get("cutout_object_key"),
+            fallback_url=item.get("cutout_image_url"),
+            user_id=snapshot.user_id,
         )
         if img is None:
             img = await _load_snapshot_image(
-                storage, object_key=item.get("thumbnail_object_key"), fallback_url=item.get("thumbnail_url")
+                storage,
+                object_key=item.get("thumbnail_object_key"),
+                fallback_url=item.get("thumbnail_url"),
+                user_id=snapshot.user_id,
             )
 
         if generate:
@@ -242,7 +236,9 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] |
             review_key = item.get("review_object_key")
             review_url = item.get("review_image_url")
             if review_key or review_url:
-                reference = await _load_snapshot_image(storage, object_key=review_key, fallback_url=review_url)
+                reference = await _load_snapshot_image(
+                    storage, object_key=review_key, fallback_url=review_url, user_id=snapshot.user_id,
+                )
                 if reference is None:
                     return None
                 review_frame = _jpeg_reference(reference)

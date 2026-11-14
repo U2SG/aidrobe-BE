@@ -4,9 +4,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.enums import ImageType
 from app.infrastructure.persistence.models.ask_session import AskSession
-from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.repositories.wardrobe_repo import load_wardrobe_image_sources
 
 
 class SqlAlchemyAskRepository:
@@ -68,11 +68,8 @@ class SqlAlchemyAskRepository:
     ) -> list[tuple[WardrobeItem, str | None, str | None]]:
         """BE#29 — batch-load the wardrobe items behind a set of item_refs.
 
-        One query for the whole id set (no per-id N+1). Only the caller's
-        accessible, non-deleted items are returned; deleted / foreign ids
-        simply fall out. Each row carries the item plus its preferred image's
-        (object_key, image_url) so the read path can sign a thumbnail at
-        request time — STANDARD (cutout) wins over ORIGINAL."""
+        Batch both owned rows and their selected cover sources so the read
+        path can sign thumbnails at request time."""
         if not item_ids:
             return []
         items = list(
@@ -84,30 +81,5 @@ class SqlAlchemyAskRepository:
                 )
             )
         )
-        if not items:
-            return []
-        images = list(
-            await self.session.scalars(
-                select(WardrobeItemImage).where(
-                    WardrobeItemImage.item_id.in_([i.id for i in items])
-                )
-            )
-        )
-        # Prefer the STANDARD (cutout) image; fall back to any other type.
-        preferred: dict[uuid.UUID, WardrobeItemImage] = {}
-        for img in images:
-            existing = preferred.get(img.item_id)
-            if existing is None or (
-                existing.image_type != ImageType.STANDARD.value
-                and img.image_type == ImageType.STANDARD.value
-            ):
-                preferred[img.item_id] = img
-        out: list[tuple[WardrobeItem, str | None, str | None]] = []
-        for item in items:
-            chosen = preferred.get(item.id)
-            if chosen is not None:
-                out.append((item, chosen.object_key, chosen.image_url))
-            else:
-                # No image rows — fall back to the item's cover_image_url.
-                out.append((item, None, item.cover_image_url))
-        return out
+        images = await load_wardrobe_image_sources(self.session, items)
+        return [(item, *images[item.id][0]) for item in items]

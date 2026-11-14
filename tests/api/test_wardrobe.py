@@ -7,13 +7,16 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.enums import ImageType
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.user import User, UserSettings
-from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import import_tasks as import_tasks_router
 from app.presentation.api.v1.routers import wardrobe as wardrobe_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
+
+pytestmark = pytest.mark.usefixtures("import_api_environment")
 
 
 def build_wardrobe_app(session: AsyncSession) -> FastAPI:
@@ -98,6 +101,68 @@ async def test_get_wardrobe_item_enforces_ownership(db_session: AsyncSession) ->
 
     assert response.status_code == 404
     assert response.json()["code"] == 4041
+
+
+async def test_wardrobe_resigns_private_images_after_the_original_urls_expire(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_id = uuid.uuid4()
+    original_key = f"users/{owner_id}/upload/coat.jpg"
+    crop_key = f"{owner_id}/items/crop/cutout.png"
+    original_url = f"https://storage.example/aidrobe/{original_key}?Expires=1"
+    crop_url = f"https://storage.example/aidrobe/{crop_key}?Expires=1"
+    cfg = Settings(
+        STORAGE_PROVIDER="s3",
+        S3_BUCKET="aidrobe",
+        S3_PUBLIC_BASE_URL="https://storage.example/aidrobe",
+    )
+    monkeypatch.setattr(
+        "app.infrastructure.persistence.repositories.wardrobe_repo.get_settings", lambda: cfg,
+    )
+    signed: list[str] = []
+
+    class PrivateStorage:
+        def sign_render_url(self, key: str) -> str:
+            signed.append(key)
+            return f"https://signed.example/{key}?generation={len(signed)}"
+
+    monkeypatch.setattr("app.bootstrap.container.object_storage", PrivateStorage)
+    db_session.add(User(id=owner_id))
+    await db_session.flush()
+    item = WardrobeItem(
+        user_id=owner_id,
+        title="Coat",
+        category="outerwear",
+        color_main="navy",
+        original_image_url=original_url,
+        cover_image_url=crop_url,
+    )
+    db_session.add(item)
+    await db_session.flush()
+    db_session.add(
+        WardrobeItemImage(
+            item_id=item.id,
+            image_type=ImageType.ORIGINAL.value,
+            image_url=original_url,
+            object_key=original_key,
+            created_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+    headers = {"X-User-Id": str(owner_id)}
+    async with AsyncClient(transport=ASGITransport(app=build_wardrobe_app(db_session)), base_url="http://test") as c:
+        detail = await c.get(f"/v1/wardrobe-items/{item.id}", headers=headers)
+        listed = await c.get("/v1/wardrobe-items", headers=headers)
+
+    assert (detail.status_code, listed.status_code) == (200, 200)
+    first = detail.json()["data"]
+    second = listed.json()["data"]["items"][0]
+    assert first["original_image_url"] == f"https://signed.example/{original_key}?generation=1"
+    assert first["cover_image_url"] == f"https://signed.example/{crop_key}?generation=2"
+    assert second["original_image_url"] == f"https://signed.example/{original_key}?generation=3"
+    assert second["cover_image_url"] == f"https://signed.example/{crop_key}?generation=4"
+    assert item.original_image_url == original_url
+    assert item.cover_image_url == crop_url
 
 
 async def test_wardrobe_detail_and_list_include_resolved_display_name(

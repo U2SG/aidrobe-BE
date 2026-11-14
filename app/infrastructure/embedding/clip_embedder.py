@@ -4,6 +4,7 @@ from typing import Any, cast
 
 import httpx
 
+from app.config.embedding import CLIP_MODEL_VERSION
 from app.config.settings import Settings
 
 
@@ -13,7 +14,7 @@ class ClipEmbedder:
     DIM = 512
     MODEL_NAME = "ViT-B-32"
     PRETRAINED = "openai"
-    model_version = "clip:ViT-B-32:openai"
+    model_version = CLIP_MODEL_VERSION
 
     def __init__(self, settings: Settings) -> None:
         self.timeout_seconds = settings.CLIP_EMBEDDING_TIMEOUT_SECONDS
@@ -26,6 +27,9 @@ class ClipEmbedder:
             response = await client.get(image_url)
             response.raise_for_status()
             image_bytes = response.content
+        return await self.embed_bytes(image_bytes)
+
+    async def embed_bytes(self, image_bytes: bytes) -> list[float]:
         return await asyncio.to_thread(self._embed_image_bytes, image_bytes)
 
     def _embed_image_bytes(self, image_bytes: bytes) -> list[float]:

@@ -19,6 +19,7 @@ from app.infrastructure.workers.cutout_worker import (
     reconcile_dead_cutout_items,
 )
 from app.infrastructure.workers.embedding_worker import drain_embedding_jobs
+from app.infrastructure.workers.garment_crops import drain_garment_crop_jobs
 from app.infrastructure.workers.image_worker import process_image_job
 from app.infrastructure.workers.import_worker import (
     drain_import_jobs,
@@ -105,6 +106,7 @@ class WorkerSettings:
         drain_avatar_purge_jobs,
         drain_static_tryon_jobs,
         drain_import_jobs,
+        drain_garment_crop_jobs,
         recover_async_job_leases,
         reconcile_dead_outfit_board_assets,
         reconcile_dead_ootd_poster_assets,
@@ -126,6 +128,7 @@ class WorkerSettings:
             # Import is a user-visible "recognizing" state, so drain often to
             # trim queue-wait before the ~seconds Vision/OCR call.
             cron(drain_import_jobs, second=set(range(0, 60, 5)), name="import_drain"),
+            cron(drain_garment_crop_jobs, second=set(range(1, 60, 5)), name="garment_crop_drain"),
             # Tight cadence (every 5s): the cutout is a user-visible "polishing"
             # state, so trim queue-wait before the ~30s gpt-image-2 gen. claim_one
             # is a cheap FOR UPDATE SKIP LOCKED query, so polling often is fine.

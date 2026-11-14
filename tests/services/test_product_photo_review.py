@@ -25,4 +25,5 @@ async def test_product_photo_may_complete_hidden_shoe_parts(
     monkeypatch.setattr(generator, "_edit", generate)
     monkeypatch.setattr(QwenVision, "_request_content", review)
     result = await generator.extract(b"partly covered sneakers", "shoes", title="White sneakers", color="white")
-    assert result == (b"complete sneakers" if matches_visible_details else None)
+    assert result.outcome == ("succeeded" if matches_visible_details else "quality_rejected")
+    assert result.image == (b"complete sneakers" if matches_visible_details else None)

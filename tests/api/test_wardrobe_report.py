@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.enums import ImageType
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
@@ -16,7 +17,7 @@ from app.infrastructure.persistence.models.recommendation import (
     WearHistory,
 )
 from app.infrastructure.persistence.models.user import User
-from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import insights as insights_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
@@ -217,6 +218,73 @@ async def test_report_annual_period(
     assert data["start_date"] == "2026-01-01"
     assert data["end_date"] == "2026-12-31"
     assert data["total_wears"] == 2
+
+
+@pytest.mark.parametrize("period", ["2026-H1", "2026-annual", "2024-H1"])
+async def test_report_signs_private_top_and_idle_covers(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, period: str
+) -> None:
+    user_id = uuid.uuid4()
+    ids = await seed_report_data(db_session, user_id)
+    enable_report(monkeypatch)
+    settings = Settings(
+        STORAGE_PROVIDER="s3",
+        S3_BUCKET="aidrobe",
+        S3_PUBLIC_BASE_URL="https://storage.example/aidrobe",
+    )
+    monkeypatch.setattr(
+        "app.infrastructure.persistence.repositories.wardrobe_repo.get_settings", lambda: settings
+    )
+    calls: dict[str, int] = {}
+
+    class PrivateStorage:
+        def sign_render_url(self, key: str) -> str:
+            calls[key] = calls.get(key, 0) + 1
+            return f"https://signed.example/{key}?issue={calls[key]}"
+
+    monkeypatch.setattr("app.bootstrap.container.object_storage", PrivateStorage)
+    shirt = await db_session.get(WardrobeItem, ids["shirt"])
+    pants = await db_session.get(WardrobeItem, ids["pants"])
+    coat = await db_session.get(WardrobeItem, ids["coat"])
+    assert shirt is not None and pants is not None and coat is not None
+    standard_key = f"users/{user_id}/wardrobe/product/{shirt.id}.png"
+    idle_key = f"users/{user_id}/wardrobe/upload/{coat.id}.jpg"
+    shirt.cover_image_url = f"https://storage.example/aidrobe/{standard_key}?Expires=1"
+    pants.cover_image_url = "https://shop.example/pants.jpg"
+    coat.cover_image_url = f"https://storage.example/aidrobe/{idle_key}?Expires=1"
+    # The selected/generated cover has a durable row. The idle card exercises
+    # a URL-only legacy row, whose verified key can be recovered at read time.
+    db_session.add(
+        WardrobeItemImage(
+            item_id=shirt.id,
+            image_type=ImageType.STANDARD.value,
+            image_url=shirt.cover_image_url,
+            object_key=standard_key,
+            created_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+    app = build_app(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        for issuance in (1, 2):
+            resp = await client.get(f"/v1/insights/reports/{period}", headers={"X-User-Id": str(user_id)})
+            assert resp.status_code == 200, resp.text
+            data = resp.json()
+            assert data["longest_idle_item"]["cover_image_url"] == f"https://signed.example/{idle_key}?issue={issuance}"
+            covers = {item["item_id"]: item["cover_image_url"] for item in data["top_items"]}
+            if period == "2024-H1":
+                assert not covers
+            else:
+                assert covers == {
+                    str(shirt.id): f"https://signed.example/{standard_key}?issue={issuance}",
+                    str(pants.id): "https://shop.example/pants.jpg",
+                }
+
+    assert calls[idle_key] == 2
+    assert calls.get(standard_key, 0) == (0 if period == "2024-H1" else 2)
+    assert shirt.cover_image_url == f"https://storage.example/aidrobe/{standard_key}?Expires=1"
+    assert coat.cover_image_url == f"https://storage.example/aidrobe/{idle_key}?Expires=1"
 
 
 async def test_report_empty_period(

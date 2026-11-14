@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +16,8 @@ from app.presentation.api.v1.routers import (
     wardrobe,
 )
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
+
+pytestmark = pytest.mark.usefixtures("import_api_environment")
 
 
 def build_flow_app(session: AsyncSession) -> FastAPI:

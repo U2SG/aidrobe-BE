@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
@@ -10,6 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.application.recommendations.background import schedule_today_recompute
+from app.application.recommendations.engine import EngineItem, EngineResult, RecommendationEngine
+from app.application.recommendations.first_outfit_gate import FirstOutfitGate
+from app.application.recommendations.generator import RecommendationGenerator
 from app.common.enums import Category, ItemStatus
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.user import User, UserSettings
@@ -114,3 +118,103 @@ async def test_worker_recomputes_today_and_finalizes_job(
         )
         await session.commit()
     assert inserted_after_success is True
+
+
+@pytest.mark.parametrize("newer_source", ["first_outfit_gate", "refresh"])
+async def test_background_snapshot_cannot_overwrite_newer_first_outfit_or_refresh(
+    patched_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    newer_source: str,
+) -> None:
+    user_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    target_date = now.date()
+    monkeypatch.setattr("app.application.recommendations.background.utc_now", lambda: now)
+    # Disable provider calls while retaining the recommendation worker's real
+    # claim, repository, generator, and commit behavior.
+    monkeypatch.setattr("app.application.recommendations.background.llm_service", lambda: None)
+    monkeypatch.setattr("app.application.recommendations.background.weather_service", lambda: None)
+
+    async with patched_session_factory() as session:
+        session.add(User(id=user_id))
+        await session.flush()
+        session.add(UserSettings(user_id=user_id, timezone="UTC"))
+        session.add_all(
+            [
+                WardrobeItem(
+                    user_id=user_id,
+                    title=category,
+                    category=category,
+                    color_main="black",
+                    status=ItemStatus.WEARABLE.value,
+                    cover_image_url="https://example.com/item.jpg",
+                )
+                for category in ("top", "bottom")
+            ]
+        )
+        await session.flush()
+        await schedule_today_recompute(user_id, SqlAlchemyRecommendationRepository(session))
+        await session.commit()
+
+    original_generate = RecommendationEngine.generate
+    snapshot_read = asyncio.Event()
+    release_stale_worker = asyncio.Event()
+
+    async def pause_stale_generation(
+        engine: RecommendationEngine, items: list[EngineItem], **kwargs
+    ) -> EngineResult:
+        result = await original_generate(engine, items, **kwargs)
+        if not any(item.category == "shoes" for item in items):
+            assert result.status == "insufficient_items"
+            snapshot_read.set()
+            await release_stale_worker.wait()
+        return result
+
+    monkeypatch.setattr(RecommendationEngine, "generate", pause_stale_generation)
+
+    async with asyncio.timeout(10), asyncio.TaskGroup() as group:
+        worker = group.create_task(drain_recommendation_recompute_jobs(ctx=None))
+        await snapshot_read.wait()
+        async with patched_session_factory() as session:
+            session.add(
+                WardrobeItem(
+                    user_id=user_id,
+                    title="shoes",
+                    category="shoes",
+                    color_main="white",
+                    status=ItemStatus.WEARABLE.value,
+                    cover_image_url="https://example.com/shoes.jpg",
+                )
+            )
+            await session.commit()
+
+        async with patched_session_factory() as session:
+            repository = SqlAlchemyRecommendationRepository(session)
+            if newer_source == "first_outfit_gate":
+                gate = await FirstOutfitGate(repository).execute(user_id, target_date)
+                assert gate.state == "single_outfit"
+                assert gate.first_outfit is not None
+            else:
+                await RecommendationGenerator(repository).generate_for_user(
+                    user_id, target_date, generation_source="refresh", refresh=True
+                )
+                gate = await FirstOutfitGate(repository).execute(user_id, target_date)
+                assert not gate.generated
+            fresh = await repository.get_daily(user_id, target_date)
+            assert fresh is not None
+            fresh_id = fresh.id
+            outfit_ids = {outfit.id for outfit in fresh.outfits}
+            assert outfit_ids
+            await session.commit()
+        release_stale_worker.set()
+
+    assert worker.result() == 1
+    async with patched_session_factory() as session:
+        repository = SqlAlchemyRecommendationRepository(session)
+        after = await repository.get_daily(user_id, target_date)
+        assert after is not None
+        assert after.id == fresh_id
+        assert after.generation_source == newer_source
+        assert after.status == "ready"
+        assert {outfit.id for outfit in after.outfits} == outfit_ids
+        assert await repository.count_current_dailies(user_id, target_date) == 1

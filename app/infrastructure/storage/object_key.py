@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from urllib.parse import unquote, urlparse, urlsplit
+from urllib.parse import ParseResult, unquote, urlparse, urlsplit
 
 from app.config.settings import Settings
 
@@ -39,7 +39,20 @@ def is_owned_object_key(object_key: str, user_id: uuid.UUID) -> bool:
     issue contains it, and a traversal segment is how a key that starts with
     the right prefix can still address something else.
     """
-    return object_key.startswith(f"users/{user_id}/") and ".." not in object_key
+    prefix = f"users/{user_id}/"
+    return object_key.startswith(prefix) and len(object_key) > len(prefix) and _valid_key(object_key)
+
+
+def _valid_key(key: str) -> bool:
+    # Object references are also used by the local filesystem adapter.
+    return (
+        bool(key)
+        and len(key) <= 512
+        and ".." not in key
+        and "\\" not in key
+        and all(ord(char) >= 32 and ord(char) != 127 for char in key)
+        and all(part not in {"", "."} for part in key.split("/"))
+    )
 
 
 #: V3-017 — where a static try-on render lands. Under the `users/<user_id>/`
@@ -68,18 +81,20 @@ def static_preview_object_key(user_id: uuid.UUID, asset_id: uuid.UUID) -> str:
     return f"users/{user_id}/{_STATIC_PREVIEW_PREFIX}/{asset_id}.png"
 
 
-def garment_crop_object_key(user_id: uuid.UUID, task_id: uuid.UUID, temp_item_id: str) -> str:
-    """Where the crop of one garment from a multi-garment import photo lands.
-
-    Under `users/<user_id>/` for the same ownership / purge reasons as above,
-    and derived from (task, candidate) so a retried import job overwrites its
-    own crop instead of leaving orphans.
-    """
-    return f"users/{user_id}/wardrobe/verified-crops/{task_id}/{temp_item_id}.jpg"
+def garment_crop_object_key(user_id: uuid.UUID, task_id: uuid.UUID, attempt_path: str) -> str:
+    """Store each verified crop attempt separately under the owner's purge prefix."""
+    return f"users/{user_id}/wardrobe/verified-crops/{task_id}/{attempt_path}.jpg"
 
 
-def is_legacy_garment_crop(url: str | None, user_id: uuid.UUID) -> bool:
-    return bool(url and f"/users/{user_id}/wardrobe/crops/" in urlsplit(url).path)
+def is_legacy_garment_crop(reference: str | None, user_id: uuid.UUID) -> bool:
+    """Identify a crop made before individual garment verification."""
+    if not reference:
+        return False
+    try:
+        path = unquote(urlsplit(reference).path)
+    except ValueError:
+        return False
+    return f"/users/{user_id}/wardrobe/crops/" in f"/{path.lstrip('/')}"
 
 
 def names_unresolvable_per_purpose_bucket(image_url: str | None, settings: Settings) -> bool:
@@ -98,10 +113,10 @@ def names_unresolvable_per_purpose_bucket(image_url: str | None, settings: Setti
     recognizes the bucket in the host or path, using the same
     scheme-qualified-endpoint assumption as `_key_after_endpoint_bucket`.
     """
-    if not image_url or not settings.ALIYUN_OSS_ENDPOINT:
+    parsed = _parsed_url(image_url) if image_url else None
+    endpoint = _parsed_url(oss_endpoint_url(settings))
+    if parsed is None or endpoint is None or not endpoint.hostname or not parsed.hostname:
         return False
-    parsed = urlparse(image_url)
-    endpoint = urlparse(settings.ALIYUN_OSS_ENDPOINT)
     endpoint_path = endpoint.path.rstrip("/")
     for field in _PER_PURPOSE_BUCKET_FIELDS:
         bucket = str(getattr(settings, field, "") or "")
@@ -109,9 +124,9 @@ def names_unresolvable_per_purpose_bucket(image_url: str | None, settings: Setti
         # bucket IS resolvable, so it is not this case.
         if not bucket or bucket == settings.ALIYUN_OSS_BUCKET:
             continue
-        if parsed.netloc == f"{bucket}.{endpoint.netloc}":
+        if parsed.hostname.rstrip(".") == f"{bucket}.{endpoint.hostname}":
             return True
-        if parsed.netloc == endpoint.netloc and parsed.path.startswith(f"{endpoint_path}/{bucket}/"):
+        if parsed.hostname.rstrip(".") == endpoint.hostname and parsed.path.startswith(f"{endpoint_path}/{bucket}/"):
             return True
     return False
 
@@ -122,46 +137,117 @@ def extract_internal_object_key(
     """Return an object key only for known backend-generated storage URLs."""
     if not image_url:
         return None
+    if names_unresolvable_per_purpose_bucket(image_url, settings):
+        return None
 
-    local_key = _key_after_base_path(
-        image_url,
-        settings.LOCAL_STORAGE_BASE_URL,
-        required_prefix="files",
-    )
-    if local_key:
-        return local_key
+    for provider in ("local", "s3", "aliyun_oss"):
+        key = _key_for_provider(image_url, settings, provider)
+        if key:
+            return key
+    return None
+
+
+def active_object_key(image_url: str | None, settings: Settings) -> str | None:
+    """Resolve only URLs the configured adapter can actually read and sign."""
+    if not image_url:
+        return None
+    if names_unresolvable_per_purpose_bucket(image_url, settings):
+        return None
+    return _key_for_provider(image_url, settings, settings.STORAGE_PROVIDER)
+
+
+def _key_for_provider(image_url: str, settings: Settings, provider: str) -> str | None:
+    if _parsed_url(image_url) is None:
+        return None
+    if provider == "local":
+        return _key_after_base_path(image_url, settings.LOCAL_STORAGE_BASE_URL, required_prefix="files")
+    if provider == "s3" and settings.S3_BUCKET:
+        key = _key_after_base_path(image_url, settings.S3_PUBLIC_BASE_URL)
+        if key is None:
+            key = _key_after_endpoint_bucket(image_url, settings.S3_ENDPOINT_URL, settings.S3_BUCKET)
+        if key is None:
+            for host in ("s3.amazonaws.com", f"s3.{settings.S3_REGION}.amazonaws.com"):
+                key = _key_after_endpoint_bucket(image_url, f"https://{host}", settings.S3_BUCKET)
+                if key is not None:
+                    break
+        return key
+    if provider == "aliyun_oss" and settings.ALIYUN_OSS_BUCKET:
+        key = _key_after_base_path(image_url, settings.ALIYUN_OSS_PUBLIC_BASE_URL)
+        endpoint = oss_endpoint_url(settings)
+        if key is None and endpoint:
+            key = _key_after_endpoint_bucket(image_url, endpoint, settings.ALIYUN_OSS_BUCKET)
+            if key is None and "://" not in settings.ALIYUN_OSS_ENDPOINT:
+                # oss2 historically signs a bare endpoint with HTTP. Clients
+                # may also construct HTTPS URLs for the same configured host.
+                key = _key_after_endpoint_bucket(
+                    image_url, f"http://{settings.ALIYUN_OSS_ENDPOINT}", settings.ALIYUN_OSS_BUCKET
+                )
+        return key
+    return None
+
+
+def oss_endpoint_url(settings: Settings) -> str:
+    endpoint = settings.ALIYUN_OSS_ENDPOINT
+    return f"https://{endpoint}" if endpoint and "://" not in endpoint else endpoint
+
+
+def _parsed_url(url: str) -> ParseResult | None:
+    # urllib strips some controls before parsing. Never resolve a modified URL.
+    if any(ord(char) < 32 or ord(char) == 127 for char in url):
+        return None
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme in {"http", "https"} and parsed.hostname and parsed.username is None:
+            return parsed
+    except ValueError:
+        pass
+    return None
+
+
+def names_internal_storage(url: str, settings: Settings) -> bool:
+    """Identify storage URLs even if their bucket, host or key cannot be resolved."""
+    parsed = _parsed_url(url)
+    if parsed is None or parsed.hostname is None:
+        return False
+    host = parsed.hostname.rstrip(".")
+    local = _parsed_url(settings.LOCAL_STORAGE_BASE_URL)
+    if local and host == local.hostname and parsed.path.startswith(f"{local.path.rstrip('/')}/files"):
+        return True
 
     for base_url in (settings.S3_PUBLIC_BASE_URL, settings.ALIYUN_OSS_PUBLIC_BASE_URL):
-        key = _key_after_base_path(image_url, base_url)
-        if key:
-            return key
+        base = _parsed_url(base_url) if base_url else None
+        if base and host == base.hostname:
+            return True
+    for address in (settings.S3_ENDPOINT_URL, oss_endpoint_url(settings)):
+        endpoint = _parsed_url(address) if address else None
+        if endpoint and endpoint.hostname and (host == endpoint.hostname or host.endswith(f".{endpoint.hostname}")):
+            return True
 
-    # Endpoint/virtual-host URLs embed the bucket name. Only extract a key when
-    # that bucket is the one the signer actually signs against — the S3 adapter
-    # signs against `S3_BUCKET` and the OSS adapter against `ALIYUN_OSS_BUCKET`.
-    # Matching any of the per-purpose OSS buckets (items/ootd/private/derived)
-    # would let the read path sign the key against the signer's default bucket,
-    # producing a valid-looking URL for the WRONG bucket. Return None instead so
-    # the caller falls back to the stored raw `image_url`.
-    if settings.S3_BUCKET:
-        key = _key_after_endpoint_bucket(
-            image_url, settings.S3_ENDPOINT_URL, settings.S3_BUCKET
+    buckets = {
+        bucket
+        for bucket in (
+            settings.S3_BUCKET,
+            settings.ALIYUN_OSS_BUCKET,
+            *(getattr(settings, field) for field in _PER_PURPOSE_BUCKET_FIELDS),
         )
-        if key:
-            return key
-        key = _key_after_s3_virtual_host(
-            image_url, settings.S3_BUCKET, settings.S3_REGION
+        if bucket
+    }
+    # An otherwise unrelated host that embeds our bucket and user namespace
+    # is not an alternate object-storage endpoint.
+    parts = unquote(parsed.path).split("/")
+    return any(
+        host.startswith(f"{bucket}.") or (
+            bucket in parts and ("users" in parts or host.endswith(".amazonaws.com"))
         )
-        if key:
-            return key
+        for bucket in buckets
+    )
 
-    if settings.ALIYUN_OSS_BUCKET:
-        key = _key_after_endpoint_bucket(
-            image_url, settings.ALIYUN_OSS_ENDPOINT, settings.ALIYUN_OSS_BUCKET
-        )
-        if key:
-            return key
 
+def trusted_item_image_key(url: str | None, user_id: uuid.UUID, settings: Settings) -> str | None:
+    """Resolve a URL carried by a server-owned wardrobe item for this user."""
+    key = active_object_key(url, settings)
+    if key and (is_owned_object_key(key, user_id) or key.startswith(f"{user_id}/items/")):
+        return key
     return None
 
 
@@ -220,18 +306,6 @@ def _key_after_endpoint_bucket(
     return None
 
 
-def _key_after_s3_virtual_host(
-    image_url: str,
-    bucket: str,
-    region: str,
-) -> str | None:
-    parsed = urlparse(image_url)
-    expected_host = f"{bucket}.s3.{region}.amazonaws.com"
-    if parsed.scheme == "https" and parsed.netloc == expected_host:
-        return _clean_key(parsed.path.lstrip("/"))
-    return None
-
-
 def _clean_key(value: str) -> str | None:
-    key = unquote(value).lstrip("/")
-    return key or None
+    key = unquote(value)
+    return key if _valid_key(key) else None

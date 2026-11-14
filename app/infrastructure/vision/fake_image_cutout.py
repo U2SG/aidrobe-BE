@@ -6,9 +6,11 @@ ends up identical to its original, which is the correct no-op behavior."""
 
 from __future__ import annotations
 
+from app.application.ports.image_cutout import CutoutResult
+
 
 class FakeImageCutout:
     async def extract(
         self, image_bytes: bytes, category: str, *, title: str | None = None, color: str | None = None
-    ) -> bytes:
-        return image_bytes
+    ) -> CutoutResult:
+        return CutoutResult("succeeded", image_bytes, provider_cost_cents=0)

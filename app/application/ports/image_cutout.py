@@ -1,4 +1,14 @@
-from typing import Protocol
+from dataclasses import dataclass
+from typing import Literal, Protocol
+
+CutoutOutcome = Literal["succeeded", "quality_rejected", "not_called"]
+
+
+@dataclass(frozen=True)
+class CutoutResult:
+    outcome: CutoutOutcome
+    image: bytes | None = None
+    provider_cost_cents: int | None = None
 
 
 class ImageCutoutPort(Protocol):
@@ -11,7 +21,6 @@ class ImageCutoutPort(Protocol):
 
     async def extract(
         self, image_bytes: bytes, category: str, *, title: str | None = None, color: str | None = None
-    ) -> bytes | None:
-        """Return the accepted product photo, or None if it failed visual review.
-        Provider errors raise so the worker can retry."""
+    ) -> CutoutResult:
+        """Return the result of generation and review. Provider errors raise."""
         ...

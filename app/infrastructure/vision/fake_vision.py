@@ -66,7 +66,9 @@ def _result_for(key: str, locale: str) -> VisionResult:
 
 
 class FakeVision:
-    async def analyze_image(self, image_url: str, locale: str = DEFAULT_LOCALE) -> VisionResult:
+    async def analyze_image(
+        self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
+    ) -> VisionResult:
         if "fail" in image_url:
             raise ValueError("fake vision failure")
         key = "bottom" if ("pants" in image_url or "bottom" in image_url) else "top"
@@ -84,7 +86,9 @@ class FakeVision:
     async def review_garment_crops(self, crops: list[bytes], garments: list[VisionResult]) -> list[bool]:
         return [True] * len(crops)
 
-    async def analyze_style(self, image_url: str, locale: str = DEFAULT_LOCALE) -> StyleAnalysis:
+    async def analyze_style(
+        self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
+    ) -> StyleAnalysis:
         if "fail" in image_url:
             raise ValueError("fake vision failure")
         # Deterministic style by URL keyword so tests can assert the wire-through

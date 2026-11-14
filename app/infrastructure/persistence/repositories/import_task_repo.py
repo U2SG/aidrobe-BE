@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Sequence
 from typing import cast
 
 from sqlalchemy import select
@@ -27,13 +28,18 @@ class SqlAlchemyImportTaskRepository:
             ImportTask.id == task_id, ImportTask.user_id == user_id
         )
         if for_update:
-            stmt = stmt.with_for_update()
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
         return cast(ImportTask | None, await self.session.scalar(stmt))
 
-    async def list_pending(self, user_id: uuid.UUID, *, limit: int, offset: int) -> list[ImportTask]:
+    async def list_for_user(
+        self, user_id: uuid.UUID, *, limit: int, offset: int, statuses: Sequence[ImportStatus] | None = None
+    ) -> list[ImportTask]:
         result = await self.session.scalars(
             select(ImportTask)
-            .where(ImportTask.user_id == user_id, ImportTask.task_status == ImportStatus.WAITING_CONFIRM.value)
+            .where(
+                ImportTask.user_id == user_id,
+                ImportTask.task_status.in_(statuses or [ImportStatus.WAITING_CONFIRM]),
+            )
             .order_by(ImportTask.created_at.desc(), ImportTask.id.desc())
             .limit(limit)
             .offset(offset)

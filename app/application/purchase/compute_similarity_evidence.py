@@ -28,13 +28,11 @@ large closet would turn one decision into hundreds of round-trips:
 - 1 — distinct `fit_feedback.scene` per item, batched with `IN` over the ids
       from the first query. This is the N+1 that a naive per-item scene lookup
       would introduce.
-- at most +2 — only when pgvector is on: the embedding anchor probe, then the
-      vector rank. The rank query is skipped when the probe finds no anchor,
-      which is the CI case.
+- at most +1 — only when pgvector is on: find the current embedding anchor
+      and rank its neighbours in one statement.
 
-So 2 queries in the deterministic path, 3 when the vector tier is selected but
-finds nothing to anchor on, and 4 when it ranks — whether the user owns three
-items or three hundred. Those exact per-call counts are pinned in
+So 2 queries in the deterministic path and at most 3 with pgvector, whether
+the user owns three items or three hundred. Those exact per-call counts are pinned in
 `tests/unit/test_v3_similarity_query_count.py` against a session double, which
 runs without a container. `tests/services/test_v3_similarity_evidence.py`
 re-checks the same invariant against a real Postgres, but as "constant in
@@ -58,11 +56,10 @@ construction so fixtures can assert an exact order.
 
 from __future__ import annotations
 
-import os
 import uuid
 
 import structlog
-from sqlalchemy import Select, select, union_all
+from sqlalchemy import Float, Select, select, true, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -78,7 +75,8 @@ from app.application.purchase.wardrobe_similarity import (
     unknown_evidence,
 )
 from app.common.enums import FitFeedbackType, ItemStatus, WardrobeItemStatus
-from app.infrastructure.persistence.models.embedding import ItemEmbedding
+from app.config.embedding import embedding_model_version
+from app.infrastructure.persistence.models.embedding import ItemEmbedding, is_current_embedding, pgvector_enabled
 from app.infrastructure.persistence.models.fit import FitFeedback
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
@@ -108,13 +106,6 @@ OWNED_STATUSES: tuple[str, ...] = (
     ItemStatus.WEARABLE.value,
     WardrobeItemStatus.DIRTY.value,
 )
-
-
-def _pgvector_enabled() -> bool:
-    """Same convention as `models.embedding._USE_VECTOR` and
-    `replacements._pgvector_enabled` — read the env directly rather than
-    carrying a private import surface."""
-    return os.getenv("PGVECTOR_ENABLED", "false").lower() in ("1", "true", "yes")
 
 
 async def compute_similarity_evidence(
@@ -153,7 +144,11 @@ async def compute_similarity_evidence(
             category=item.category,
             color_main=item.color_main or "",
             material=item.material,
-            garment_type=garment_type(item.canonical_name, item.sub_category, item.title),
+            garment_type=(
+                garment_type(item.title, item.sub_category)
+                if item.name_source == "user"
+                else garment_type(item.canonical_name, item.sub_category, item.title)
+            ),
             style_tags=normalize_style_tags(item.style_tags),
             wear_scenes=tuple(sorted(scenes.get(item.id, set()))),
         )
@@ -265,7 +260,7 @@ async def _rank(
     parsed: ParsedItem,
 ) -> list[OwnedItemFacts]:
     """Order owned items, vector tier first, structured tier as the fallback."""
-    if _pgvector_enabled():
+    if pgvector_enabled():
         ordered = await _rank_by_embedding(session, user_id, category, facts)
         if ordered:
             return ordered
@@ -284,46 +279,50 @@ async def _rank_by_embedding(
     category: str,
     facts: list[OwnedItemFacts],
 ) -> list[OwnedItemFacts]:
-    """Queries 3 and 4 — nearest neighbours of an owned anchor item.
+    """Query 3 — nearest neighbours of an owned anchor item.
 
     There is no vector for the candidate itself: it is not owned, so nothing
     ever embedded it. The workaround is `sense_check._by_embedding`'s — anchor
     on an owned item of the same category and rank its neighbours, which
     answers "what in this category clusters together" even without a candidate
-    vector. Returns `[]` (→ structured fallback) whenever no anchor or no
-    embedding exists, which is the case on CI.
+    vector. Returns `[]` (→ structured fallback) when no current anchor exists.
 
     Only same-category items are vector-ranked; complements keep their
     structured order appended after, since a cross-category cosine distance
     would rank shoes against a coat on image features alone.
     """
-    same_category = [f for f in facts if f.category == category]
+
+    same_category = [f.item_id for f in facts if f.category == category]
     if not same_category:
         return []
+    current_vector = is_current_embedding(embedding_model_version())
     # The `ORDER BY` makes the anchor arbitrary but *stable*. Without it the
     # entire vector ranking hangs on whichever row Postgres happened to return,
     # so the same wardrobe could rank two ways — and V3-007 freezes this output
     # into an immutable snapshot, where a run-to-run difference is permanent.
     # Ordering on the id matches `rank_by_attributes`' tie-break convention.
-    anchor_vector = await session.scalar(
+    eligibility = (
+        WardrobeItem.user_id == user_id,
+        WardrobeItem.category == category,
+        WardrobeItem.status.in_(OWNED_STATUSES),
+        WardrobeItem.deleted_at.is_(None),
+        WardrobeItem.id.in_(same_category),
+        current_vector,
+    )
+    anchor = (
         select(ItemEmbedding.vector)
-        .where(ItemEmbedding.item_id.in_([f.item_id for f in same_category]))
+        .join(WardrobeItem, WardrobeItem.id == ItemEmbedding.item_id)
+        .where(*eligibility)
         .order_by(ItemEmbedding.item_id)
         .limit(1)
-    )
-    if anchor_vector is None:
-        return []
+    ).cte("purchase_anchor")
     ranked_ids = list(
         await session.scalars(
             select(WardrobeItem.id)
             .join(ItemEmbedding, ItemEmbedding.item_id == WardrobeItem.id)
-            .where(
-                WardrobeItem.user_id == user_id,
-                WardrobeItem.category == category,
-                WardrobeItem.status.in_(OWNED_STATUSES),
-                WardrobeItem.deleted_at.is_(None),
-            )
-            .order_by(ItemEmbedding.vector.op("<->")(anchor_vector))
+            .join(anchor, true())
+            .where(*eligibility)
+            .order_by(ItemEmbedding.vector.op("<->", return_type=Float())(anchor.c.vector), WardrobeItem.id)
             .limit(len(same_category))
         )
     )
