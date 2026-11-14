@@ -7,6 +7,7 @@ from app.application.cost_guard import resolve_quota_limit
 from app.application.paid_generation_admission import REASON_DAILY_BUDGET, attach, release, reserve
 from app.common.enums import CutoutStatus
 from app.common.exceptions import FriendlyException
+from app.config.embedding import embedding_model_version
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -27,7 +28,6 @@ async def prepare_item_derivatives(
     The caller holds the item lock (or is creating it). Only a single-garment
     original or a trustworthy garment crop belongs here.
     """
-    from app.bootstrap.container import embedding_model_version
 
     if item.deleted_at is not None or not (source_key or source_url):
         return

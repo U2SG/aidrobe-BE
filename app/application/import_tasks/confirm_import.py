@@ -205,6 +205,7 @@ class ConfirmImageImportTask:
                 status=ItemStatus.WEARABLE.value,
                 cover_image_url=cover_url,
                 original_image_url=original_url,
+                cutout_status=CutoutStatus.READY.value if generated_url else CutoutStatus.SKIPPED.value,
                 location=entry.location,
                 size_label=entry.size_label if entry.size_label is not None else candidate.get("size_label"),
                 fit_status=entry.fit_status or "unknown",
@@ -263,7 +264,12 @@ async def apply_confirmed_crop(
         .with_for_update()
         .execution_options(populate_existing=True)
     )
-    if item is None or item.original_image_url != original_url or item.embedding_source_version is not None:
+    if (
+        item is None
+        or item.original_image_url != original_url
+        or item.embedding_source_version is not None
+        or (item.cover_image_url != original_url and item.cutout_status != CutoutStatus.READY.value)
+    ):
         return
     await repository.add_image(
         WardrobeItemImage(

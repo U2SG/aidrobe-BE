@@ -18,7 +18,6 @@ from app.application.recommendations.generator import RecommendationGenerator
 from app.common import error_codes
 from app.common.enums import RecommendationStatus
 from app.common.exceptions import FriendlyException
-from app.common.local_time import utc_now
 from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.recommendation_repo import (
@@ -96,8 +95,7 @@ class FirstOutfitGate:
         # Only the fallback writer needs the lock. Re-read after waiting so
         # concurrent first-outfit requests and refreshes can supply the result.
         await self.repository.lock_daily_write(user_id, today)
-        wardrobe_read_at = utc_now()
-        items = await self.repository.get_wearable_items(user_id)
+        wardrobe_read_at, items = await self.repository.get_wearable_snapshot(user_id)
         missing = missing_core_slots(items)
         if missing:
             return _no_outfit([f"missing_{slot}" for slot in missing], missing_slots=missing)

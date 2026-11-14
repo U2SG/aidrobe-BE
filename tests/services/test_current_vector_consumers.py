@@ -1,6 +1,5 @@
 """Only current, model-compatible garment vectors may influence ranking."""
 
-import os
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +9,7 @@ from app.application.ports.vision import VisionResult
 from app.application.purchase.compute_similarity_evidence import _rank_by_embedding
 from app.application.purchase.wardrobe_similarity import OwnedItemFacts
 from app.application.shopping.sense_check import SenseCheck
-from app.infrastructure.persistence.models.embedding import EMBEDDING_DIM, ItemEmbedding
+from app.infrastructure.persistence.models.embedding import EMBEDDING_DIM, ItemEmbedding, pgvector_enabled
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.vision.fake_vision import FakeVision
@@ -45,7 +44,7 @@ async def test_current_model_and_source_are_shared_by_all_consumers(db_session: 
     vision = VisionResult("Shirt", "top", "white", 1.0)
     neighbours = await sense_check._find_similar(user_id, vision, "en-US")
 
-    if os.getenv("PGVECTOR_ENABLED", "false").lower() in ("1", "true", "yes"):
+    if pgvector_enabled():
         assert [candidate.item.id for candidate in replacements] == [current.id]
         assert [neighbour.item_id for neighbour in neighbours] == [current.id]
         facts = [
@@ -65,6 +64,7 @@ async def test_current_model_and_source_are_shared_by_all_consumers(db_session: 
         anchor.embedding_source_version = "v3"
         current.embedding_source_version = "v3"
         await db_session.flush()
+        assert await _rank_by_embedding(db_session, user_id, "top", facts) == []
         replacements = await find_replacement_candidates(db_session, anchor)
         neighbours = await sense_check._find_similar(user_id, vision, "en-US")
     assert {candidate.item.id for candidate in replacements} == {stale.id, wrong_model.id, current.id, historical.id}

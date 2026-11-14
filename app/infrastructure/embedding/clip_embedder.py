@@ -4,6 +4,7 @@ from typing import Any, cast
 
 import httpx
 
+from app.config.embedding import CLIP_MODEL_VERSION
 from app.config.settings import Settings
 
 
@@ -13,7 +14,7 @@ class ClipEmbedder:
     DIM = 512
     MODEL_NAME = "ViT-B-32"
     PRETRAINED = "openai"
-    model_version = "clip:ViT-B-32:openai"
+    model_version = CLIP_MODEL_VERSION
 
     def __init__(self, settings: Settings) -> None:
         self.timeout_seconds = settings.CLIP_EMBEDDING_TIMEOUT_SECONDS

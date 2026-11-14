@@ -14,17 +14,17 @@ blowing up request latency.
 
 from __future__ import annotations
 
-import os
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 import structlog
-from sqlalchemy import Float, select
+from sqlalchemy import Float, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.enums import FitStatus, ItemStatus
-from app.infrastructure.persistence.models.embedding import ItemEmbedding, is_current_embedding
+from app.config.embedding import embedding_model_version
+from app.infrastructure.persistence.models.embedding import ItemEmbedding, is_current_embedding, pgvector_enabled
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 logger = structlog.get_logger(__name__)
@@ -38,12 +38,6 @@ SIMILARITY_CATEGORY = 0.6
 class ReplacementCandidate:
     item: WardrobeItem
     similarity: float
-
-
-def _pgvector_enabled() -> bool:
-    """Same convention as `models.embedding._USE_VECTOR` — read directly so
-    we don't carry a private import surface."""
-    return os.getenv("PGVECTOR_ENABLED", "false").lower() in ("1", "true", "yes")
 
 
 async def find_replacements(
@@ -63,7 +57,7 @@ async def find_replacements(
 
     # Tier 1: embedding similarity — only when pgvector is enabled (test env
     # falls back to JSONB storage, similarity ORDER BY <-> would error).
-    if _pgvector_enabled():
+    if pgvector_enabled():
         candidates = await _by_embedding(session, item, exclude, k)
         if candidates:
             return candidates
@@ -112,7 +106,7 @@ async def find_replacement_candidates(
         return []
     exclude = {item.id, *exclude_ids}
 
-    if _pgvector_enabled():
+    if pgvector_enabled():
         candidates = await _candidates_by_embedding(session, item, exclude, k)
         if candidates:
             return candidates
@@ -135,23 +129,26 @@ async def _candidates_by_embedding(
     exclude: set[uuid.UUID],
     k: int,
 ) -> list[ReplacementCandidate]:
-    from app.bootstrap.container import embedding_model_version
 
-    model_version = embedding_model_version()
-    current_vector = is_current_embedding(model_version)
-    src_vector = await session.scalar(
+    current_vector = is_current_embedding(embedding_model_version())
+    anchor = (
         select(ItemEmbedding.vector)
         .join(WardrobeItem, WardrobeItem.id == ItemEmbedding.item_id)
-        .where(WardrobeItem.id == item.id, current_vector)
-    )
-    if src_vector is None:
-        return []
+        .where(
+            WardrobeItem.id == item.id,
+            WardrobeItem.user_id == item.user_id,
+            WardrobeItem.deleted_at.is_(None),
+            current_vector,
+        )
+    ).cte("replacement_anchor")
     stmt = (
         select(
             WardrobeItem,
-            ItemEmbedding.vector.op("<->", return_type=Float())(src_vector).label("dist"),
+            ItemEmbedding.vector.op("<->", return_type=Float())(anchor.c.vector).label("dist"),
         )
+        .select_from(WardrobeItem)
         .join(ItemEmbedding, ItemEmbedding.item_id == WardrobeItem.id)
+        .join(anchor, true())
         .where(
             WardrobeItem.user_id == item.user_id,
             WardrobeItem.category == item.category,

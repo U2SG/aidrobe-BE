@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import cast
 
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -31,16 +31,37 @@ class SqlAlchemyRecommendationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    @staticmethod
+    def _wearable_filter(user_id: uuid.UUID) -> ColumnElement[bool]:
+        return and_(
+            WardrobeItem.user_id == user_id,
+            WardrobeItem.status == ItemStatus.WEARABLE.value,
+            WardrobeItem.fit_status != "no_longer_fits",
+            WardrobeItem.deleted_at.is_(None),
+        )
+
     async def get_wearable_items(self, user_id: uuid.UUID) -> list[WardrobeItem]:
         result = await self.session.scalars(
-            select(WardrobeItem).where(
-                WardrobeItem.user_id == user_id,
-                WardrobeItem.status == ItemStatus.WEARABLE.value,
-                WardrobeItem.fit_status != "no_longer_fits",
-                WardrobeItem.deleted_at.is_(None),
-            ).execution_options(populate_existing=True)
+            select(WardrobeItem)
+            .where(self._wearable_filter(user_id))
+            .execution_options(populate_existing=True)
         )
         return list(result)
+
+    async def get_wearable_snapshot(self, user_id: uuid.UUID) -> tuple[datetime, list[WardrobeItem]]:
+        # Use the statement's database timestamp to order snapshots across
+        # workers. The left join returns the timestamp even for an empty wardrobe.
+        clock = select(func.statement_timestamp().label("read_at")).subquery()
+        rows = (
+            await self.session.execute(
+                select(clock.c.read_at, WardrobeItem)
+                .select_from(clock)
+                .outerjoin(WardrobeItem, self._wearable_filter(user_id))
+                .execution_options(populate_existing=True)
+            )
+        ).all()
+        read_at: datetime = rows[0][0]
+        return read_at, [item for _, item in rows if item is not None]
 
     async def list_forgotten_wearable_items(
         self, user_id: uuid.UUID, cutoff: date, limit: int = 20

@@ -18,11 +18,8 @@ from app.application.ports.static_tryon import StaticTryOnPort
 from app.application.ports.sts_token import StsTokenPort
 from app.application.ports.visual_quality_gate import VisualQualityGatePort
 from app.application.ports.weather import WeatherPort
-from app.config.settings import Settings, get_settings
+from app.config.settings import get_settings
 from app.infrastructure.cache.client import get_redis_client
-from app.infrastructure.embedding.clip_embedder import ClipEmbedder
-from app.infrastructure.embedding.fake_embedding import FakeEmbedding
-from app.infrastructure.embedding.remote_clip_embedding import RemoteClipEmbedding
 from app.infrastructure.importers.router import RoutedLinkParser
 from app.infrastructure.persistence.repositories.user_repo import SqlAlchemyUserRepository
 from app.infrastructure.push.apns_provider import ApnsProvider
@@ -253,28 +250,19 @@ def llm_service() -> LlmPort:
     raise ValueError(f"Unsupported LLM provider: {settings.LLM_PROVIDER}")
 
 
-def embedding_model_version() -> str:
-    return _embedding_provider(get_settings()).model_version
-
-
-def _embedding_provider(settings: Settings) -> type[FakeEmbedding | ClipEmbedder | RemoteClipEmbedding]:
-    if settings.EMBEDDING_PROVIDER == "fake":
-        return FakeEmbedding
-    if settings.EMBEDDING_PROVIDER in {"clip", "open_clip"}:
-        return ClipEmbedder
-    if settings.EMBEDDING_PROVIDER == "remote_clip":
-        return RemoteClipEmbedding
-    raise ValueError(f"Unsupported embedding provider: {settings.EMBEDDING_PROVIDER}")
-
-
 def embedding_service() -> EmbeddingPort:
+    from app.infrastructure.embedding.clip_embedder import ClipEmbedder
+    from app.infrastructure.embedding.fake_embedding import FakeEmbedding
+    from app.infrastructure.embedding.remote_clip_embedding import RemoteClipEmbedding
+
     settings = get_settings()
-    provider = _embedding_provider(settings)
-    if provider is FakeEmbedding:
+    if settings.EMBEDDING_PROVIDER == "fake":
         return FakeEmbedding()
-    if provider is ClipEmbedder:
+    if settings.EMBEDDING_PROVIDER in {"clip", "open_clip"}:
         return ClipEmbedder(settings)
-    return RemoteClipEmbedding(settings)
+    if settings.EMBEDDING_PROVIDER == "remote_clip":
+        return RemoteClipEmbedding(settings)
+    raise ValueError(f"Unsupported embedding provider: {settings.EMBEDDING_PROVIDER}")
 
 
 def push_provider() -> ApnsProvider:

@@ -17,7 +17,6 @@ call; the requirement is determinism under the fake vision provider.
 
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -34,9 +33,10 @@ from app.common.exceptions import FriendlyException
 from app.common.i18n import I18nMessage, make_message
 from app.common.item_labels import localized_item_name
 from app.common.locale import resolve_locale
+from app.config.embedding import embedding_model_version
 from app.config.settings import get_settings
 from app.infrastructure.importers.link_parser import _is_safe_url
-from app.infrastructure.persistence.models.embedding import ItemEmbedding, is_current_embedding
+from app.infrastructure.persistence.models.embedding import ItemEmbedding, is_current_embedding, pgvector_enabled
 from app.infrastructure.persistence.models.shopping import ShoppingSenseCheck
 from app.infrastructure.persistence.models.user import UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -71,10 +71,6 @@ _CORE_CATEGORIES = {
     Category.OUTERWEAR.value,
 }
 _MAX_OUTFIT_SAMPLES = 2
-
-
-def _pgvector_enabled() -> bool:
-    return os.getenv("PGVECTOR_ENABLED", "false").lower() in ("1", "true", "yes")
 
 
 @dataclass
@@ -209,7 +205,7 @@ class SenseCheck:
         the JSONB-stored vector can't be ORDER BY <-> ranked). Otherwise the
         category/color heuristic, which is the deterministic CI path."""
         k = 5
-        if _pgvector_enabled():
+        if pgvector_enabled():
             embedded = await self._by_embedding(user_id, candidate, k, locale)
             if embedded:
                 return embedded
@@ -223,41 +219,31 @@ class SenseCheck:
         unowned candidate, so we anchor on any wearable item of the same
         category+color and rank its neighbours — degrades to empty (→ fallback)
         when no anchor/embeddings exist."""
-        from app.bootstrap.container import embedding_model_version
 
         current_vector = is_current_embedding(embedding_model_version())
+        eligible = (
+            WardrobeItem.user_id == user_id,
+            WardrobeItem.category == candidate.category,
+            WardrobeItem.status == ItemStatus.WEARABLE.value,
+            WardrobeItem.deleted_at.is_(None),
+            current_vector,
+        )
         anchor = (
-            await self.session.execute(
-                select(WardrobeItem.id, ItemEmbedding.vector)
-                .join(ItemEmbedding, ItemEmbedding.item_id == WardrobeItem.id)
-                .where(
-                    WardrobeItem.user_id == user_id,
-                    WardrobeItem.category == candidate.category,
-                    WardrobeItem.status == ItemStatus.WEARABLE.value,
-                    WardrobeItem.deleted_at.is_(None),
-                    current_vector,
-                )
-                .order_by((WardrobeItem.color_main == candidate.color_main).desc(), WardrobeItem.id)
-                .limit(1)
-            )
-        ).one_or_none()
-        if anchor is None:
-            return []
-        anchor_id, anchor_vec = anchor
+            select(WardrobeItem.id, ItemEmbedding.vector)
+            .join(ItemEmbedding, ItemEmbedding.item_id == WardrobeItem.id)
+            .where(*eligible)
+            .order_by((WardrobeItem.color_main == candidate.color_main).desc(), WardrobeItem.id)
+            .limit(1)
+        ).cte("sense_check_anchor")
         stmt = (
             select(
                 WardrobeItem,
-                ItemEmbedding.vector.op("<->", return_type=Float())(anchor_vec).label("dist"),
+                ItemEmbedding.vector.op("<->", return_type=Float())(anchor.c.vector).label("dist"),
             )
+            .select_from(WardrobeItem)
             .join(ItemEmbedding, ItemEmbedding.item_id == WardrobeItem.id)
-            .where(
-                WardrobeItem.user_id == user_id,
-                WardrobeItem.category == candidate.category,
-                WardrobeItem.status == ItemStatus.WEARABLE.value,
-                WardrobeItem.deleted_at.is_(None),
-                WardrobeItem.id != anchor_id,
-                current_vector,
-            )
+            .join(anchor, WardrobeItem.id != anchor.c.id)
+            .where(*eligible)
             .order_by("dist", WardrobeItem.id)
             .limit(k)
         )

@@ -66,6 +66,9 @@ jobs:
           uv run pytest -q \
             tests/api/test_import_tasks.py tests/api/test_import_confirm.py tests/api/test_receipt_import.py \
             tests/api/test_first_outfit_gate.py tests/api/test_wardrobe.py tests/api/test_link_router.py \
+            tests/api/test_sense_check.py tests/api/test_v3_avatar_candidate_nonblocking.py \
+            tests/api/test_wear_history_endpoint.py tests/unit/test_v3_outfit_composition.py \
+            tests/unit/test_v3_similarity_query_count.py tests/services/test_v3_similarity_evidence.py \
             tests/services/test_import_worker.py tests/services/test_cutout_worker.py \
             tests/services/test_embedding_worker.py tests/services/test_recommendation_recompute_worker.py \
             tests/services/test_v3_paid_generation_admission.py tests/services/test_current_vector_consumers.py \

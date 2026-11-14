@@ -3,6 +3,7 @@
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -81,6 +82,7 @@ async def _seed_outfit_with_item(
     await session.flush()
     return outfit.id
 
+@pytest.mark.usefixtures("import_api_environment")
 async def test_wear_history_empty(db_session: AsyncSession) -> None:
     user_id = uuid.uuid4()
     app = build_wardrobe_app(db_session)
@@ -164,6 +166,7 @@ async def test_wear_history_respects_days_param(db_session: AsyncSession) -> Non
     assert len(resp_200.json()["data"]["entries"]) == 1
 
 
+@pytest.mark.usefixtures("import_api_environment")
 async def test_wear_history_404_for_other_user_item(db_session: AsyncSession) -> None:
     owner_id = uuid.uuid4()
     other_id = uuid.uuid4()

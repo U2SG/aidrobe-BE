@@ -54,6 +54,10 @@ def is_current_embedding(model_version: str) -> ColumnElement[bool]:
     )
 
 
+def pgvector_enabled() -> bool:
+    return _USE_VECTOR
+
+
 def _maybe_create_vector_extension(*args: Any, **kw: Any) -> None:
     if not _USE_VECTOR:
         return

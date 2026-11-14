@@ -474,6 +474,8 @@ async def test_import_crop_first_outfit_pipeline(
     from httpx import ASGITransport, AsyncClient
 
     from app.config.settings import Settings
+    from app.application.import_tasks import prepare_derivatives
+    from app.infrastructure.persistence.models.paid_generation import PaidGenerationReservation
     from app.infrastructure.persistence.models.wardrobe import WardrobeItemImage
     from app.infrastructure.persistence.session import get_db_session
     from app.infrastructure.vision.fake_vision import FakeVision
@@ -496,6 +498,7 @@ async def test_import_crop_first_outfit_pipeline(
     vision = Vision()
     monkeypatch.setattr(import_worker, "vision_service", lambda: vision)
     monkeypatch.setattr(import_tasks, "get_settings", lambda: Settings(ENABLE_IMPORT_ASYNC_JOBS=True))
+    monkeypatch.setattr(prepare_derivatives, "get_settings", lambda: Settings(ENABLE_ITEM_CUTOUT=True))
 
     app = FastAPI()
 
@@ -533,6 +536,11 @@ async def test_import_crop_first_outfit_pipeline(
         assert replay.json()["data"]["created_items"][0]["item_id"] == first_item
         result = await client.get("/v1/recommendations/first-outfit", headers=headers)
         assert result.json()["data"]["state"] == "no_outfit"
+        async with patched_session_factory() as session:
+            queued = await session.scalar(
+                select(AsyncJob).where(AsyncJob.target_id == uuid.UUID(first_item), AsyncJob.job_type == "cutout")
+            )
+            assert queued is None
 
         load = garment_crops.load_source_bytes
         crop_calls = 0
@@ -588,6 +596,18 @@ async def test_import_crop_first_outfit_pipeline(
         )
         assert len(embeds) == 3
         assert {job.target_id for job in embeds} == set(ids)
+        cutout_jobs = list(
+            await session.scalars(select(AsyncJob).where(AsyncJob.job_type == "cutout", AsyncJob.user_id == user_id))
+        )
+        assert len(cutout_jobs) == 3 and {job.target_id for job in cutout_jobs} == set(ids)
+        held = list(await session.scalars(
+            select(PaidGenerationReservation).where(
+                PaidGenerationReservation.user_id == user_id,
+                PaidGenerationReservation.job_type == "cutout",
+            )
+        ))
+        assert len(held) == 3 and {reservation.job_id for reservation in held} == {job.id for job in cutout_jobs}
+        assert all(reservation.target_id is None for reservation in held)
     assert vision.calls == 1 and crop_calls == 4
 
     output_dir = Path(os.environ.get("IMPORT_PIPELINE_EVIDENCE_DIR", tmp_path))
@@ -598,6 +618,7 @@ async def test_import_crop_first_outfit_pipeline(
                 "input": "synthetic 300x600 photo, three boxed garments",
                 "recognition_calls": vision.calls,
                 "crop_attempts": crop_calls,
+                "cutout_reservations": len(held),
                 "pending_after_first_confirmation": True,
                 "confirmed_mapping": mapping,
                 "first_outfit_state": outfit["state"],

@@ -105,8 +105,7 @@ class RecommendationGenerator:
                 return existing
 
         if wardrobe_snapshot is None:
-            wardrobe_read_at = utc_now()
-            items = await self.repository.get_wearable_items(user_id)
+            wardrobe_read_at, items = await self.repository.get_wearable_snapshot(user_id)
         else:
             wardrobe_read_at, items = wardrobe_snapshot
         recent = await self.repository.recent_worn_main_item_ids(user_id, target_date)
