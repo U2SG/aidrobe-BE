@@ -187,7 +187,9 @@ class ConfirmImageImportTask:
         cover_url = generated_url or crop_url or original_url
         cover_key = None if generated_url else (crop_key if crop_url else original_key)
         ai_title = candidate.get("display_name") or candidate.get("title")
-        uses_ai_name = entry.title.strip() == str(ai_title or "").strip() and entry.category == candidate.get("category")
+        uses_ai_name = (
+            entry.title.strip() == str(ai_title or "").strip() and entry.category == candidate.get("category")
+        )
         canonical_name = candidate.get("canonical_name")
         localized_names = candidate.get("localized_names")
 

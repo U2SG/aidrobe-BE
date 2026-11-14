@@ -551,7 +551,8 @@ async def test_import_crop_first_outfit_pipeline(
             await session.commit()
 
         remaining = await client.post(
-            f"{path}/confirm-items", headers=headers, json={"items": [entry(candidate) for candidate in candidates[1:]]},
+            f"{path}/confirm-items", headers=headers,
+            json={"items": [entry(candidate) for candidate in candidates[1:]]},
         )
         assert remaining.json()["data"]["task_status"] == "completed"
         assert await garment_crops.drain_garment_crop_jobs(ctx=None) == 1

@@ -18,7 +18,6 @@ from app.infrastructure.workers.import_worker import IMPORT_JOB_TYPE
 from app.presentation.api.v1.routers import import_tasks as import_tasks_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
 
-
 pytestmark = pytest.mark.usefixtures("import_api_environment")
 
 

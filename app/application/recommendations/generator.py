@@ -31,6 +31,7 @@ from app.application.style.build_style_profile import build_style_profile
 from app.common.enums import (
     OutfitType,
     RecommendationEventType,
+    RecommendationGenerationSource,
     RecommendationStatus,
     TimeSensitivity,
 )
@@ -82,6 +83,7 @@ class RecommendationGenerator:
         refresh: bool = False,
         context_constraints: list[str] | None = None,
         preserve_refresh_after: datetime | None = None,
+        wardrobe_snapshot: tuple[datetime, list[WardrobeItem]] | None = None,
     ) -> DailyRecommendation:
         """`refresh=True` archives the current daily as `is_current=False`
         and writes a new revision. Engagement on the old revision (wear /
@@ -102,14 +104,18 @@ class RecommendationGenerator:
                 )
                 return existing
 
-        items = await self.repository.get_wearable_items(user_id)
+        if wardrobe_snapshot is None:
+            wardrobe_read_at = utc_now()
+            items = await self.repository.get_wearable_items(user_id)
+        else:
+            wardrobe_read_at, items = wardrobe_snapshot
         recent = await self.repository.recent_worn_main_item_ids(user_id, target_date)
         settings = get_settings()
         user_settings = await self.repository.session.scalar(
             select(UserSettings).where(UserSettings.user_id == user_id)
         )
         relationship_repository = SqlAlchemyWardrobeRelationshipRepository(self.repository.session)
-        if settings.ENABLE_WARDROBE_GRAPH:
+        if settings.ENABLE_WARDROBE_GRAPH and wardrobe_snapshot is None:
             # Rule-based edges are 100% derived from current item metadata (no
             # user data, no rollback concern), so the "persist regardless of
             # flag" convention does not apply — gating keeps the O(n^2) upsert
@@ -145,7 +151,7 @@ class RecommendationGenerator:
         # WeatherInfo has no source observation time, so persist when the
         # provider/cache boundary returned the facts used by this generation.
         weather_resolved_at = datetime.now(UTC) if weather is not None else None
-        fit_profile = await self._load_fit_profile(user_id)
+        fit_profile = await self._load_fit_profile(user_id, user_settings)
         # BE#82 — infer indoor-climate tendency (flag-gated; None → legacy ranking).
         indoor_climate = (
             await self._load_indoor_climate(
@@ -234,11 +240,21 @@ class RecommendationGenerator:
         pending_daily = daily
         should_write_outfits = True
         if refresh:
-            daily = await self.repository.archive_current_and_revise(daily)
+            daily = await self.repository.archive_current_and_revise(
+                daily,
+                preserve_refresh_after=preserve_refresh_after,
+                wardrobe_read_at=(
+                    None
+                    if generation_source == RecommendationGenerationSource.REFRESH.value
+                    else wardrobe_read_at
+                ),
+            )
+            should_write_outfits = daily is pending_daily
         else:
             daily, should_write_outfits = await self.repository.replace_daily(
                 daily,
-                preserve_refresh_after=preserve_refresh_after,
+                preserve_refresh_after=preserve_refresh_after or wardrobe_read_at,
+                wardrobe_read_at=wardrobe_read_at,
             )
 
         if not should_write_outfits:
@@ -360,6 +376,7 @@ class RecommendationGenerator:
             llm_model=llm_model,
             deterministic_seed=None,
         )
+        trace_payload["context"]["wardrobe_read_at"] = wardrobe_read_at.isoformat()
         trace = existing_trace or RecommendationTrace(
             id=trace_id,
             daily_recommendation_id=daily.id,
@@ -533,19 +550,14 @@ class RecommendationGenerator:
             logger.warning("style_profile_load_failed", user_id=str(user_id), error=str(exc))
             return {}
 
-    async def _load_fit_profile(self, user_id: uuid.UUID) -> dict[str, Any]:
+    async def _load_fit_profile(self, user_id: uuid.UUID, settings: UserSettings | None) -> dict[str, Any]:
+        if settings is not None and isinstance(settings.preferences_json, dict):
+            fit_profile = settings.preferences_json.get("fit_profile")
+            if isinstance(fit_profile, dict):
+                return fit_profile
         try:
-            from app.infrastructure.persistence.session import AsyncSessionLocal
-
-            async with AsyncSessionLocal() as session:
-                settings = await session.scalar(
-                    select(UserSettings).where(UserSettings.user_id == user_id)
-                )
-                if settings is not None and isinstance(settings.preferences_json, dict):
-                    fit_profile = settings.preferences_json.get("fit_profile")
-                    if isinstance(fit_profile, dict):
-                        return fit_profile
-                return await build_fit_profile(session, user_id, persist=False)
+            async with self.repository.session.begin_nested():
+                return await build_fit_profile(self.repository.session, user_id, persist=False)
         except Exception as exc:
             logger.warning("fit_profile_load_failed", user_id=str(user_id), error=str(exc))
             return {}

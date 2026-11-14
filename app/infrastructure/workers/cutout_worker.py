@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime
+from time import monotonic
 from typing import Any
 
 import structlog
@@ -203,15 +204,14 @@ async def _process_one(job: AsyncJob) -> None:
 async def drain_cutout_jobs(ctx: object) -> int:
     """Drain only as many jobs as can fit in the arq deadline."""
     settings = get_settings()
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + settings.ARQ_JOB_TIMEOUT_SECONDS - 5
+    deadline = monotonic() + settings.ARQ_JOB_TIMEOUT_SECONDS - 5
     attempt_budget = min(
         settings.IMAGE_CUTOUT_TIMEOUT_SECONDS + settings.VISION_TIMEOUT_SECONDS + 35,
         settings.ARQ_JOB_TIMEOUT_SECONDS - 10,
     )
     processed = 0
     for _ in range(MAX_DRAIN_PER_TICK):
-        if deadline - loop.time() < attempt_budget or attempt_budget <= 0:
+        if deadline - monotonic() < attempt_budget or attempt_budget <= 0:
             break
         async with AsyncSessionLocal() as session:
             job = await claim_one(session, [JOB_TYPE])

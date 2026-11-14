@@ -153,7 +153,10 @@ async def _process_one(job: AsyncJob) -> None:
                 await session.execute(
                     insert_vector.on_conflict_do_update(
                         index_elements=[ItemEmbedding.item_id, ItemEmbedding.model_name],
-                        set_={"source_version": source_version, "vector": vector},
+                        set_={
+                            "source_version": insert_vector.excluded.source_version,
+                            "vector": insert_vector.excluded.vector,
+                        },
                     )
                 )
             await session.commit()

@@ -13,7 +13,6 @@ from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.routers import import_tasks as import_tasks_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
 
-
 pytestmark = pytest.mark.usefixtures("import_api_environment")
 
 

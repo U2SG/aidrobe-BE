@@ -640,7 +640,9 @@ async def test_get_unknown_candidate_is_not_found(
 class _UnreachableVision(FakeVision):
     """A real provider whose image or API host cannot be reached."""
 
-    async def analyze_image(self, image_url: str, locale: str = "zh-CN") -> VisionResult:
+    async def analyze_image(
+        self, image_url: str, locale: str = "zh-CN", *, source_key: str | None = None
+    ) -> VisionResult:
         import httpx
 
         raise httpx.ConnectError("All connection attempts failed")

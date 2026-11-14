@@ -446,6 +446,7 @@ async def test_load_snapshot_image_raises_for_unreadable_object_without_fallback
             _FailingStorage(),
             object_key="users/u/items/i/cutout.png",
             fallback_url=None,
+            user_id=uuid.uuid4(),
         )
 
 
@@ -455,7 +456,12 @@ async def test_load_snapshot_image_reads_own_bucket_url_from_storage(monkeypatch
     # as placeholders. Our own bucket is read by key instead.
     from app.config.settings import Settings
 
-    monkeypatch.setattr(outfit_board_worker, "get_settings", lambda: Settings(S3_BUCKET="aidrobe"))
+    user_id = uuid.uuid4()
+    monkeypatch.setattr(
+        outfit_board_worker,
+        "get_settings",
+        lambda: Settings(STORAGE_PROVIDER="s3", S3_BUCKET="aidrobe", S3_ENDPOINT_URL="http://localhost:9000"),
+    )
     png = io.BytesIO()
     Image.new("RGBA", (4, 4), (255, 0, 0, 255)).save(png, format="PNG")
     reads: list[str] = []
@@ -470,11 +476,14 @@ async def test_load_snapshot_image_reads_own_bucket_url_from_storage(monkeypatch
 
     monkeypatch.setattr(outfit_board_worker, "_download_image", _no_download)
     image = await outfit_board_worker._load_snapshot_image(
-        _Storage(), object_key=None, fallback_url="http://localhost:9000/aidrobe/users/u/wardrobe/x/top.jpg"
+        _Storage(),
+        object_key=None,
+        fallback_url=f"http://localhost:9000/aidrobe/users/{user_id}/wardrobe/x/top.jpg",
+        user_id=user_id,
     )
 
     assert image is not None
-    assert reads == ["users/u/wardrobe/x/top.jpg"]
+    assert reads == [f"users/{user_id}/wardrobe/x/top.jpg"]
 
 
 def test_used_slots_are_centred_as_a_group() -> None:

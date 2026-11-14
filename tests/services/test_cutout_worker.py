@@ -504,3 +504,57 @@ async def test_late_cutout_attempt_cannot_overwrite_current_object(
         assert item.cover_image_url == f"https://fake-storage/{winning_key}"
         assert files[winning_key] == b"current"
         assert files[f"users/{user_id}/items/{item_id}/cutout/{job_id}/1.png"] == b"old"
+
+
+async def test_cutout_drain_keeps_remaining_jobs_unclaimed_when_budget_is_short(
+    patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_render_deps(monkeypatch)
+    settings = get_settings().model_copy(update={
+        "ARQ_JOB_TIMEOUT_SECONDS": 300, "IMAGE_CUTOUT_TIMEOUT_SECONDS": 180, "VISION_TIMEOUT_SECONDS": 10,
+    })
+    monkeypatch.setattr(cutout_worker, "get_settings", lambda: settings)
+    clock = iter([0.0, 0.0, 75.0])
+    monkeypatch.setattr(cutout_worker, "monotonic", lambda: next(clock))
+    seeded = [await _seed_item(patched_session_factory) for _ in range(2)]
+    async with patched_session_factory() as s:
+        for user_id, item_id in seeded:
+            await enqueue_item_cutout(
+                s, item_id=item_id, user_id=user_id, source_url="https://x/original.jpg", category="top"
+            )
+        await s.commit()
+    assert await drain_cutout_jobs(ctx=None) == 1
+    async with patched_session_factory() as s:
+        jobs = (await s.scalars(select(AsyncJob).where(AsyncJob.job_type == JOB_TYPE))).all()
+        assert sorted((job.status, job.attempts) for job in jobs) == [("queued", 0), ("succeeded", 1)]
+
+
+async def test_cancelled_cutout_claim_requeues_with_backoff(
+    patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id, item_id = await _seed_item(patched_session_factory)
+    started = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def blocking_provider(job: AsyncJob) -> None:
+        started.set()
+        await blocked.wait()
+
+    monkeypatch.setattr(cutout_worker, "_process_one", blocking_provider)
+    async with patched_session_factory() as s:
+        job, _ = await enqueue_item_cutout(
+            s, item_id=item_id, user_id=user_id, source_url="https://x/original.jpg", category="top"
+        )
+        await s.commit()
+        job_id = job.id
+
+    drain = asyncio.create_task(drain_cutout_jobs(ctx=None))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    drain.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await drain
+    async with patched_session_factory() as s:
+        finalized = await s.get(AsyncJob, job_id)
+        assert finalized is not None and finalized.status == "queued" and finalized.attempts == 1
+        assert finalized.lease_expires_at is None
+        assert finalized.next_run_at > datetime.now(UTC)

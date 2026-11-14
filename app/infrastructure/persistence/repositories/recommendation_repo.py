@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.common.enums import ItemStatus, RecommendationEventType, RecommendationGenerationSource
-from app.common.local_time import local_datetime
+from app.common.local_time import local_datetime, utc_now
 from app.infrastructure.persistence.models.operation_log import OperationLog
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
@@ -24,6 +24,8 @@ from app.infrastructure.persistence.models.recommendation import (
 from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
+FIRST_OUTFIT_GENERATION_SOURCE = "first_outfit_gate"
+
 
 class SqlAlchemyRecommendationRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -36,7 +38,7 @@ class SqlAlchemyRecommendationRepository:
                 WardrobeItem.status == ItemStatus.WEARABLE.value,
                 WardrobeItem.fit_status != "no_longer_fits",
                 WardrobeItem.deleted_at.is_(None),
-            )
+            ).execution_options(populate_existing=True)
         )
         return list(result)
 
@@ -100,6 +102,7 @@ class SqlAlchemyRecommendationRepository:
                     selectinload(DailyRecommendation.outfits).selectinload(Outfit.items),
                     selectinload(DailyRecommendation.trace),
                 )
+                .execution_options(populate_existing=True)
                 .where(
                     DailyRecommendation.user_id == user_id,
                     DailyRecommendation.recommendation_date == recommendation_date,
@@ -159,8 +162,9 @@ class SqlAlchemyRecommendationRepository:
                     not_(
                         and_(
                             DailyRecommendation.revision > 1,
-                            DailyRecommendation.generation_source
-                            == RecommendationGenerationSource.READ_TIME.value,
+                            DailyRecommendation.generation_source.in_(
+                                (RecommendationGenerationSource.READ_TIME.value, FIRST_OUTFIT_GENERATION_SOURCE)
+                            ),
                         )
                     ),
                 )
@@ -168,7 +172,13 @@ class SqlAlchemyRecommendationRepository:
             or 0,
         )
 
-    async def archive_current_and_revise(self, daily: DailyRecommendation) -> DailyRecommendation:
+    async def archive_current_and_revise(
+        self,
+        daily: DailyRecommendation,
+        *,
+        preserve_refresh_after: datetime | None = None,
+        wardrobe_read_at: datetime | None = None,
+    ) -> DailyRecommendation:
         """Phase D3 — refresh path. Flips the current row to is_current=False
         (engagement, wear_history, feedback all stay attached to the OLD
         outfit_ids — that's the whole point of versioning), then inserts a
@@ -188,7 +198,13 @@ class SqlAlchemyRecommendationRepository:
         of row existence."""
         from sqlalchemy import func
 
-        await self._lock_daily_write(daily.user_id, daily.recommendation_date)
+        await self.lock_daily_write(daily.user_id, daily.recommendation_date)
+        if preserve_refresh_after is not None or wardrobe_read_at is not None:
+            existing = await self.get_daily(daily.user_id, daily.recommendation_date)
+            if existing and self.daily_supersedes_generation(
+                existing, preserve_refresh_after=preserve_refresh_after, wardrobe_read_at=wardrobe_read_at
+            ):
+                return existing
 
         # Under the lock now: serialize UPDATE → INSERT.
         await self.session.execute(
@@ -211,6 +227,7 @@ class SqlAlchemyRecommendationRepository:
         )
         daily.revision = max_rev + 1
         daily.is_current = True
+        daily.updated_at = utc_now()
         self.session.add(daily)
         await self.session.flush()
         return daily
@@ -238,6 +255,7 @@ class SqlAlchemyRecommendationRepository:
         daily: DailyRecommendation,
         *,
         preserve_refresh_after: datetime | None = None,
+        wardrobe_read_at: datetime | None = None,
     ) -> tuple[DailyRecommendation, bool]:
         """Replace an unengaged daily and report whether outfits should be written.
 
@@ -245,19 +263,13 @@ class SqlAlchemyRecommendationRepository:
         an older background job from overwriting a user refresh that committed
         while the job was generating outside the lock.
         """
-        await self._lock_daily_write(daily.user_id, daily.recommendation_date)
+        await self.lock_daily_write(daily.user_id, daily.recommendation_date)
         existing = await self.get_daily(daily.user_id, daily.recommendation_date)
         if existing is not None:
-            if (
-                preserve_refresh_after is not None
-                and existing.generation_source == "refresh"
-                and existing.updated_at is not None
+            if self.daily_supersedes_generation(
+                existing, preserve_refresh_after=preserve_refresh_after, wardrobe_read_at=wardrobe_read_at
             ):
-                updated_at = existing.updated_at
-                if updated_at.tzinfo is None:
-                    updated_at = updated_at.replace(tzinfo=UTC)
-                if updated_at >= preserve_refresh_after:
-                    return existing, False
+                return existing, False
             if await self.daily_has_engagement(existing.id):
                 return existing, False
             await self.session.execute(delete(Outfit).where(Outfit.daily_recommendation_id == existing.id))
@@ -265,13 +277,38 @@ class SqlAlchemyRecommendationRepository:
             existing.generation_source = daily.generation_source
             existing.score_breakdown = daily.score_breakdown
             existing.context_json = daily.context_json
+            existing.updated_at = utc_now()
             await self.session.flush()
             return existing, True
+        daily.updated_at = utc_now()
         self.session.add(daily)
         await self.session.flush()
         return daily, True
 
-    async def _lock_daily_write(
+    @staticmethod
+    def daily_supersedes_generation(
+        existing: DailyRecommendation,
+        *,
+        preserve_refresh_after: datetime | None = None,
+        wardrobe_read_at: datetime | None = None,
+    ) -> bool:
+        if existing.generation_source == RecommendationGenerationSource.REFRESH.value:
+            updated_at = existing.updated_at
+            if updated_at is not None and preserve_refresh_after is not None:
+                return (updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=UTC)) >= preserve_refresh_after
+        if wardrobe_read_at is None or existing.trace is None:
+            return False
+        context = existing.trace.payload.get("context", {})
+        value = context.get("wardrobe_read_at") if isinstance(context, dict) else None
+        if not isinstance(value, str):
+            return False
+        try:
+            existing_read_at = datetime.fromisoformat(value)
+        except ValueError:
+            return False
+        return existing_read_at.tzinfo is not None and existing_read_at >= wardrobe_read_at
+
+    async def lock_daily_write(
         self, user_id: uuid.UUID, recommendation_date: date
     ) -> None:
         # Refresh and background replacement share one lock namespace so their

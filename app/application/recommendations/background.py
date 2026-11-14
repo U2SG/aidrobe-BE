@@ -118,24 +118,17 @@ class RecommendationBackgroundService:
         timezone = await self.repository.get_user_timezone(user_id)
         today = local_datetime(now, timezone, get_settings().DEFAULT_TIMEZONE).date()
         existing = await self.repository.get_daily(user_id, today)
-        if (
-            existing
-            and existing.generation_source == "refresh"
-            and existing.updated_at
-            and requested_at is not None
+        if existing and self.repository.daily_supersedes_generation(
+            existing, preserve_refresh_after=requested_at
         ):
-            updated_at = existing.updated_at
-            if updated_at.tzinfo is None:
-                updated_at = updated_at.replace(tzinfo=UTC)
-            if updated_at >= requested_at:
-                logger.info(
-                    "recommendation_recompute_skipped",
-                    reason="superseded_by_newer_daily",
-                    user_id=str(user_id),
-                    recommendation_id=str(existing.id),
-                    revision=existing.revision,
-                )
-                return False
+            logger.info(
+                "recommendation_recompute_skipped",
+                reason="superseded_by_newer_daily",
+                user_id=str(user_id),
+                recommendation_id=str(existing.id),
+                revision=existing.revision,
+            )
+            return False
         if existing and await self.repository.daily_has_engagement(existing.id):
             # Engagement (feedback / favorite / wear) pins today's outfits: an
             # in-place recompute would cascade-delete those records. But if an
@@ -156,6 +149,7 @@ class RecommendationBackgroundService:
                     today,
                     RecommendationGenerationSource.READ_TIME.value,
                     refresh=True,
+                    preserve_refresh_after=requested_at or now,
                 )
                 logger.info(
                     "recommendation_revised_for_unwearable_item",

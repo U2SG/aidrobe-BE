@@ -223,7 +223,11 @@ async def _recognize(
             if not result.title.strip():
                 raise NoGarmentsDetected
             candidates: list[dict[str, Any]] = [
-                {**adapter.to_candidate_payload(result, url), "temp_item_id": SINGLE_CANDIDATE_ID, "should_import": True}
+                {
+                    **adapter.to_candidate_payload(result, url),
+                    "temp_item_id": SINGLE_CANDIDATE_ID,
+                    "should_import": True,
+                }
             ]
         else:
             vision = vision_service()
