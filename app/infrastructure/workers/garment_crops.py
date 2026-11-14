@@ -12,6 +12,7 @@ leaves that candidate on the full photo — cropping must never fail an import.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import uuid
 from collections.abc import Sequence
@@ -68,19 +69,21 @@ async def attach_garment_crops(
     user_id: uuid.UUID,
     task_id: uuid.UUID,
     vision: VisionPort,
-) -> None:
+) -> str | None:
     """Add `bbox`, `crop_image_url` and `crop_object_key` to the candidates
     whose garment was boxed. Candidates and results are parallel lists."""
     boxes = [result.bbox for result in results]
     for candidate, box in zip(candidates, boxes, strict=True):
         if box is not None:
             candidate["bbox"] = list(box)
-    if not any(boxes):
-        return
+    fingerprint = None
     try:
         from app.bootstrap.container import object_storage
 
         source = await load_source_bytes(image_url, None)
+        fingerprint = hashlib.sha256(source).hexdigest()
+        if not any(boxes):
+            return fingerprint
         crops = await asyncio.to_thread(crop_regions, source, boxes)
         framed = [
             (candidate, crop, result)
@@ -88,7 +91,7 @@ async def attach_garment_crops(
             if crop is not None
         ]
         if not framed:
-            return
+            return fingerprint
         accepted = await vision.review_garment_crops(
             [crop for _, crop, _ in framed], [result for _, _, result in framed]
         )
@@ -101,3 +104,4 @@ async def attach_garment_crops(
             candidate["crop_object_key"] = key
     except Exception as exc:  # noqa: BLE001 — cropping is best-effort by design
         logger.warning("garment_crops.failed", task_id=str(task_id), error=str(exc))
+    return fingerprint

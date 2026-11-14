@@ -145,8 +145,6 @@ async def _outfit_board_item_list(
         if generate:
             board_item.update(title=item.title, color=item.color_main)
             source = review_sources.get(item_id, {})
-            if is_legacy_garment_crop(source.get("source_url"), user_id):
-                source = {}
             if source.get("source_key"):
                 board_item["review_object_key"] = source["source_key"]
             elif source.get("source_url"):

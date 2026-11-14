@@ -14,6 +14,7 @@ from app.application.import_tasks.confirm_import import (
     confirmed_item_ids,
 )
 from app.application.import_tasks.create_import import CreateImageImportTask
+from app.application.import_tasks.same_photo import existing_photo_item
 from app.application.purchase.garment_type import garment_type
 from app.common import error_codes
 from app.common.enums import AvatarSourceType, ImportStatus, InputType
@@ -124,7 +125,7 @@ def _review_photos(response: ImportTaskResponse, user_id: uuid.UUID) -> None:
 
 
 async def _attach_duplicates(
-    response: ImportTaskResponse, session: AsyncSession, user_id: uuid.UUID
+    response: ImportTaskResponse, session: AsyncSession, user_id: uuid.UUID, *, task: ImportTask
 ) -> None:
     pending = [candidate for candidate in response.candidate_items if candidate.confirmed_item_id is None]
     matching_colors = {
@@ -147,7 +148,19 @@ async def _attach_duplicates(
         .order_by(WardrobeItem.created_at.desc(), WardrobeItem.id.desc())
     )
     items = list(matching)
+    siblings = [candidate.model_dump() for candidate in response.candidate_items]
     for candidate in pending:
+        if task.input_type == InputType.OUTFIT_IMAGE.value:
+            # Match the original, unmodified URL before signing it for review.
+            existing = await existing_photo_item(
+                session, user_id, candidate.original_image_url, candidate.model_dump(), siblings,
+                candidate.category,
+                fingerprint=task.input_payload.get("photo_fingerprint"),
+                lock_photo=False,
+            )
+            if existing is not None:
+                candidate.confirmed_item_id = existing.id
+                continue
         same_type = garment_type(candidate.canonical_name, candidate.title)
         if same_type is None:
             continue
@@ -387,7 +400,7 @@ async def get_import_task(
             status_code=404,
         )
     result = to_response(task)
-    _review_photos(result, current_user.id)
     if task.task_status == ImportStatus.WAITING_CONFIRM.value:
-        await _attach_duplicates(result, session, current_user.id)
+        await _attach_duplicates(result, session, current_user.id, task=task)
+    _review_photos(result, current_user.id)
     return ResponseModel(data=result)
