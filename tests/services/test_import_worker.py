@@ -287,7 +287,8 @@ async def test_crop_retry_preserves_recognized_candidates(
         final = task.candidate_payload["candidate_items"]
         assert [c["temp_item_id"] for c in final] == [c["temp_item_id"] for c in initial]
         assert len({c["crop_object_key"] for c in final}) == 2
-        assert all(c["crop_object_key"].startswith(f"users/{user_id}/wardrobe/verified-crops/{task_id}/") for c in final)
+        prefix = f"users/{user_id}/wardrobe/verified-crops/{task_id}/"
+        assert all(c["crop_object_key"].startswith(prefix) for c in final)
         assert all(c["original_image_url"] == task.input_payload["image_url"] for c in final)
 
 
