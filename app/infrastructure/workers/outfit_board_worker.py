@@ -21,13 +21,18 @@ from __future__ import annotations
 
 import io
 import uuid
+from urllib.parse import urljoin
 
 import httpx
 import structlog
 from PIL import Image, ImageDraw
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ports.storage import ObjectStoragePort
+from app.config.settings import get_settings
+from app.infrastructure.importers.link_parser import BROWSER_HEADERS, is_safe_url
 from app.infrastructure.persistence.models.async_job import AsyncJob
+from app.infrastructure.storage.source_image import key_from_url
 from app.infrastructure.workers._visual_asset_runtime import (
     VisualAssetSnapshot,
     drain_visual_jobs,
@@ -90,14 +95,78 @@ async def enqueue_outfit_board(
     )
 
 
-async def _download_image(url: str) -> Image.Image | None:
+def _image_from_bytes(data: bytes) -> Image.Image | None:
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return Image.open(io.BytesIO(resp.content)).convert("RGBA")
+        return Image.open(io.BytesIO(data)).convert("RGBA")
     except Exception:
         return None
+
+
+async def _download_image(url: str) -> Image.Image | None:
+    if not is_safe_url(url):
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False, headers=BROWSER_HEADERS) as client:
+            resp = await client.get(url)
+            hops = 0
+            while resp.is_redirect and hops < 5:
+                redirect_url = urljoin(str(resp.url), resp.headers.get("location", ""))
+                if not is_safe_url(redirect_url):
+                    return None
+                resp = await client.get(redirect_url)
+                hops += 1
+            resp.raise_for_status()
+            return _image_from_bytes(resp.content)
+    except Exception:
+        return None
+
+
+async def _load_snapshot_image(
+    storage: ObjectStoragePort, *, object_key: str | None, fallback_url: str | None
+) -> Image.Image | None:
+    """Prefer durable object storage while keeping URL-only legacy snapshots readable."""
+    if object_key:
+        try:
+            image = _image_from_bytes(await storage.get_object(object_key))
+            if image is not None:
+                return image
+            if fallback_url is None:
+                raise ValueError(f"invalid image bytes in object storage: {object_key}")
+        except Exception:
+            if fallback_url is None:
+                raise
+    if fallback_url:
+        # Most item images are stored as our own public file URL with no key.
+        # Read those from storage: the public host is for devices and may not
+        # resolve from the worker (and the SSRF guard rightly blocks private
+        # hosts), which left boards full of placeholders.
+        bucket = get_settings().S3_BUCKET
+        own_key = key_from_url(fallback_url, bucket) if bucket else None
+        if own_key:
+            image = _image_from_bytes(await storage.get_object(own_key))
+            if image is None:
+                raise ValueError(f"invalid image bytes in object storage: {own_key}")
+            return image
+        return await _download_image(fallback_url)
+    return None
+
+
+def centered_boxes(boxes: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
+    """Shift the used slots as a group to the middle of the canvas.
+
+    The slots are fixed per role (outerwear on top, bag on the right), so an
+    outfit without those left a blank band at the top and an empty right half.
+    Sizes and relative positions are kept; only the group moves.
+    """
+    if not boxes:
+        return boxes
+    left = min(x for x, _, _, _ in boxes)
+    top = min(y for _, y, _, _ in boxes)
+    right = max(x + w for x, _, w, _ in boxes)
+    bottom = max(y + h for _, y, _, h in boxes)
+    dx = (CANVAS_W - (right - left)) // 2 - left
+    dy = (CANVAS_H - (bottom - top)) // 2 - top
+    return [(x + dx, y + dy, w, h) for x, y, w, h in boxes]
 
 
 def _paste_item(canvas: Image.Image, item_img: Image.Image, box: tuple[int, int, int, int]) -> None:
@@ -127,23 +196,28 @@ def _draw_placeholder(canvas: Image.Image, box: tuple[int, int, int, int], label
 
 
 async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str]:
-    """Render the composite board and upload to object storage. Returns
-    `(image_url, object_key)`. Raises on storage / encode failures (the
-    worker converts to mark_failed)."""
+    """Render the composite board and upload to object storage."""
+    from app.bootstrap.container import object_storage
+
     items = snapshot.input_snapshot.get("item_list", [])
     canvas = Image.new("RGBA", (CANVAS_W, CANVAS_H), (255, 255, 255, 255))
+    storage = object_storage()
+    roles = [(item.get("role") or item.get("category") or "top").lower() for item in items]
+    boxes = centered_boxes([LAYOUT.get(role, DEFAULT_BOX) for role in roles])
 
-    for item in items:
-        role = (item.get("role") or item.get("category") or "top").lower()
-        box = LAYOUT.get(role, DEFAULT_BOX)
-        cutout_url = item.get("cutout_image_url")
-        thumb_url = item.get("thumbnail_url")
+    for item, role, box in zip(items, roles, boxes, strict=True):
 
-        img = None
-        if cutout_url:
-            img = await _download_image(cutout_url)
-        if img is None and thumb_url:
-            img = await _download_image(thumb_url)
+        img = await _load_snapshot_image(
+            storage,
+            object_key=item.get("cutout_object_key"),
+            fallback_url=item.get("cutout_image_url"),
+        )
+        if img is None:
+            img = await _load_snapshot_image(
+                storage,
+                object_key=item.get("thumbnail_object_key"),
+                fallback_url=item.get("thumbnail_url"),
+            )
 
         if img is not None:
             _paste_item(canvas, img, box)
@@ -155,9 +229,6 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str]:
     rgb.save(buf, format="JPEG", quality=85)
     buf.seek(0)
 
-    from app.bootstrap.container import object_storage
-
-    storage = object_storage()
     key = f"{snapshot.user_id}/outfit_boards/{snapshot.id}.jpg"
     url = await storage.put_object(key, buf.read(), "image/jpeg")
     return url, key
