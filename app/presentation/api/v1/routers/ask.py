@@ -40,6 +40,7 @@ from app.presentation.api.v1.schemas.ask import (
     AskItemRefSnapshot,
     AskRequest,
     AskResponse,
+    AskToolUse,
     AskTripIntent,
 )
 from app.presentation.api.v1.schemas.recommendations import FeedbackRequest, FeedbackResponse
@@ -131,6 +132,7 @@ async def ask(
             else None
         ),
         recommendation_id=recommendation_id,
+        used=[AskToolUse(tool=u.tool, summary=u.summary) for u in result.used],
         trip_intent=(
             AskTripIntent(
                 is_trip=result.trip_intent.is_trip,

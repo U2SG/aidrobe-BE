@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     # than the short, template-shaped `polish_reason` call that uses
     # LLM_TIMEOUT_SECONDS. Used by the providers' `ask` path only.
     LLM_ASK_TIMEOUT_SECONDS: float = 12.0
+    # Ask tool loop (butler P0): off = the single-call path, byte-identical.
+    ENABLE_ASK_TOOLS: bool = False
+    ASK_TOOL_MAX_ROUNDS: int = 4
+    # Whole-turn budget; once exceeded the next round must answer (no tools).
+    ASK_TOOL_TOTAL_TIMEOUT_SECONDS: float = 20.0
     EMBEDDING_PROVIDER: str = "fake"
     CLIP_EMBEDDING_API_KEY: str | None = None
     CLIP_EMBEDDING_BASE_URL: str = "https://api.openai.com/v1/embeddings"

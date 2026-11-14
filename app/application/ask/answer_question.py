@@ -18,7 +18,7 @@ import random
 import re
 import uuid
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any, cast
 
@@ -26,6 +26,7 @@ import structlog
 from sqlalchemy import func, nulls_last, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ask.tools import build_registry
 from app.application.ask.wardrobe_context import (
     WardrobeContext,
     build_wardrobe_context,
@@ -39,7 +40,7 @@ from app.application.llm_prompts.preference_memory import render_preferences
 from app.application.llm_prompts.reasoning_policy import reasoning_policy
 from app.application.llm_prompts.response_contracts import ask_structured_contract
 from app.application.llm_prompts.self_critique import negative_preference_violations
-from app.application.ports.llm import LlmPort
+from app.application.ports.llm import LlmAnswer, LlmPort, ToolCallingLlm, ToolUse
 from app.application.preferences.memory import (
     SOURCE_EXPLICIT,
     PreferenceMemoryError,
@@ -257,6 +258,8 @@ class AskResult:
     effective_locale: str
     # Only the structured channel can surface trip intent; None elsewhere.
     trip_intent: TripIntent | None = None
+    # Tools the model used this turn, in order (empty with ENABLE_ASK_TOOLS off).
+    used: list[ToolUse] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -859,7 +862,30 @@ async def answer_question(
     system_prompt = _build_system_prompt(
         user_id, items, ctx, today, structured=structured, recent_ref_positions=recent_positions
     )
-    answer = await llm.ask(system_prompt, sanitized_question or question, json_mode=structured)
+    prompt_question = sanitized_question or question
+    used_tools: list[ToolUse] = []
+    loop_tokens = 0
+    registry = build_registry(session, user_id) if settings.ENABLE_ASK_TOOLS else None
+    if registry and isinstance(llm, ToolCallingLlm):
+        tool_answer = await llm.ask_with_tools(
+            system_prompt,
+            prompt_question,
+            registry.specs,
+            registry.execute,
+            json_mode=structured,
+            max_rounds=settings.ASK_TOOL_MAX_ROUNDS,
+        )
+        used_tools = tool_answer.used
+        logger.info("ask.tool_loop", rounds=tool_answer.rounds, tools=[u.tool for u in used_tools])
+        answer: LlmAnswer = tool_answer
+        if not tool_answer.text:
+            # Tool loop failed or timed out: answer the old way, still counting
+            # what the failed rounds cost.
+            loop_tokens = tool_answer.tokens_used
+            used_tools = []
+            answer = await llm.ask(system_prompt, prompt_question, json_mode=structured)
+    else:
+        answer = await llm.ask(system_prompt, prompt_question, json_mode=structured)
 
     if not answer.text:
         # Provider not configured (LLM_PROVIDER=none) — degrade gracefully.
@@ -935,7 +961,7 @@ async def answer_question(
         _strip_ordinal_leaks(answer_text),
         fallback=_ASK_FALLBACK_COPY,
     )
-    tokens_used = answer.tokens_used
+    tokens_used = answer.tokens_used + loop_tokens
     heuristic_constraints = _heuristic_constraints(
         question=sanitized_question,
         context=context,
@@ -1098,6 +1124,7 @@ async def answer_question(
         deltas=response_deltas,
         effective_locale=effective_locale,
         trip_intent=trip_intent,
+        used=used_tools,
     )
 
 

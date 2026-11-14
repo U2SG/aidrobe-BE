@@ -53,6 +53,15 @@ class AskTripIntent(BaseModel):
     duration_days: int | None = None
 
 
+class AskToolUse(BaseModel):
+    """One tool the answer was based on, e.g. {"tool": "get_weather",
+    "summary": "看了明天的天气：小雨 14°"}. `tool` is a plain string so older
+    clients can ignore names they don't know."""
+
+    tool: str
+    summary: str
+
+
 class AskResponse(BaseModel):
     ask_session_id: uuid.UUID
     conversation_id: uuid.UUID | None = None
@@ -73,6 +82,8 @@ class AskResponse(BaseModel):
     source_surface: str = "ask"
     # BE#115 — set only when the model flagged trip intent (structured path).
     trip_intent: AskTripIntent | None = None
+    # What the answer looked at (butler tools). Empty when no tool was used.
+    used: list[AskToolUse] = Field(default_factory=list)
 
 
 class AskHistoryItem(BaseModel):

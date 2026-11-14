@@ -1,9 +1,12 @@
+import json
+import time
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
 import structlog
 
-from app.application.ports.llm import LlmAnswer
+from app.application.ports.llm import LlmAnswer, ToolAskAnswer, ToolExecutor, ToolSpec, ToolUse
 from app.config.settings import Settings
 
 logger = structlog.get_logger(__name__)
@@ -78,6 +81,88 @@ class QwenLlm:
         except Exception as exc:
             logger.warning("qwen_llm_ask_failed", error=str(exc))
             return LlmAnswer(text="", tokens_used=0)
+
+
+    async def ask_with_tools(
+        self,
+        system_prompt: str,
+        question: str,
+        tools: Sequence[ToolSpec],
+        execute: ToolExecutor,
+        *,
+        json_mode: bool = False,
+        max_rounds: int = 4,
+    ) -> ToolAskAnswer:
+        """OpenAI-compatible tool loop. The model may call tools for up to
+        `max_rounds - 1` rounds; the final round (or the first one past the
+        overall deadline) sets tool_choice=none so it must answer."""
+        if not self.settings.QWEN_API_KEY:
+            return ToolAskAnswer(text="", tokens_used=0)
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ]
+        tool_defs = [
+            {
+                "type": "function",
+                "function": {"name": t.name, "description": t.description, "parameters": dict(t.parameters)},
+            }
+            for t in tools
+        ]
+        headers = {"Authorization": f"Bearer {self.settings.QWEN_API_KEY}"}
+        deadline = time.monotonic() + self.settings.ASK_TOOL_TOTAL_TIMEOUT_SECONDS
+        used: list[ToolUse] = []
+        tokens = 0
+        rounds = 0
+        try:
+            async with httpx.AsyncClient(timeout=self.settings.LLM_ASK_TIMEOUT_SECONDS) as client:
+                while True:
+                    rounds += 1
+                    final = rounds >= max_rounds or time.monotonic() >= deadline or not tool_defs
+                    payload: dict[str, Any] = {
+                        "model": self.settings.QWEN_LLM_MODEL,
+                        "messages": messages,
+                        "temperature": 0.8,
+                        **_thinking_off(self.settings.QWEN_LLM_MODEL),
+                    }
+                    if tool_defs:
+                        payload["tools"] = tool_defs
+                        payload["tool_choice"] = "none" if final else "auto"
+                    if json_mode:
+                        payload["response_format"] = {"type": "json_object"}
+                    response = await client.post(self.settings.QWEN_LLM_BASE_URL, headers=headers, json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+                    tokens += _extract_total_tokens(data)
+                    message = data["choices"][0]["message"]
+                    calls = message.get("tool_calls") or []
+                    if final or not calls:
+                        return ToolAskAnswer(
+                            text=str(message.get("content") or ""), tokens_used=tokens, used=used, rounds=rounds
+                        )
+                    messages.append(
+                        {"role": "assistant", "content": message.get("content") or "", "tool_calls": calls}
+                    )
+                    for call in calls:
+                        function = call.get("function") or {}
+                        name = str(function.get("name") or "")
+                        try:
+                            arguments = json.loads(function.get("arguments") or "{}")
+                        except ValueError:
+                            arguments = {}
+                        result = await execute(name, arguments if isinstance(arguments, dict) else {})
+                        if result.summary:
+                            used.append(ToolUse(tool=name, summary=result.summary))
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": call.get("id", ""),
+                                "content": json.dumps(result.content, ensure_ascii=False, default=str),
+                            }
+                        )
+        except Exception as exc:
+            logger.warning("qwen_llm_ask_with_tools_failed", error=repr(exc), rounds=rounds)
+            return ToolAskAnswer(text="", tokens_used=tokens, used=used, rounds=rounds)
 
 
 def _extract_total_tokens(data: dict[str, Any]) -> int:

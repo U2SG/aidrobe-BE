@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "description": "Ask butler eval (P0 baseline). Live: runs against a local backend with a real LLM. Not part of CI.",
+  "unavailable_titles": ["黑色西裤", "驼色羊毛大衣", "棕色乐福鞋"],
+  "questions": [
+    {"id": "w1", "kind": "weather", "day": "today", "outfit": true, "question": "今天降温了，怎么穿？"},
+    {"id": "w2", "kind": "weather", "day": "tomorrow", "outfit": true, "question": "明天下雨，通勤穿什么？"},
+    {"id": "w3", "kind": "weather", "day": "today", "outfit": false, "question": "今天出门要不要带外套？"},
+    {"id": "w4", "kind": "weather", "day": "tomorrow", "outfit": true, "question": "明天天气怎么样，穿什么合适？"},
+    {"id": "w5", "kind": "weather", "day": "today", "outfit": true, "question": "这两天挺冷的，给我一套保暖的搭配"},
+    {"id": "o1", "kind": "occasion", "outfit": true, "question": "周五面试穿什么？"},
+    {"id": "o2", "kind": "occasion", "outfit": true, "question": "周末约会穿什么？"},
+    {"id": "o3", "kind": "occasion", "outfit": true, "question": "去公司开会，想穿得正式一点怎么搭？"},
+    {"id": "o4", "kind": "occasion", "outfit": true, "question": "朋友聚餐想穿得休闲一点"},
+    {"id": "o5", "kind": "occasion", "outfit": true, "question": "明天要去爬山，穿什么？"},
+    {"id": "i1", "kind": "item", "outfit": true, "question": "卡其直筒裤怎么搭？"},
+    {"id": "i2", "kind": "item", "outfit": false, "question": "藏青西装外套配什么鞋？"},
+    {"id": "i3", "kind": "item", "outfit": false, "question": "黑色连衣裙适合什么场合？"},
+    {"id": "i4", "kind": "item", "outfit": true, "question": "白色运动鞋能配哪些衣服？"},
+    {"id": "g1", "kind": "general", "outfit": false, "question": "我衣橱里缺什么？"},
+    {"id": "g2", "kind": "general", "outfit": true, "question": "给我搭一套今天能穿的"},
+    {"id": "g3", "kind": "general", "outfit": true, "question": "最近总穿差不多的，帮我换个风格"},
+    {"id": "t1", "kind": "trap", "outfit": true, "trap": "黑色西裤", "question": "黑色西裤配什么好？"},
+    {"id": "t2", "kind": "trap", "outfit": true, "trap": "驼色羊毛大衣", "question": "今天想穿驼色羊毛大衣，怎么搭？"},
+    {"id": "t3", "kind": "trap", "outfit": true, "trap": "棕色乐福鞋", "question": "棕色乐福鞋配什么裤子？"}
+  ]
+}
