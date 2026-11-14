@@ -78,3 +78,38 @@ _ASK_STRUCTURED: dict[str, str] = {
 def ask_structured_contract(lang: str) -> str:
     """Return the Ask structured-output JSON contract for a language subtag."""
     return _ASK_STRUCTURED.get(lang, _ASK_STRUCTURED[_DEFAULT_LANG])
+
+
+_ASK_BUTLER = {
+    "zh": (
+        "衣橱管家规则。最终 JSON 增加 reply_kind，取值 outfit、item_advice 或 general。"
+        "用户要穿什么或要一整套时，只推荐一套。搭配须有上装＋下装或连衣裙，且须有鞋；"
+        "在回复前用 validate_outfit 校验全部单品。校验通过才可用 outfit，并把完全相同的序号放进 referenced_items。"
+        "部分搭配或单品问题用 item_advice，引用真实可穿单品。两种答复都用单品自然名称。"
+        "无可核实的建议时用 general，referenced_items 为空，只提供通用建议或问一个具体问题。"
+        "天气或日期影响建议时先用 get_weather，采用用户点名的城市，没点名就省略 place。"
+        "系统会在答复前展示查到的天气。answer 只解释怎么穿，不复述天气或确认用户的天气猜测。"
+        "查不到就说明。校验搭配时用同一日期和城市，面试或正式会议用 formal。"
+        "校验成功后直接用结果中的 positions 作为 referenced_items，保留全部序号，别再搜索或增减衣物。"
+        "衣橱列表不足、问到具体名字或需要查状态时用 search_wardrobe，搜索返回的序号可直接引用。"
+        "若聚焦第 1 件单品，搭配需包含它；该件不可穿时请说明，用户明确要求换掉时才推荐替换搭配。"
+    ),
+    "en": (
+        "Wardrobe butler rules. Add reply_kind to the final JSON: outfit, item_advice or general. "
+        "For what-to-wear questions, recommend one complete look: top and bottom or a dress, plus shoes. "
+        "Call validate_outfit on the exact set first. Use outfit only after it passes; referenced_items must match "
+        "the checked positions. Use item_advice for individual pieces or partial pairings, citing wearable pieces. "
+        "Use natural item names. For general guidance or a clarifying question, use general with no references. "
+        "Call get_weather first when weather or a date affects the advice; supply a city only if the user named one. "
+        "The server displays retrieved conditions above the advice. Explain how to dress without repeating weather "
+        "or adopting the user's weather assumptions. Say if weather is unavailable. Validate for the same date "
+        "and city, using formal for interviews or formal meetings. After validation passes, copy its positions "
+        "to referenced_items and finish without changing the set. Search to find named pieces or check availability; "
+        "its positions are valid references. Include the first piece in an item-scoped outfit unless the user "
+        "explicitly asks to replace it. Explain when that piece is unavailable."
+    ),
+}
+
+
+def ask_butler_contract(lang: str) -> str:
+    return _ASK_BUTLER.get(lang, _ASK_BUTLER[_DEFAULT_LANG])

@@ -26,7 +26,7 @@ import structlog
 from sqlalchemy import func, nulls_last, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.ask.tools import build_registry
+from app.application.ask.butler import AskButler
 from app.application.ask.wardrobe_context import (
     WardrobeContext,
     build_wardrobe_context,
@@ -38,9 +38,10 @@ from app.application.llm_prompts.assemble import assemble_system_prompt
 from app.application.llm_prompts.persona import stylist_persona
 from app.application.llm_prompts.preference_memory import render_preferences
 from app.application.llm_prompts.reasoning_policy import reasoning_policy
-from app.application.llm_prompts.response_contracts import ask_structured_contract
+from app.application.llm_prompts.response_contracts import ask_butler_contract, ask_structured_contract
 from app.application.llm_prompts.self_critique import negative_preference_violations
 from app.application.ports.llm import LlmAnswer, LlmPort, ToolCallingLlm, ToolUse
+from app.application.ports.weather import WeatherPort
 from app.application.preferences.memory import (
     SOURCE_EXPLICIT,
     PreferenceMemoryError,
@@ -49,9 +50,10 @@ from app.application.preferences.memory import (
 )
 from app.application.safety.copy_guard import find_forbidden_terms, sanitize_generated_copy
 from app.common import error_codes
-from app.common.enums import ItemStatus
+from app.common.enums import FitStatus, ItemStatus
 from app.common.exceptions import FriendlyException
 from app.common.item_labels import localized_item_name
+from app.common.local_time import local_datetime
 from app.common.locale import lang_subtag, resolve_locale
 from app.config.settings import get_settings
 from app.infrastructure.llm.sanitizer import hash_user_token, sanitize_for_llm, sanitize_llm_text
@@ -121,9 +123,11 @@ _REFINEMENT_MARKERS = (
     "brighter",
     "darker",
 )
+_BUTLER_FALLBACK_COPY = {
+    "zh": "这次没能核实穿搭建议。可以告诉我具体场合，或选一件想穿的单品再问我。",
+    "en": "I couldn't verify a styling suggestion this time. Tell me the occasion or pick a piece to start with.",
+}
 # BE#87 — honest fallback when the LLM answer triggers the copy guard.
-# Not a redirect: it tells the user we can't give a more detailed answer
-# right now, without exposing what was filtered.
 _ASK_FALLBACK_COPY = "这身搭配上我给不出更细的说法，但可以从舒服和得体的角度先选。"
 
 # The contract forbids list positions in the user-facing answer (they are an
@@ -349,7 +353,7 @@ def _bound_style_tags(tags: Any) -> list[str] | None:
     return bounded or None
 
 
-def _item_to_sanitized(item: WardrobeItem, today: date) -> dict[str, Any]:
+def _item_to_sanitized(item: WardrobeItem, today: date, *, butler: bool = False) -> dict[str, Any]:
     """Project a wardrobe row to the sanitizer-whitelisted fields only.
 
     BE#27 — beyond core category/color/status, emit the extended styling signals
@@ -365,9 +369,9 @@ def _item_to_sanitized(item: WardrobeItem, today: date) -> dict[str, Any]:
         "color_secondary": item.color_secondary,
         "material": item.material,
         "status": item.status,
-        "location": item.location,
+        "location": None if butler else item.location,
         "season_tags": item.season_tags,
-        "style_tags": _bound_style_tags(item.style_tags),
+        "style_tags": None if butler else _bound_style_tags(item.style_tags),
         "formality_score": item.formality_score,
         "time_cost_level": item.time_cost_level,
         "fit_status": item.fit_status,
@@ -481,6 +485,7 @@ def _build_system_prompt(
     *,
     structured: bool = False,
     recent_ref_positions: list[int] | None = None,
+    butler: bool = False,
 ) -> str:
     # BE#66 — compose the system prompt from the shared `llm_prompts` modules
     # (persona / preference rules / reasoning policy / response contract) instead
@@ -495,10 +500,12 @@ def _build_system_prompt(
         wardrobe_clause = _WARDROBE_CONTEXT_CLAUSE.get(lang, _WARDROBE_CONTEXT_CLAUSE[_DEFAULT_LANG])
     else:
         wardrobe_clause = _NO_WARDROBE_CONTEXT_CLAUSE.get(lang, _NO_WARDROBE_CONTEXT_CLAUSE[_DEFAULT_LANG])
-    focus_clause = _FOCUS_CLAUSE.get(lang, _FOCUS_CLAUSE[_DEFAULT_LANG]) if ctx.scope == "item" else None
+    focus_clause = None
+    if ctx.scope == "item" and not butler:
+        focus_clause = _FOCUS_CLAUSE.get(lang, _FOCUS_CLAUSE[_DEFAULT_LANG])
     payload = {
         "context": context_for_prompt(ctx),
-        "items": [_item_to_sanitized(i, today) for i in items],
+        "items": [_item_to_sanitized(i, today, butler=butler) for i in items],
         "usr": hash_user_token(user_id),
     }
     return assemble_system_prompt(
@@ -514,6 +521,7 @@ def _build_system_prompt(
             json.dumps(payload, ensure_ascii=False),
             reasoning_policy(lang),
             ask_structured_contract(lang) if structured else None,
+            ask_butler_contract(lang) if butler else None,
         ]
     )
 
@@ -724,6 +732,7 @@ async def answer_question(
     locale: str | None = None,
     focused_item_id: uuid.UUID | None = None,
     conversation_id: uuid.UUID | None = None,
+    weather: WeatherPort | None = None,
 ) -> AskResult:
     # Validate the focused item before any quota/LLM work. Per repo convention
     # a non-owned (or soft-deleted) resource returns 404 — never reveal that
@@ -746,6 +755,7 @@ async def answer_question(
     # pool exclusion below are gated on the flag, so flag-off + a known
     # conversation_id yields the same answer context as no conversation_id.
     conversations_enabled = settings.ENABLE_ASK_CONVERSATIONS
+    tooling = settings.ENABLE_ASK_TOOLS and settings.ENABLE_ASK_STRUCTURED_OUTPUT and isinstance(llm, ToolCallingLlm)
 
     conversation_repo = SqlAlchemyAskConversationRepository(session)
     if conversation_id is not None:
@@ -784,6 +794,13 @@ async def answer_question(
     # Rank within each category, then keep the top `_PER_CATEGORY_FETCH_CAP` per
     # category — so a huge single-category-dominated wardrobe can't truncate
     # other categories out of the pool before curation balances coverage.
+    eligible = [
+        WardrobeItem.user_id == user_id,
+        WardrobeItem.status == ItemStatus.WEARABLE.value,
+        WardrobeItem.deleted_at.is_(None),
+    ]
+    if tooling:
+        eligible.append(WardrobeItem.fit_status != FitStatus.NO_LONGER_FITS.value)
     ranked = (
         select(
             WardrobeItem.id,
@@ -791,11 +808,7 @@ async def answer_question(
             .over(partition_by=WardrobeItem.category, order_by=priority_order)
             .label("rn"),
         )
-        .where(
-            WardrobeItem.user_id == user_id,
-            WardrobeItem.status == ItemStatus.WEARABLE.value,
-            WardrobeItem.deleted_at.is_(None),
-        )
+        .where(*eligible)
         .subquery()
     )
     pool = list(
@@ -834,12 +847,14 @@ async def answer_question(
     # BE#30 — when the request omits a locale, fall back to the user's
     # persisted settings locale (then the zh-CN default) so the answer
     # language tracks the user's UI choice.
-    settings_locale = await session.scalar(select(UserSettings.locale).where(UserSettings.user_id == user_id))
+    user_settings = await session.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
+    settings_locale = user_settings.locale if user_settings is not None else None
     effective_locale = resolve_locale(locale, settings_locale)
     ctx = await build_wardrobe_context(
         session,
         user_id,
         items=items,
+        settings=user_settings,
         focused_item_id=focused_item.id if focused_item is not None else None,
         locale=_resolve_lang(locale, settings_locale),
         today=today,
@@ -859,31 +874,59 @@ async def answer_question(
     for past in await SqlAlchemyAskRepository(session).list_for_user(user_id, limit=5, offset=0):
         recent_refs.update(str(ref) for ref in (past.item_refs or []))
     recent_positions = [pos + 1 for pos, it in enumerate(items) if str(it.id) in recent_refs]
+    butler = None
+    if tooling:
+        butler = AskButler(
+            session,
+            user_id,
+            items,
+            today=local_datetime(
+                datetime.now(UTC),
+                user_settings.timezone if user_settings is not None else None,
+                settings.DEFAULT_TIMEZONE,
+            ).date(),
+            location=user_settings.location if user_settings is not None else None,
+            weather=weather,
+            lang=ctx.locale,
+            focused_item_id=focused_item_id,
+            excluded_ids=existing_rejected_ids if conversations_enabled else set(),
+            context=context,
+        )
     system_prompt = _build_system_prompt(
-        user_id, items, ctx, today, structured=structured, recent_ref_positions=recent_positions
+        user_id,
+        items,
+        ctx,
+        today,
+        structured=structured,
+        recent_ref_positions=recent_positions,
+        butler=butler is not None,
     )
     prompt_question = sanitized_question or question
     used_tools: list[ToolUse] = []
     loop_tokens = 0
-    registry = build_registry(session, user_id) if settings.ENABLE_ASK_TOOLS else None
-    if registry and isinstance(llm, ToolCallingLlm):
+    tools_completed = False
+    if butler is not None and isinstance(llm, ToolCallingLlm):
         tool_answer = await llm.ask_with_tools(
-            system_prompt,
+            system_prompt + butler.prompt_context,
             prompt_question,
-            registry.specs,
-            registry.execute,
+            butler.registry.specs,
+            butler.registry.execute,
             json_mode=structured,
             max_rounds=settings.ASK_TOOL_MAX_ROUNDS,
         )
         used_tools = tool_answer.used
         logger.info("ask.tool_loop", rounds=tool_answer.rounds, tools=[u.tool for u in used_tools])
         answer: LlmAnswer = tool_answer
-        if not tool_answer.text:
-            # Tool loop failed or timed out: answer the old way, still counting
-            # what the failed rounds cost.
+        tools_completed = bool(tool_answer.text)
+        if not tools_completed:
+            # Keep the fallback inside the same verification boundary.
             loop_tokens = tool_answer.tokens_used
             used_tools = []
-            answer = await llm.ask(system_prompt, prompt_question, json_mode=structured)
+            answer = await llm.ask(
+                system_prompt + "\nTools are unavailable. Return general or individual item advice only.",
+                prompt_question,
+                json_mode=structured,
+            )
     else:
         answer = await llm.ask(system_prompt, prompt_question, json_mode=structured)
 
@@ -905,6 +948,7 @@ async def answer_question(
     # than guess from substrings.
     focus_is_rejection = False
     trip_intent: TripIntent | None = None
+    suppressed_reply = False
     if structured:
         # Parse the JSON envelope exactly once; feed both the item/preference
         # extractor and the conversation-deltas extractor from the same dict.
@@ -913,7 +957,7 @@ async def answer_question(
         except ValueError:  # JSONDecodeError is a ValueError subclass
             parsed_data = None
         parsed = (
-            _extract_structured(parsed_data, len(items))
+            _extract_structured(parsed_data, len(butler.item_ids) if butler is not None else len(items))
             if isinstance(parsed_data, dict)
             else None
         )
@@ -922,14 +966,26 @@ async def answer_question(
             # error, which surfaces above as empty text). Stay honest: keep the
             # raw text as the answer but fall back to the focused item only.
             logger.warning("ask.structured_output.parse_failed")
+            suppressed_reply = butler is not None
             item_refs = [str(focused_item.id)] if focused_item is not None else []
             parsed_deltas = ConversationDeltas(reasoning=None, applied_constraints=[])
         else:
             answer_text, indices, stated_preferences = parsed
-            referenced_items = [items[i] for i in indices]
+            data = cast(dict[str, Any], parsed_data)
+            parsed_deltas = _extract_conversation_deltas(data)
+            trip_intent = _extract_trip_intent(data)
+            if butler is not None:
+                verified = await butler.resolve_reply(
+                    data.get("reply_kind"),
+                    data.get("referenced_items"),
+                    tools_completed=tools_completed,
+                    focus_rejected=parsed_deltas.rejected_focused_item,
+                )
+                suppressed_reply = verified is None
+                referenced_items = verified or []
+            else:
+                referenced_items = [items[i] for i in indices]
             item_refs = [str(it.id) for it in referenced_items]
-            parsed_deltas = _extract_conversation_deltas(cast(dict[str, Any], parsed_data))
-            trip_intent = _extract_trip_intent(cast(dict[str, Any], parsed_data))
             # BE#66 — deterministic self-critique: surface (do NOT mutate) any
             # cited item that contradicts an explicit negative preference, so the
             # regression is observable without risking suppressing a valid answer.
@@ -957,10 +1013,20 @@ async def answer_question(
         logger.warning("ask.structured_output.disabled", item_refs_quality="limited")
         item_refs = [str(focused_item.id)] if focused_item is not None else []
         parsed_deltas = ConversationDeltas(reasoning=None, applied_constraints=[])
+    if suppressed_reply:
+        answer_text = _BUTLER_FALLBACK_COPY[ctx.locale]
+        item_refs = []
+        parsed_deltas = ConversationDeltas(
+            reasoning=None, applied_constraints=[], rejected_focused_item=focus_is_rejection
+        )
+        logger.info("ask.butler.reply_suppressed")
     answer_text = sanitize_generated_copy(
         _strip_ordinal_leaks(answer_text),
         fallback=_ASK_FALLBACK_COPY,
     )
+    weather_summaries = list(dict.fromkeys(tool.summary for tool in used_tools if tool.tool == "get_weather"))
+    if weather_summaries:
+        answer_text = "\n".join([*weather_summaries, "", answer_text])
     tokens_used = answer.tokens_used + loop_tokens
     heuristic_constraints = _heuristic_constraints(
         question=sanitized_question,

@@ -1,5 +1,4 @@
-"""Tools the Ask model may call (P0: the registry and dispatcher; P1 adds
-weather, wardrobe search and outfit validation).
+"""Dispatch read-only tools for a single Ask turn.
 
 A tool reads the user's own data on the server; it never acts. Unknown tool
 names and handler errors are reported back to the model as an error result,
@@ -8,13 +7,11 @@ so one bad call cannot fail the whole answer.
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.llm import ToolResult, ToolSpec
 
@@ -48,14 +45,5 @@ class ToolRegistry:
         try:
             return await tool.handler(arguments)
         except Exception as exc:  # a tool failure degrades, it never sinks the answer
-            logger.warning("ask.tool.failed", tool=name, error=repr(exc))
+            logger.warning("ask.tool.failed", tool=name, error_type=type(exc).__name__)
             return ToolResult(content={"error": "tool failed"}, summary="")
-
-
-def build_registry(session: AsyncSession, user_id: uuid.UUID) -> ToolRegistry:
-    """Tools available to this user's Ask turn. Empty in P0 — the loop is wired
-    but the model has nothing to call, so answers stay identical to the
-    single-call path until P1 registers real tools (they read this user's data
-    through `session`)."""
-    del session, user_id
-    return ToolRegistry()
