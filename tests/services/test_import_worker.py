@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -30,7 +31,9 @@ from app.infrastructure.workers.import_worker import (
 )
 from app.infrastructure.workers.job_runtime import (
     JOB_STATUS_QUEUED,
+    JOB_STATUS_RUNNING,
     JOB_STATUS_SUCCEEDED,
+    claim_one,
     enqueue,
 )
 
@@ -130,6 +133,35 @@ async def test_drain_reprocesses_task_stuck_in_processing(
         task = await s.get(ImportTask, task_id)
         assert task is not None
         assert task.task_status == ImportStatus.WAITING_CONFIRM.value
+
+
+async def test_drain_recovers_expired_import_without_recovering_other_queues(
+    patched_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, task_id = await _seed_task(patched_session_factory)
+    lease_expired = datetime.now(UTC) - timedelta(minutes=2)
+    async with patched_session_factory() as session:
+        import_job, _ = await enqueue_import_task(session, task_id=task_id, user_id=user_id)
+        other_job, _ = await enqueue(session, job_type="embedding", idempotency_key=f"test:{task_id}")
+        await session.commit()
+        import_job_id, other_job_id = import_job.id, other_job.id
+        for job in (import_job, other_job):
+            job.next_run_at = lease_expired
+        await session.commit()
+        assert await claim_one(session, [IMPORT_JOB_TYPE], now=lease_expired, lease_seconds=1)
+        assert await claim_one(session, ["embedding"], now=lease_expired, lease_seconds=1)
+
+    assert await drain_import_jobs(ctx=None) == 1
+    assert await drain_import_jobs(ctx=None) == 0
+
+    async with patched_session_factory() as session:
+        recovered = await session.get(AsyncJob, import_job_id)
+        untouched = await session.get(AsyncJob, other_job_id)
+        task = await session.get(ImportTask, task_id)
+        assert recovered is not None and recovered.status == JOB_STATUS_SUCCEEDED
+        assert recovered.attempts == 2
+        assert untouched is not None and untouched.status == JOB_STATUS_RUNNING
+        assert task is not None and task.task_status == ImportStatus.WAITING_CONFIRM.value
 
 
 async def test_drain_skips_invalid_payload(

@@ -9,7 +9,7 @@ import structlog
 from app.application.cost_guard import assert_within_quota
 from app.application.recommendations.background import schedule_today_recompute
 from app.common import error_codes
-from app.common.enums import CutoutStatus, ImageType, ImportStatus, ItemStatus
+from app.common.enums import CutoutStatus, ImageType, ImportStatus, InputType, ItemStatus
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.import_task import ImportTask
@@ -109,6 +109,7 @@ class ConfirmImageImportTask:
             user_id=user_id,
             candidate=task.candidate_payload or {},
             fallback_image_url=task.input_payload.get("image_url"),
+            outfit_photo=task.input_type == InputType.OUTFIT_IMAGE.value,
             title=title,
             category=category,
             color_main=color_main,
@@ -202,6 +203,7 @@ class ConfirmImageImportTask:
                 user_id=user_id,
                 candidate=candidate_by_temp_id[entry.temp_item_id],
                 fallback_image_url=task.input_payload.get("image_url"),
+                outfit_photo=task.input_type == InputType.OUTFIT_IMAGE.value,
                 title=entry.title,
                 category=entry.category,
                 color_main=entry.color_main,
@@ -251,6 +253,7 @@ class ConfirmImageImportTask:
         user_id: uuid.UUID,
         candidate: dict[str, Any],
         fallback_image_url: Any,
+        outfit_photo: bool,
         title: str,
         category: str,
         color_main: str,
@@ -349,7 +352,7 @@ class ConfirmImageImportTask:
         # V4 — kick off the async product-shot cutout. Best-effort: a blown
         # daily quota just leaves the item on its original photo (skipped),
         # never blocks the import. Gated by the flag; data already persisted.
-        if get_settings().ENABLE_ITEM_CUTOUT and original_image_url:
+        if get_settings().ENABLE_ITEM_CUTOUT and original_image_url and (not outfit_photo or crop_image_url):
             session = self.wardrobe_repository.session
             try:
                 await assert_within_quota(session, user_id, "cutout")
@@ -361,6 +364,8 @@ class ConfirmImageImportTask:
                     source_url=crop_image_url or original_image_url,
                     source_key=candidate.get("crop_object_key") if crop_image_url else None,
                     category=category,
+                    title=title,
+                    color=color_main,
                 )
             except FriendlyException:
                 # quota exhausted (429) — leave cutout_status='skipped'.

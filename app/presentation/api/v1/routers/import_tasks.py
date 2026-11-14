@@ -57,6 +57,9 @@ _RECEIPT_INPUT_TYPES = {
     InputType.SHOPPING_EMAIL.value,
 }
 
+# Recognition can return a blue shade or the broader hue for the same garment.
+_BLUE_SHADES = frozenset({"blue", "light_blue", "light blue", "dark_blue", "dark blue"})
+
 router = APIRouter(prefix="/v1/import-tasks", tags=["import-tasks"])
 
 
@@ -117,7 +120,13 @@ async def _attach_duplicates(
     response: ImportTaskResponse, session: AsyncSession, user_id: uuid.UUID
 ) -> None:
     pending = [candidate for candidate in response.candidate_items if candidate.confirmed_item_id is None]
-    category_colors = {(candidate.category, candidate.color_main) for candidate in pending}
+    matching_colors = {
+        candidate.color_main: _BLUE_SHADES if candidate.color_main in _BLUE_SHADES else {candidate.color_main}
+        for candidate in pending
+    }
+    category_colors = {
+        (candidate.category, color) for candidate in pending for color in matching_colors[candidate.color_main]
+    }
     if not category_colors:
         return
 
@@ -138,7 +147,7 @@ async def _attach_duplicates(
         matches = [
             item for item in items
             if item.category == candidate.category
-            and item.color_main == candidate.color_main
+            and item.color_main in matching_colors[candidate.color_main]
             and garment_type(item.canonical_name, item.title) == same_type
         ]
         candidate.possible_duplicates = [

@@ -57,6 +57,8 @@ async def enqueue_item_cutout(
     category: str,
     source_key: str | None = None,
     correlation_id: str | None = None,
+    title: str | None = None,
+    color: str | None = None,
 ) -> tuple[AsyncJob, bool]:
     """Idempotent (per-item) enqueue. Caller owns commit and must have already
     inserted the `WardrobeItem` + set its `cutout_status='queued'`."""
@@ -69,6 +71,8 @@ async def enqueue_item_cutout(
             "source_url": source_url,
             "source_key": source_key,
             "category": category,
+            "title": title,
+            "color": color,
         },
         user_id=user_id,
         target_id=item_id,
@@ -142,10 +146,13 @@ async def _process_one(job: AsyncJob) -> None:
     try:
         try:
             raw = await _load_source_bytes(source_url, source_key)
-            cutout = await image_cutout_service().extract(raw, category)
-            storage = object_storage()
-            cutout_key = f"{job.user_id}/items/{item_id}/cutout.png"
-            cutout_url = await storage.put_object(cutout_key, cutout, "image/png")
+            cutout = await image_cutout_service().extract(
+                raw, category, title=payload.get("title"), color=payload.get("color")
+            )
+            cutout_url = cutout_key = None
+            if cutout is not None:
+                cutout_key = f"{job.user_id}/items/{item_id}/cutout.png"
+                cutout_url = await object_storage().put_object(cutout_key, cutout, "image/png")
         except Exception as exc:
             logger.warning("cutout.render_failed", error=str(exc))
             async with AsyncSessionLocal() as session:
@@ -157,8 +164,19 @@ async def _process_one(job: AsyncJob) -> None:
         # outlive the lease, so if it was recovered + reclaimed elsewhere we
         # must NOT overwrite the item (mark_succeeded returns False → rollback).
         async with AsyncSessionLocal() as session:
-            await _apply_result(session, item_id, cutout_url=cutout_url, cutout_key=cutout_key)
-            ok = await mark_succeeded(session, job.id, claimed_attempt=job.attempts)
+            if cutout_url is None or cutout_key is None:
+                logger.info("cutout.rejected")
+                await session.execute(
+                    update(WardrobeItem)
+                    .where(WardrobeItem.id == item_id)
+                    .values(cutout_status=CutoutStatus.SKIPPED.value)
+                )
+            else:
+                await _apply_result(session, item_id, cutout_url=cutout_url, cutout_key=cutout_key)
+            ok = await mark_succeeded(
+                session, job.id, claimed_attempt=job.attempts,
+                result={"review": "rejected"} if cutout is None else None,
+            )
             if not ok:
                 await session.rollback()
                 logger.warning("cutout.lease_lost_discarding", job_id=str(job.id))

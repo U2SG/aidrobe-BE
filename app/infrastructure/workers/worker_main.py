@@ -115,9 +115,8 @@ class WorkerSettings:
     ]
     # async_jobs queues drain on a fixed cadence rather than via arq enqueue —
     # producers only write the row, so cron is the trigger. Keep drain ticks
-    # short for low latency, but lease recovery only every 15 min (the lease
-    # default is 10 min, so 15 min recovery + 10 min lease bounds a stuck job
-    # to ~25 min worst case before it re-enters the queue).
+    # short for low latency. The shared lease sweep runs every 15 min.
+    # The import drain also recovers its own expired leases on each tick.
     cron_jobs = (
         [
             cron(build_fit_profiles, hour=3, minute=30, name="fit_profile_aggregation"),

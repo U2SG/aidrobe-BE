@@ -9,7 +9,9 @@ class ImageCutoutPort(Protocol):
     real garment but not a pixel-faithful crop. Callers persist the original
     separately and treat the cutout as the cover image only."""
 
-    async def extract(self, image_bytes: bytes, category: str) -> bytes:
-        """Return cutout image bytes (PNG/JPEG). Raises on provider failure so
-        the worker can retry / dead-letter."""
+    async def extract(
+        self, image_bytes: bytes, category: str, *, title: str | None = None, color: str | None = None
+    ) -> bytes | None:
+        """Return the accepted product photo, or None if it failed visual review.
+        Provider errors raise so the worker can retry."""
         ...

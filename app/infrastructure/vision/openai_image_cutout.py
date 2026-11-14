@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from app.config.settings import Settings
+from app.infrastructure.vision.qwen_vision import QwenVision
 
 _EDITS_URL = "https://api.openai.com/v1/images/edits"
 
@@ -34,11 +35,15 @@ _NOUN: dict[str, str] = {
 _DEFAULT_NOUN = "clothing item"
 
 
-def _prompt(category: str) -> str:
+def _prompt(category: str, title: str | None = None, color: str | None = None) -> str:
     noun = _NOUN.get(category, _DEFAULT_NOUN)
+    target = f" Target garment: {title}." if title else ""
+    if color:
+        target += f" Target color: {color}."
     return (
         f"Isolate ONLY the {noun} from this photo and present it as a clean flat-lay "
-        "e-commerce product photo on a pure solid white (#ffffff) background. Remove any "
+        "e-commerce product photo on a pure solid white (#ffffff) background."
+        f"{target} Treat any other garments, including overlaid layers, as surrounding objects. Remove any "
         "person, hands, phone, mirror, hangers and the room/background. Preserve the exact "
         "color, shape, material, sleeves/straps and all details — do not restyle, recolor, "
         "or invent details."
@@ -51,8 +56,16 @@ class OpenAIImageCutout:
             raise ValueError("OPENAI_API_KEY is required for the openai image cutout provider")
         self.settings = settings
 
-    async def extract(self, image_bytes: bytes, category: str) -> bytes:
-        return await self._edit([image_bytes], _prompt(category))
+    async def extract(
+        self, image_bytes: bytes, category: str, *, title: str | None = None, color: str | None = None
+    ) -> bytes | None:
+        if not title or not color or not self.settings.QWEN_API_KEY:
+            return None
+        generated = await self._edit([image_bytes], _prompt(category, title, color))
+        reviewer = QwenVision(self.settings)
+        if await reviewer.matches_product_photo(image_bytes, generated, category=category, title=title, color=color):
+            return generated
+        return None
 
     async def render_outfit(self, images: list[bytes], roles: list[str]) -> bytes:
         pieces = ", ".join(f"image {index}: {role}" for index, role in enumerate(roles, 1))

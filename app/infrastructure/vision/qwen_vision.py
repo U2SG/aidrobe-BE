@@ -208,7 +208,31 @@ class QwenVision:
             confidence=confidence,
         )
 
-    async def _request_content(self, image_url: str, prompt: str) -> str:
+    async def matches_product_photo(
+        self, source: bytes, generated: bytes, *, category: str, title: str, color: str
+    ) -> bool:
+        def data_uri(image: bytes) -> str:
+            return f"data:{_image_mime(image)};base64,{base64.b64encode(image).decode('ascii')}"
+
+        expected = json.dumps({"category": category, "title": title, "color": color}, ensure_ascii=False)
+        content = await self._request_content(
+            data_uri(source),
+            "Check a generated clothing product photo against the real reference. The first image "
+            "is the reference and the second is the generated product. "
+            f"Expected item metadata: {expected}. "
+            "Accept only if the named item is clearly visible in the reference and the product shows "
+            "that same item, with matching color, sleeves, neckline, shape and visible details. Reject "
+            "a different garment, extra clothing, or reconstruction of hidden or uncertain details. "
+            "For shoes, reject when trouser hems cover the shoe opening or the side details are "
+            "out of view, if the product shows those areas. Check logos, toe perforations, stitching, "
+            "and sole shape individually. A matching generic type and color is insufficient. "
+            "Return only JSON with a boolean field accepted.",
+            data_uri(generated),
+        )
+        result = json.loads(self._strip_json_fence(content))
+        return isinstance(result, dict) and result.get("accepted") is True
+
+    async def _request_content(self, image_url: str, prompt: str, *reference_urls: str) -> str:
         # Inline private wardrobe images instead of exposing signed URLs to the
         # third-party vision provider.
         image_payload_url = await self._to_data_uri(image_url)
@@ -220,6 +244,10 @@ class QwenVision:
                     "content": [
                         {"type": "text", "text": prompt},
                         {"type": "image_url", "image_url": {"url": image_payload_url}},
+                        *(
+                            {"type": "image_url", "image_url": {"url": url}}
+                            for url in reference_urls
+                        ),
                     ],
                 }
             ],

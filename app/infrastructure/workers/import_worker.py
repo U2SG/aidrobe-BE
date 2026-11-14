@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from typing import Any, cast
 
@@ -27,10 +28,12 @@ from app.infrastructure.persistence.repositories.import_task_repo import (
 from app.infrastructure.persistence.session import AsyncSessionLocal
 from app.infrastructure.workers.garment_crops import attach_garment_crops
 from app.infrastructure.workers.job_runtime import (
+    JOB_STATUS_DEAD,
     claim_one,
     enqueue,
     mark_failed,
     mark_succeeded,
+    recover_expired_leases,
 )
 
 logger = structlog.get_logger(__name__)
@@ -42,6 +45,9 @@ logger = structlog.get_logger(__name__)
 IMPORT_JOB_TYPE = "import_task"
 # Vision/OCR is ~seconds and the user is polling, so drain a few per tick.
 IMPORT_MAX_DRAIN_PER_TICK = 10
+IMPORT_ATTEMPT_TIMEOUT_SECONDS = 60
+# Leave time to roll back and finalize after a timed-out attempt.
+IMPORT_LEASE_SECONDS = IMPORT_ATTEMPT_TIMEOUT_SECONDS + 15
 
 
 def _import_idempotency_key(task_id: uuid.UUID) -> str:
@@ -262,7 +268,8 @@ async def _process_one_import(job: AsyncJob) -> None:
         # returns False and we roll back the task write too — so a stale worker
         # never lands a status/candidate that could clobber the new claim's.
         async with AsyncSessionLocal() as session:
-            await process_import_task_with_session(session, task_id, user_id)
+            async with asyncio.timeout(IMPORT_ATTEMPT_TIMEOUT_SECONDS):
+                await process_import_task_with_session(session, task_id, user_id)
             ok = await mark_succeeded(session, job.id, claimed_attempt=job.attempts)
             if not ok:
                 await session.rollback()
@@ -270,20 +277,29 @@ async def _process_one_import(job: AsyncJob) -> None:
                 return
             await session.commit()
     except Exception as exc:
-        logger.warning("import_task.job_failed", task_id=task_id_str, error=str(exc))
+        error = "import_attempt_timed_out" if isinstance(exc, TimeoutError) else str(exc)
+        logger.warning("import_task.job_failed", task_id=task_id_str, error=error)
         async with AsyncSessionLocal() as session:
-            await mark_failed(session, job.id, claimed_attempt=job.attempts, error=str(exc))
+            status = await mark_failed(session, job.id, claimed_attempt=job.attempts, error=error)
             await session.commit()
+        if status == JOB_STATUS_DEAD:
+            await reconcile_dead_import_tasks(ctx=None)
     finally:
         structlog.contextvars.unbind_contextvars("correlation_id", "job_id", "task_id")
 
 
 async def drain_import_jobs(ctx: object) -> int:
-    """arq entrypoint. Drains up to `IMPORT_MAX_DRAIN_PER_TICK` import jobs."""
+    """Recover interrupted imports and drain the next batch."""
+    async with AsyncSessionLocal() as session:
+        recovered = await recover_expired_leases(session, job_type=IMPORT_JOB_TYPE)
+        await session.commit()
+    if recovered:
+        await reconcile_dead_import_tasks(ctx=None)
+
     processed = 0
     for _ in range(IMPORT_MAX_DRAIN_PER_TICK):
         async with AsyncSessionLocal() as session:
-            job = await claim_one(session, [IMPORT_JOB_TYPE])
+            job = await claim_one(session, [IMPORT_JOB_TYPE], lease_seconds=IMPORT_LEASE_SECONDS)
         if job is None:
             break
         await _process_one_import(job)
