@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.cost_guard import assert_within_quota
 from app.common import error_codes
-from app.common.enums import VisualType
+from app.common.enums import CutoutStatus, VisualType
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
 from app.infrastructure.cache.client import get_redis_client
@@ -27,7 +27,8 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
 from app.infrastructure.persistence.session import get_db_session as get_db
-from app.infrastructure.storage.object_key import is_legacy_garment_crop
+from app.infrastructure.storage.object_key import is_legacy_garment_crop, trusted_item_image_key
+from app.infrastructure.workers.job_runtime import JOB_STATUS_SUCCEEDED
 from app.infrastructure.workers.outfit_board_worker import enqueue_outfit_board
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url as _resolve_render_url
@@ -135,13 +136,16 @@ async def _outfit_board_item_list(
     review_sources = {}
     if generate and items:
         sources = await db.execute(
-            select(AsyncJob.target_id, AsyncJob.payload).where(
+            select(AsyncJob.target_id, AsyncJob.payload, AsyncJob.status, AsyncJob.result).where(
                 AsyncJob.job_type == "cutout",
                 AsyncJob.user_id == user_id,
                 AsyncJob.target_id.in_(items),
             )
         )
-        review_sources = {item_id: payload or {} for item_id, payload in sources}
+        review_sources = {
+            item_id: (payload or {}, job_status, result)
+            for item_id, payload, job_status, result in sources
+        }
 
     item_list: list[dict[str, str]] = []
     for item_id, item in items.items():
@@ -150,19 +154,32 @@ async def _outfit_board_item_list(
         if generate:
             board_item.update(title=item.title, color=item.color_main)
             crop = images.get("crop")
-            source = review_sources.get(item_id, {})
-            if is_legacy_garment_crop(source.get("source_key"), user_id) or is_legacy_garment_crop(
-                source.get("source_url"), user_id
-            ):
-                source = {}
+            source, job_status, result = review_sources.get(item_id, ({}, None, None))
+            source_key, source_url = source.get("source_key"), source.get("source_url")
+            if is_legacy_garment_crop(source_key, user_id) or is_legacy_garment_crop(source_url, user_id):
+                # The old worker wrote this standard image only after the product shot passed review.
+                standard = images.get("standard")
+                reviewed = (
+                    job_status == JOB_STATUS_SUCCEEDED
+                    and result is None
+                    and item.cutout_status == CutoutStatus.READY.value
+                    and standard is not None
+                    and standard.object_key == f"{user_id}/items/{item_id}/cutout.png"
+                    and standard.image_url == item.cover_image_url
+                )
+                owned_key = trusted_item_image_key(source_url, user_id, get_settings()) if reviewed else None
+                source_url = None
+                source_key = None if source_key not in (None, owned_key) else owned_key
+                if not is_legacy_garment_crop(source_key, user_id):
+                    source_key = None
             if crop is not None and crop.object_key:
                 board_item["review_object_key"] = crop.object_key
             elif crop is not None and crop.image_url:
                 board_item["review_image_url"] = crop.image_url
-            elif source.get("source_key"):
-                board_item["review_object_key"] = source["source_key"]
-            elif source.get("source_url"):
-                board_item["review_image_url"] = source["source_url"]
+            elif source_key:
+                board_item["review_object_key"] = source_key
+            elif source_url:
+                board_item["review_image_url"] = source_url
             elif item.cutout_status == "ready":
                 original = images.get("original")
                 if original is not None and original.object_key:
