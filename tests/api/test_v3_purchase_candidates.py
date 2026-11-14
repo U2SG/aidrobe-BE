@@ -26,6 +26,7 @@ from app.infrastructure.ocr.fake_ocr import FakeOcr
 from app.infrastructure.persistence.models.purchase_decision import PurchaseCandidate
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.session import get_db_session
+from app.application.ports.vision import VisionResult
 from app.infrastructure.vision.fake_vision import FakeVision
 from app.presentation.api.v1.routers import purchase_candidates
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
@@ -633,3 +634,34 @@ async def test_get_unknown_candidate_is_not_found(
         )
 
     assert resp.status_code == 404
+
+
+class _UnreachableVision(FakeVision):
+    """A real provider whose image or API host cannot be reached."""
+
+    async def analyze_image(self, image_url: str, locale: str = "zh-CN") -> VisionResult:
+        import httpx
+
+        raise httpx.ConnectError("All connection attempts failed")
+
+
+async def test_unreachable_vision_degrades_to_parse_failed_not_500(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Seen on the local stack with real Qwen (2026-11-14): a connection error
+    # escaped as a 500 instead of the contract's parse_failed.
+    user_id = uuid.uuid4()
+    await _seed_user(db_session, user_id)
+    _enable_flag(monkeypatch)
+    page = ProductPage(image_url="https://shop.example.com/coat.jpg", text="羊毛 coat ¥899")
+    app, _ = _build_app(db_session, links=_StubLinkParser(page=page))
+    app.dependency_overrides[purchase_candidates.get_vision_service] = lambda: _UnreachableVision()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/v1/purchase-candidates",
+            headers={"X-User-Id": str(user_id)},
+            json={"source_type": "share_link", "source_url": "https://shop.example.com/coat"},
+        )
+
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "parse_failed"

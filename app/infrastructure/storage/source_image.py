@@ -7,6 +7,8 @@ external import link fetched over HTTP behind the SSRF guard.
 
 from __future__ import annotations
 
+from urllib.parse import unquote, urlsplit
+
 import httpx
 
 from app.infrastructure.importers.link_parser import BROWSER_HEADERS, is_safe_url
@@ -17,12 +19,14 @@ def key_from_url(url: str, bucket: str) -> str | None:
 
     Internal URLs are `<base>/<bucket>/<key>` (S3/MinIO) regardless of which
     host the base used, so splitting on `/<bucket>/` is host-agnostic. Returns
-    None for URLs that don't reference our bucket (external import links)."""
+    None for URLs that don't reference our bucket (external import links).
+    Signed URLs carry their signature in the query string, which is dropped."""
+    path = urlsplit(url).path
     marker = f"/{bucket}/"
-    idx = url.find(marker)
+    idx = path.find(marker)
     if idx == -1:
         return None
-    return url[idx + len(marker) :]
+    return unquote(path[idx + len(marker) :])
 
 
 async def load_source_bytes(source_url: str, source_key: str | None) -> bytes:

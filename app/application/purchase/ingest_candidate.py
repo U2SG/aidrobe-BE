@@ -32,6 +32,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 
+import httpx
 import structlog
 
 from app.application.ports.ocr import OcrPort
@@ -250,8 +251,10 @@ class IngestPurchaseCandidate:
     async def _analyze_image(self, image_url: str) -> tuple[str, str] | None:
         try:
             reading = await self.vision.analyze_image(image_url)
-        except (ValueError, RuntimeError):
-            logger.info("v3.purchase_candidate.vision_failed")
+        except (ValueError, RuntimeError, httpx.HTTPError):
+            # Provider down, image unreadable or response malformed: the
+            # candidate degrades to parse_failed (contract §5.2), never a 500.
+            logger.info("v3.purchase_candidate.vision_failed", exc_info=True)
             return None
         return reading.category, reading.color_main
 

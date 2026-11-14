@@ -8,6 +8,7 @@ import httpx
 from app.application.ports.vision import StyleAnalysis, VisionResult
 from app.common.locale import DEFAULT_LOCALE, resolve_locale
 from app.config.settings import Settings
+from app.infrastructure.storage.source_image import load_source_bytes
 
 # Human-readable language names per locale for the prompt instruction. zh-CN
 # MUST yield natural Simplified Chinese; we never want an English display_name
@@ -241,21 +242,12 @@ class QwenVision:
         # Already inlined (e.g. a caller passed a data URI) — pass through.
         if image_url.startswith("data:"):
             return image_url
-        # Some image hosts 403 a default httpx UA; present as a browser.
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
-        }
-        async with httpx.AsyncClient(timeout=self.settings.VISION_TIMEOUT_SECONDS, headers=headers) as client:
-            response = await client.get(image_url, follow_redirects=True)
-            response.raise_for_status()
-        content_type = response.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-        if not content_type.startswith("image/"):
-            content_type = "image/jpeg"
-        encoded = base64.b64encode(response.content).decode("ascii")
-        return f"data:{content_type};base64,{encoded}"
+        # Our own uploads are read from storage by key: the public URL is for
+        # devices and may not resolve from the worker (in the local stack it is
+        # localhost:9000). External import links are fetched behind the SSRF guard.
+        data = await load_source_bytes(image_url, None)
+        encoded = base64.b64encode(data).decode("ascii")
+        return f"data:{_image_mime(data)};base64,{encoded}"
 
     @staticmethod
     def _strip_json_fence(content: str) -> str:
@@ -381,6 +373,14 @@ def merge_paired_garments(results: list[VisionResult]) -> list[VisionResult]:
             confidence_score=max(first.confidence_score, result.confidence_score),
         )
     return merged
+
+
+def _image_mime(data: bytes) -> str:
+    if data.startswith(b"\x89PNG"):
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
 
 
 def garment_box(raw: Any) -> tuple[float, float, float, float] | None:
