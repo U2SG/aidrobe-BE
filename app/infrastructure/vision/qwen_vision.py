@@ -222,12 +222,9 @@ class QwenVision:
     async def matches_product_photo(
         self, source: bytes, generated: bytes, *, category: str, title: str, color: str
     ) -> bool:
-        def data_uri(image: bytes) -> str:
-            return f"data:{_image_mime(image)};base64,{base64.b64encode(image).decode('ascii')}"
-
         expected = json.dumps({"category": category, "title": title, "color": color}, ensure_ascii=False)
         content = await self._request_content(
-            data_uri(source),
+            _image_data_uri(source),
             "Check a generated clothing product photo against the real reference. The first image "
             "is the reference and the second is the generated product. "
             f"Expected item metadata: {expected}. "
@@ -238,10 +235,69 @@ class QwenVision:
             "out of view, if the product shows those areas. Check logos, toe perforations, stitching, "
             "and sole shape individually. A matching generic type and color is insufficient. "
             "Return only JSON with a boolean field accepted.",
-            data_uri(generated),
+            _image_data_uri(generated),
         )
         result = json.loads(self._strip_json_fence(content))
         return isinstance(result, dict) and result.get("accepted") is True
+
+    async def matches_outfit_photo(
+        self, sources: list[bytes], generated: bytes, *, garments: list[str]
+    ) -> bool:
+        content = await self._request_content(
+            _image_data_uri(generated),
+            "Verify the outfit flat lay in image 1 using only the references that follow it. "
+            "The names help identify the target in a reference and do not prove any feature is visible. "
+            f"The reference garments in order are {json.dumps(garments, ensure_ascii=False)}. "
+            "Check each target garment separately. Match the visible color, neckline or collar, sleeves, "
+            "hem, leg width, fabric, pockets, seams, fasteners, and the side and position of marks. "
+            "Reject mirrored or moved visible details, changed visible construction, or extra pieces. "
+            "Allow a new angle and completion of areas genuinely hidden in the references. "
+            "Check for material changes to any area visible in both images. Specifically compare shoe "
+            "toe shape, visible seams and surface markings. A smooth visible toe panel cannot gain holes "
+            "or a logo. The previously hidden heel or opening may now be visible. Detached shoe fragments fail. "
+            "Decide whether each item is present independently from whether its details match. "
+            "Mark uncertainty as false. "
+            'Return JSON with "composition_matches" (boolean for every piece present and no extras) and '
+            '"garment_matches" (array of one boolean per reference, in reference order, true only if '
+            "the photographed visible features match).",
+            *(_image_data_uri(source) for source in sources),
+        )
+        result = json.loads(self._strip_json_fence(content))
+        if not isinstance(result, dict):
+            raise ValueError("Invalid outfit quality review response")
+        marks = result.get("garment_matches")
+        if (
+            not isinstance(marks, list) or len(marks) != len(garments)
+            or not all(isinstance(mark, bool) for mark in marks)
+            or not isinstance(result.get("composition_matches"), bool)
+        ):
+            raise ValueError("Invalid outfit quality review response")
+        return result["composition_matches"] is True and all(marks)
+
+    async def matches_outfit_footwear(self, source: bytes, generated: bytes) -> bool:
+        content = await self._request_content(
+            _image_data_uri(source),
+            "Compare the actual shoe photo in image 1 with the shoes at the bottom of the outfit in image 2. "
+            "Ignore all other garments except where they occlude the shoes. Compare the two photos visually. "
+            "Allow reconstruction of the photographed shoe's hidden areas, including its heel, collar and "
+            "opening. Compare the same regions in both images, accounting for viewpoint. Check toe shape, "
+            "panel contours, edge seams, visible laces and sole. Compare whether the visible toe seam "
+            "is dark or light against the upper, and whether it traces the same path around the toe. "
+            "Reject changes to those features, including "
+            "perforations, logos or decoration on a surface visible without them in image 1. "
+            "A complete shoe may look different in the previously hidden areas; score only the visible evidence. "
+            "Detached shoe fragments fail. "
+            'Return JSON with boolean fields "visible_design_matches" and "no_changes_on_visible_regions".',
+            _image_data_uri(generated),
+        )
+        result = json.loads(self._strip_json_fence(content))
+        if not isinstance(result, dict):
+            raise ValueError("Invalid footwear quality review response")
+        visible_design = result.get("visible_design_matches")
+        details_preserved = result.get("no_changes_on_visible_regions")
+        if not isinstance(visible_design, bool) or not isinstance(details_preserved, bool):
+            raise ValueError("Invalid footwear quality review response")
+        return visible_design and details_preserved
 
     async def _request_content(
         self, image_url: str, prompt: str, *reference_urls: str, source_key: str | None = None
@@ -415,6 +471,10 @@ def merge_paired_garments(results: list[VisionResult]) -> list[VisionResult]:
             confidence_score=max(first.confidence_score, result.confidence_score),
         )
     return merged
+
+
+def _image_data_uri(data: bytes) -> str:
+    return f"data:{_image_mime(data)};base64,{base64.b64encode(data).decode('ascii')}"
 
 
 def _image_mime(data: bytes) -> str:

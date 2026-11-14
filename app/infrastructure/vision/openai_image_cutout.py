@@ -68,15 +68,29 @@ class OpenAIImageCutout:
             return CutoutResult("succeeded", generated)
         return CutoutResult("quality_rejected")
 
-    async def render_outfit(self, images: list[bytes], roles: list[str]) -> bytes:
-        pieces = ", ".join(f"image {index}: {role}" for index, role in enumerate(roles, 1))
+    async def render_outfit(
+        self, images: list[bytes], garments: list[str], *, emphasize_shoe_details: bool = False
+    ) -> bytes:
+        pieces = "; ".join(f"image {index}: {garment}" for index, garment in enumerate(garments, 1))
+        footwear = (
+            "Copy the visible toe panels, curved seams, and outsole edges from the shoe photo before "
+            "completing the rear. Keep the photographed toe proportions, stitch paths and surface pattern. "
+            "A smooth visible panel stays smooth. Keep any identifiable pair differences. "
+            if emphasize_shoe_details else ""
+        )
         return await self._edit(
             images,
             "Create one cohesive fashion flat lay on a clean light neutral background. "
-            f"The images are clothing references for these slots: {pieces}. Show exactly one "
-            "garment per slot and a pair for shoes. Keep the exact colours, prints, fabrics and "
-            "silhouettes. Remove all people, phones, hangers and surroundings. Arrange the outfit "
-            "as a full, coordinated look with all pieces fully in view. Use no text or labels.",
+            f"The numbered references show these garments: {pieces}. Show every listed garment and no extras. "
+            "Match the actual color, fabric, cut, seams, fasteners and markings visible in each reference. "
+            "Preserve which side each detail appears on. Do not mirror the garments. "
+            "Complete portions hidden by fabric, cropping or framing in a simple way consistent with "
+            "the visible design. For shoes keep every photographed feature like toe shape, panel seams, "
+            "perforations or lack of them, laces where visible, and sole edge. Use a plain coherent design "
+            "for the unshown heel and opening. Show complete pairs. "
+            "Treat the visible seam color and routing as construction details, even where the seam is thin. "
+            f"{footwear}Leave background margin around the garments. "
+            "Remove people, phones, hangers and surroundings. Use no text or labels.",
         )
 
     async def _edit(self, images: list[bytes], prompt: str) -> bytes:
