@@ -249,11 +249,12 @@ class QwenVision:
             "is the reference and the second is the generated product. "
             f"Expected item metadata: {expected}. "
             "Accept only if the named item is clearly visible in the reference and the product shows "
-            "that same item, with matching color, sleeves, neckline, shape and visible details. Reject "
-            "a different garment, extra clothing, or reconstruction of hidden or uncertain details. "
-            "For shoes, reject when trouser hems cover the shoe opening or the side details are "
-            "out of view, if the product shows those areas. Check logos, toe perforations, stitching, "
-            "and sole shape individually. A matching generic type and color is insufficient. "
+            "that same item, preserving its visible color, geometry, material, construction and markings. "
+            "Reject a different garment, extra clothing, or changed visible details. "
+            "Allow plain, consistent completion of parts genuinely hidden by another garment or the frame. "
+            "Allow reasonable changes in folds and lighting from wearing versus a product display. "
+            "Check lettering, the position and scale of logos, and shoe toe panels, perforations, stitching "
+            "and sole shape. Score corresponding visible areas. A generic match in type and color is insufficient. "
             "Return only JSON with a boolean field accepted.",
             _image_data_uri(generated),
         )
