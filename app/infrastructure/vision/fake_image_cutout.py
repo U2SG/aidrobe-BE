@@ -8,5 +8,7 @@ from __future__ import annotations
 
 
 class FakeImageCutout:
-    async def extract(self, image_bytes: bytes, category: str) -> bytes:
+    async def extract(
+        self, image_bytes: bytes, category: str, *, title: str | None = None, color: str | None = None
+    ) -> bytes:
         return image_bytes

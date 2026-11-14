@@ -64,14 +64,8 @@ def _png_bytes() -> bytes:
 
 
 def _patch_render_deps(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Source read + storage mocked; the FakeImageCutout (returns source
-    unchanged) exercises the real provider switch."""
-    from app.infrastructure.vision.fake_image_cutout import FakeImageCutout
-
+    """Keep image reads and writes in memory."""
     monkeypatch.setattr("app.bootstrap.container.object_storage", lambda: _FakeStorage())
-    monkeypatch.setattr(
-        "app.bootstrap.container.image_cutout_service", lambda: FakeImageCutout()
-    )
 
     async def _fake_load(source_url: str, source_key: str | None) -> bytes:
         return _png_bytes()
@@ -134,21 +128,40 @@ async def test_enqueue_idempotent_per_item(
     assert first.idempotency_key == f"cutout:{item_id}"
 
 
-async def test_drain_updates_item_and_marks_succeeded(
+@pytest.mark.parametrize("accepted", [True, False])
+async def test_drain_applies_only_accepted_product_photos(
     patched_session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
+    accepted: bool,
 ) -> None:
     _patch_render_deps(monkeypatch)
+    hints: list[tuple[str | None, str | None]] = []
+
+    class RecordingCutout:
+        async def extract(
+            self, image_bytes: bytes, category: str, *, title: str | None = None, color: str | None = None
+        ) -> bytes | None:
+            hints.append((title, color))
+            return image_bytes if accepted else None
+
+    monkeypatch.setattr("app.bootstrap.container.image_cutout_service", RecordingCutout)
     user_id, item_id = await _seed_item(patched_session_factory)
     async with patched_session_factory() as s:
         job, _ = await enqueue_item_cutout(
-            s, item_id=item_id, user_id=user_id, source_url="https://x/o.jpg", category="top"
+            s,
+            item_id=item_id,
+            user_id=user_id,
+            source_url="https://x/o.jpg",
+            category="top",
+            title="White undershirt",
+            color="white",
         )
         await s.commit()
         job_id = job.id
 
     processed = await drain_cutout_jobs(ctx=None)
     assert processed == 1
+    assert hints == [("White undershirt", "white")]
 
     async with patched_session_factory() as s:
         finalized = await s.get(AsyncJob, job_id)
@@ -157,10 +170,9 @@ async def test_drain_updates_item_and_marks_succeeded(
 
         item = await s.get(WardrobeItem, item_id)
         assert item is not None
-        assert item.cutout_status == CutoutStatus.READY.value
-        # The cutout is what the item shows (for outfit-photo garments it is
-        # the only picture of just that garment)...
-        assert item.cover_image_url == f"https://fake-storage/{user_id}/items/{item_id}/cutout.png"
+        assert item.cutout_status == (CutoutStatus.READY.value if accepted else CutoutStatus.SKIPPED.value)
+        expected_cover = f"https://fake-storage/{user_id}/items/{item_id}/cutout.png" if accepted else "https://x/original.jpg"
+        assert item.cover_image_url == expected_cover
         assert item.original_image_url == "https://x/original.jpg"
 
         standard = (
@@ -171,7 +183,8 @@ async def test_drain_updates_item_and_marks_succeeded(
                 )
             )
         ).scalar_one()
-        assert standard.object_key == f"{user_id}/items/{item_id}/cutout.png"
+        assert standard.image_url == expected_cover
+        assert standard.object_key == (f"{user_id}/items/{item_id}/cutout.png" if accepted else None)
 
 
 async def test_drain_skips_invalid_payload(
@@ -224,9 +237,12 @@ async def test_reconcile_dead_marks_item_failed(
         assert item.cutout_status == CutoutStatus.FAILED.value
 
 
-async def test_confirm_enqueues_cutout_when_flag_on(
+@pytest.mark.parametrize(("input_type", "enqueued"), [("image", True), ("outfit_image", False)])
+async def test_confirm_enqueues_cutout_only_with_usable_source(
     patched_session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
+    input_type: str,
+    enqueued: bool,
 ) -> None:
     """Confirm-import enqueues a cutout job + flips the item to 'queued' only
     when ENABLE_ITEM_CUTOUT is on. Flag is monkeypatched on the consuming
@@ -253,7 +269,7 @@ async def test_confirm_enqueues_cutout_when_flag_on(
         await s.flush()
         task = ImportTask(
             user_id=user_id,
-            input_type="image",
+            input_type=input_type,
             source_type="album",
             task_status=ImportStatus.WAITING_CONFIRM.value,
             input_payload={"image_url": "https://x/o.jpg"},
@@ -285,15 +301,19 @@ async def test_confirm_enqueues_cutout_when_flag_on(
     async with patched_session_factory() as s:
         refreshed = await s.get(WardrobeItem, item_id)
         assert refreshed is not None
-        assert refreshed.cutout_status == CutoutStatus.QUEUED.value
+        assert refreshed.cutout_status == (CutoutStatus.QUEUED.value if enqueued else CutoutStatus.SKIPPED.value)
         job = (
             await s.execute(
                 select(AsyncJob).where(
                     AsyncJob.job_type == JOB_TYPE, AsyncJob.target_id == item_id
                 )
             )
-        ).scalar_one()
-        assert job.idempotency_key == f"cutout:{item_id}"
+        ).scalar_one_or_none()
+        if enqueued:
+            assert job is not None
+            assert job.idempotency_key == f"cutout:{item_id}"
+        else:
+            assert job is None
 
 
 def test_drain_constants_are_sane() -> None:
