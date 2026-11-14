@@ -97,7 +97,7 @@ _ASK_BUTLER = {
         "For what-to-wear questions, recommend one complete look: top and bottom or a dress, plus shoes. "
         "Call validate_outfit on the exact set first. Use outfit only after it passes; referenced_items must match "
         "the checked positions. Use item_advice for individual pieces or partial pairings, citing wearable pieces. "
-        "Use natural item names. Use general with empty referenced_items for general guidance or a clarifying question. "
+        "Use natural item names. For general guidance or a clarifying question, use general with no references. "
         "Call get_weather first when weather or a date affects the advice; supply a city only if the user named one. "
         "Report retrieved conditions or say weather is unavailable. Validate using the same date and city, and use "
         "formal for an interview or formal meeting. Use search_wardrobe to find named pieces or check availability; "
