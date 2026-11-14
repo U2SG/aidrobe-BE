@@ -427,7 +427,23 @@ async def test_vision_worker_writes_length_one_candidate_items(db_session: Async
     assert data["candidate_item"]["title"] == candidate_items[0]["title"]
 
 
-async def test_outfit_vision_worker_writes_each_detected_garment(db_session: AsyncSession) -> None:
+async def test_outfit_vision_worker_omits_layers_without_enough_evidence(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    from app.application.ports.vision import VisionResult
+    from app.infrastructure.vision.fake_vision import FakeVision
+
+    analyze_outfit = FakeVision.analyze_outfit
+
+    async def identify(self: FakeVision, image_url: str, locale: str) -> list[VisionResult]:
+        top, bottom = await analyze_outfit(self, image_url, locale)
+        uncertain_layer = replace(top, title="White T-shirt", canonical_name="White T-shirt", style_unverified=True)
+        guessed_layer = replace(top, title="白色圆领T恤", canonical_name="White T-shirt", bbox=None)
+        return [uncertain_layer, guessed_layer, top, bottom]
+
+    monkeypatch.setattr(FakeVision, "analyze_outfit", identify)
     user_id = uuid.uuid4()
     app = build_import_tasks_app(db_session)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
@@ -445,11 +461,10 @@ async def test_outfit_vision_worker_writes_each_detected_garment(db_session: Asy
         data = await wait_for_task_status(client, task_id, user_id, "waiting_confirm")
 
     candidate_items = data["candidate_items"]
-    assert len(candidate_items) == 2
     assert [item["category"] for item in candidate_items] == ["top", "bottom"]
     assert all(item["temp_item_id"] for item in candidate_items)
     assert len({item["temp_item_id"] for item in candidate_items}) == 2
-    assert all(item["should_import"] is True for item in candidate_items)
+    assert all(item["should_import"] for item in candidate_items)
     assert data["candidate_item"]["title"] == candidate_items[0]["title"]
 
 

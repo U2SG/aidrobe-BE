@@ -75,6 +75,17 @@ def _candidate(result: VisionResult, url: str, candidate_id: str) -> dict[str, A
     }
 
 
+def _is_unverified_layer(result: VisionResult, *, has_located_upper_garment: bool) -> bool:
+    if result.style_unverified:
+        return True
+    if result.bbox is not None:
+        return False
+    name = f"{result.title} {result.display_name} {result.canonical_name}".casefold()
+    return any(word in name for word in ("内搭", "打底", "inner layer", "base layer", "undershirt")) or (
+        has_located_upper_garment and result.category == "top"
+    )
+
+
 async def _current_task(
     session: AsyncSession, task_id: uuid.UUID, user_id: uuid.UUID, generation: int, job: AsyncJob | None
 ) -> ImportTask | None:
@@ -236,6 +247,14 @@ async def _recognize(
             vision_rate_limiter().check(user_id)
             if input_type == InputType.OUTFIT_IMAGE:
                 results = await vision.analyze_outfit(image, locale)
+                has_located_upper_garment = any(
+                    result.category in {"top", "outerwear"} and result.bbox is not None and not result.style_unverified
+                    for result in results
+                )
+                results = [
+                    result for result in results
+                    if not _is_unverified_layer(result, has_located_upper_garment=has_located_upper_garment)
+                ]
             else:
                 results = [await vision.analyze_image(image, locale)]
             if not results:

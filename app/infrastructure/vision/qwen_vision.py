@@ -94,6 +94,9 @@ def build_outfit_vision_prompt(locale: str) -> str:
         "For shorts the bottom edge is the shorts hem, never the knee, lower leg or foot. "
         "For shoes include both visible shoes, stopping at the shoe opening. For layered garments "
         "include only the specific layer. Use null if the item cannot be separately located. "
+        "Omit an inner layer when only a narrow strip at the hem or collar is visible. "
+        "A strip of fabric is insufficient to determine whether a separate garment exists, "
+        "or to call it a T-shirt, tank or blouse. If an uncertain layer is returned, set style_unverified=true. "
         "If no garment is visible, return {\"items\": []}."
     )
 
@@ -174,6 +177,7 @@ class QwenVision:
                         garment_box(raw["box_2d"], scale=1000)
                         if "box_2d" in raw else garment_box(raw.get("box"))
                     ),
+                    style_unverified=raw.get("style_unverified") is True,
                 )
                 for raw in raw_items
             ]
@@ -260,11 +264,12 @@ class QwenVision:
             "is the reference and the second is the generated product. "
             f"Expected item metadata: {expected}. "
             "Accept only if the named item is clearly visible in the reference and the product shows "
-            "that same item, with matching color, sleeves, neckline, shape and visible details. Reject "
-            "a different garment, extra clothing, or reconstruction of hidden or uncertain details. "
-            "For shoes, reject when trouser hems cover the shoe opening or the side details are "
-            "out of view, if the product shows those areas. Check logos, toe perforations, stitching, "
-            "and sole shape individually. A matching generic type and color is insufficient. "
+            "that same item, preserving its visible color, geometry, material, construction and markings. "
+            "Reject a different garment, extra clothing, or changed visible details. "
+            "Allow plain, consistent completion of parts genuinely hidden by another garment or the frame. "
+            "Allow reasonable changes in folds and lighting from wearing versus a product display. "
+            "Check lettering, the position and scale of logos, and shoe toe panels, perforations, stitching "
+            "and sole shape. Score corresponding visible areas. A generic match in type and color is insufficient. "
             "Return only JSON with a boolean field accepted.",
             _image_data_uri(generated),
         )

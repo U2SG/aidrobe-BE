@@ -46,8 +46,11 @@ def _prompt(category: str, title: str | None = None, color: str | None = None) -
         "e-commerce product photo on a pure solid white (#ffffff) background."
         f"{target} Treat any other garments, including overlaid layers, as surrounding objects. Remove any "
         "person, hands, phone, mirror, hangers and the room/background. Preserve the exact "
-        "color, shape, material, sleeves/straps and all details — do not restyle, recolor, "
-        "or invent details."
+        "color, shape, material, sleeves/straps and construction in the visible areas. "
+        "Copy legible lettering and markings at their actual scale and position. Keep unclear markings "
+        "indistinct. Match visible shoe toes, panel seams, surface texture, laces and sole edges. "
+        "Show the complete item by finishing only the hidden parts with plain, matching construction. "
+        "Use a similar angle to make the visible areas directly comparable."
     )
 
 
