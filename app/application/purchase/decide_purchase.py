@@ -97,6 +97,7 @@ def parsed_item_from_snapshot(raw: Any) -> ParsedItem | None:
         material_hints=_list("material_hints"),
         price=_str("price"),
         scene_tags=_list("scene_tags"),
+        garment_type=_str("garment_type"),
     )
 
 

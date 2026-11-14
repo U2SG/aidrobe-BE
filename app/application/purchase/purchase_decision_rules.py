@@ -318,6 +318,7 @@ _TEMPLATES: dict[str, dict[str, str]] = {
     "zh-CN": {
         "decision.worth_adding": "值得加入。它能和你现在的衣橱组成可以直接穿的搭配。",
         "decision.consider_alternate": "可以考虑，但建议换个颜色再判断。",
+        "decision.consider_alternate.similar": "可以考虑。你已有一件同款不同色的，想清楚是否需要再多一件。",
         "decision.wait": "先等等。以现在的衣橱，它还穿不出完整的一套。",
         "decision.avoid_duplicate": "不建议重复购买。你已经有能做同样事的单品。",
         "decision.insufficient_information": "信息不足，先确认关键条件。商品信息没有解析出可比对的属性。",
@@ -350,6 +351,9 @@ _TEMPLATES: dict[str, dict[str, str]] = {
     "en-US": {
         "decision.worth_adding": "Worth adding. It makes a wearable outfit with what you already own.",
         "decision.consider_alternate": "Worth considering, but check a different colour first.",
+        "decision.consider_alternate.similar": (
+            "Worth considering. You already own one like it in another colour — check you need a second."
+        ),
         "decision.wait": "Hold off. Your wardrobe cannot complete an outfit around it yet.",
         "decision.avoid_duplicate": "Not worth duplicating. You already own something that does this job.",
         "decision.insufficient_information": (
@@ -454,6 +458,15 @@ def _decision_state(closet: ClosetEvidence, outfit: OutfitEvidence) -> str:
     return PurchaseDecision.WORTH_ADDING.value
 
 
+def _headline_key(decision: str, outfit: OutfitEvidence) -> str:
+    """`consider_alternate` has two causes; only a colour clash should say
+    "try another colour". A same-type item in another colour (medium
+    redundancy) gets its own line instead of advice it already follows."""
+    if decision == PurchaseDecision.CONSIDER_ALTERNATE.value and not _has_color_conflict(outfit):
+        return "decision.consider_alternate.similar"
+    return f"decision.{decision}"
+
+
 def _observed_coverage(closet: ClosetEvidence) -> bool:
     """True when at least one scene claim rests on something the user actually
     did (a wear record or their own item tags) rather than on V3-005's weakest
@@ -545,7 +558,8 @@ def _next_actions(decision: str, closet: ClosetEvidence, outfit: OutfitEvidence)
             actions.append(ACTION_STYLE_WITH_EXISTING)
         actions.append(ACTION_SKIP)
     elif decision == PurchaseDecision.CONSIDER_ALTERNATE.value:
-        actions.append(ACTION_RECHECK_COLOR)
+        if _has_color_conflict(outfit):
+            actions.append(ACTION_RECHECK_COLOR)
         actions.append(ACTION_ADD_TO_CANDIDATES)
         if outfit.alternatives:
             actions.append(ACTION_STYLE_WITH_EXISTING)
@@ -774,7 +788,7 @@ def decide(
 
     return PurchaseDecisionOutcome(
         decision=decision,
-        decision_text=_text(effective_locale, f"decision.{decision}"),
+        decision_text=_text(effective_locale, _headline_key(decision, outfit)),
         reasons=_reasons(effective_locale, decision, parsed, closet, outfit),
         closet_comparison=ClosetComparison(
             summary_text=_summary(effective_locale, closet, outfit, category),

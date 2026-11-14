@@ -40,6 +40,8 @@ def test_frozen_shape_keys_are_always_present() -> None:
         "material_hints",
         "price",
         "scene_tags",
+        # Additive revision 2026-11-14 (contract §5.2).
+        "garment_type",
     }
     assert all(value is None for value in payload.values())
 
@@ -163,3 +165,21 @@ def test_untrusted_text_is_length_bounded_before_extraction() -> None:
 
     assert beyond_cap.material_hints is None
     assert within_cap.material_hints == ["cashmere"]
+
+
+
+def test_provider_garment_type_and_material_are_kept() -> None:
+    from app.application.purchase.candidate_normalizer import normalize_candidate
+
+    parsed = normalize_candidate(category="top", color="black", garment_type="tee", material="Cotton")
+    assert parsed.garment_type == "tee"
+    assert parsed.material_hints == ["cotton"]
+    assert parsed.as_payload()["garment_type"] == "tee"
+
+
+
+def test_page_text_material_wins_over_recognised_material() -> None:
+    from app.application.purchase.candidate_normalizer import normalize_candidate
+
+    parsed = normalize_candidate(category="top", color="white", raw_text="100% 羊毛 sweater", material="cotton")
+    assert parsed.material_hints == ["wool"]

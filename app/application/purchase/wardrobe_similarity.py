@@ -145,6 +145,8 @@ class OwnedItemFacts:
     category: str
     color_main: str = ""
     material: str | None = None
+    # Coarse type from canonical_name / sub_category / title (garment_type.py).
+    garment_type: str | None = None
     # Normalized `wardrobe_items.style_tags` (JSONB is `{"tags": [...]}` in
     # most writers and a bare list in others — `normalize_style_tags` folds both).
     style_tags: tuple[str, ...] = ()
@@ -276,6 +278,19 @@ def match_reasons(parsed: ParsedItem, facts: OwnedItemFacts) -> tuple[str, ...]:
     return tuple(reasons)
 
 
+def is_substitute(parsed: ParsedItem, facts: OwnedItemFacts) -> bool:
+    """Whether a same-category owned item could do the candidate's job.
+
+    When both garment types are known they must match: a black graphic tee is
+    not covered by a black turtleneck base layer. When either is unknown (a
+    page-text candidate, an item imported before types were recognised) we
+    cannot tell, and keep treating the same category as comparable.
+    """
+    if parsed.garment_type is None or facts.garment_type is None:
+        return True
+    return parsed.garment_type == facts.garment_type
+
+
 def _match_score(reasons: tuple[str, ...]) -> int:
     """Internal ranking weight. Never emitted — see the module docstring."""
     return (
@@ -378,7 +393,9 @@ def build_evidence(
 
     category = (parsed.category or "").strip().lower()
     complements = COMPLEMENTARY_CATEGORIES.get(category, ())
-    covers = [f for f in ranked if f.category == category]
+    # Only real substitutes "cover" the candidate; a same-category item of a
+    # different type (tee vs turtleneck) is neither a duplicate nor a pairing.
+    covers = [f for f in ranked if f.category == category and is_substitute(parsed, f)]
     complementary = [f for f in ranked if f.category != category and f.category in complements]
 
     similar: list[SimilarItemEvidence] = [

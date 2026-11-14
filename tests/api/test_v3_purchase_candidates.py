@@ -241,8 +241,9 @@ async def test_screenshot_source_parses_through_vision_on_the_signed_key(
     # "pants" in the signed URL steers FakeVision to the black bottom.
     assert body["parsed_item"]["category"] == "bottom"
     assert body["parsed_item"]["colors"] == ["black"]
-    # A screenshot has no page text, so text-derived fields stay unknown.
-    assert body["parsed_item"]["material_hints"] is None
+    # A screenshot has no page text: the material comes from recognition
+    # (FakeVision's black bottom is wool), price stays unknown.
+    assert body["parsed_item"]["material_hints"] == ["wool"]
     assert body["parsed_item"]["price"] is None
     assert links.calls == []
 

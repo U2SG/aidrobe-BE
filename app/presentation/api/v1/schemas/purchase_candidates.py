@@ -34,6 +34,9 @@ class ParsedItemModel(BaseModel):
     category: str | None = None
     colors: list[str] | None = None
     silhouette: str | None = None
+    # Coarse garment type (tee, turtleneck, jeans, sneakers, …); additive to
+    # the frozen §5.2 shape. Duplicate checks require it to match when known.
+    garment_type: str | None = None
     material_hints: list[str] | None = None
     price: str | None = None
     scene_tags: list[str] | None = None

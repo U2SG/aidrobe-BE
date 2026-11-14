@@ -67,6 +67,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.application.purchase.candidate_normalizer import ParsedItem
+from app.application.purchase.garment_type import garment_type
 from app.application.purchase.wardrobe_similarity import (
     COMPLEMENTARY_CATEGORIES,
     ClosetEvidence,
@@ -152,6 +153,7 @@ async def compute_similarity_evidence(
             category=item.category,
             color_main=item.color_main or "",
             material=item.material,
+            garment_type=garment_type(item.canonical_name, item.sub_category, item.title),
             style_tags=normalize_style_tags(item.style_tags),
             wear_scenes=tuple(sorted(scenes.get(item.id, set()))),
         )
