@@ -176,10 +176,11 @@ def normalize_candidate(
     """
     text = bound_untrusted_text(raw_text).lower()
     materials = _matches(text, MATERIAL_HINTS)[:_MAX_HINTS]
-    # A recognised material (provider vocabulary) leads the page-text hints.
+    # The merchant's own text beats a material guessed from the photo; the
+    # recognised one only fills in when the text named none (e.g. screenshots).
     provider_material = (material or "").strip().lower()
-    if provider_material in MATERIAL_HINTS and provider_material not in materials:
-        materials = [provider_material, *materials][:_MAX_HINTS]
+    if not materials and provider_material in MATERIAL_HINTS:
+        materials = [provider_material]
     scenes = _matches(text, SCENE_TAGS)[:_MAX_HINTS]
     return ParsedItem(
         category=category or None,
