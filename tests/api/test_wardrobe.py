@@ -5,13 +5,16 @@ from datetime import UTC, datetime
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.enums import ImageType
 from app.config.settings import Settings, get_settings
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.session import get_db_session
+from app.infrastructure.vision.fake_vision import FakeVision
 from app.presentation.api.v1.routers import import_tasks as import_tasks_router
 from app.presentation.api.v1.routers import wardrobe as wardrobe_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
@@ -65,6 +68,53 @@ async def create_item(
         },
     )
     return confirm_response.json()["data"]["item_id"]
+
+
+async def test_manual_wardrobe_photo_actions_keep_the_confirmed_item(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.application.wardrobe.item_photo import ItemReference
+
+    reference_url = "https://storage.example/pants.jpg"
+
+    async def reference(*args: object) -> ItemReference:
+        return ItemReference(reference_url, None)
+
+    monkeypatch.setattr(wardrobe_router, "item_reference", reference)
+    monkeypatch.setattr(wardrobe_router, "vision_service", FakeVision)
+    monkeypatch.setattr(wardrobe_router, "get_settings", lambda: Settings(ENABLE_ITEM_CUTOUT=True))
+    user_id = uuid.uuid4()
+    db_session.add(User(id=user_id))
+    await db_session.flush()
+    item = WardrobeItem(
+        user_id=user_id, title="Confirmed name", category="bottom", color_main="olive",
+        original_image_url=reference_url, cover_image_url="https://storage.example/old-product.png",
+        cutout_status="ready", created_at=datetime.now(UTC),
+    )
+    db_session.add(item)
+    await db_session.flush()
+    path = f"/v1/wardrobe-items/{item.id}"
+    headers = {"X-User-Id": str(user_id)}
+    async with AsyncClient(transport=ASGITransport(app=build_wardrobe_app(db_session)),
+                           base_url="http://testserver") as client:
+        suggestion = await client.post(f"{path}/recognize", headers=headers)
+        assert suggestion.status_code == 200, suggestion.text
+        assert suggestion.json()["data"]["category"] == "bottom"
+        assert suggestion.json()["data"]["title"] != item.title
+        queued = await client.post(f"{path}/product-image", headers=headers)
+        repeated = await client.post(f"{path}/product-image", headers=headers)
+        assert queued.status_code == repeated.status_code == 202, queued.text
+        for response in (queued, repeated):
+            current = response.json()["data"]
+            assert current["cutout_status"] == "queued"
+            assert current["title"] == "Confirmed name"
+            assert current["cover_image_url"] == "https://storage.example/old-product.png"
+        for action in ("recognize", "product-image"):
+            foreign = await client.post(f"{path}/{action}", headers={"X-User-Id": str(uuid.uuid4())})
+            assert foreign.status_code == 404
+    assert await db_session.scalar(select(func.count()).select_from(AsyncJob).where(
+        AsyncJob.target_id == item.id, AsyncJob.job_type == "cutout",
+    )) == 1
 
 
 async def test_list_wardrobe_items_returns_total_and_pagination(db_session: AsyncSession) -> None:

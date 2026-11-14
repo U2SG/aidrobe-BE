@@ -9,8 +9,9 @@ from time import monotonic
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.application.paid_generation_admission import settle_terminal_reservations
 from app.application.ports.image_cutout import CutoutResult
@@ -39,8 +40,8 @@ MAX_DRAIN_PER_TICK = 3
 MAX_ATTEMPTS = 3
 
 
-def cutout_job_key(item_id: uuid.UUID) -> str:
-    return f"cutout:{item_id}"
+def cutout_job_key(item_id: uuid.UUID, request_id: uuid.UUID | None = None) -> str:
+    return f"cutout:{item_id}:{request_id}" if request_id else f"cutout:{item_id}"
 
 
 async def enqueue_item_cutout(
@@ -56,12 +57,13 @@ async def enqueue_item_cutout(
     correlation_id: str | None = None,
     title: str | None = None,
     color: str | None = None,
+    request_id: uuid.UUID | None = None,
 ) -> tuple[AsyncJob, bool]:
     """Enqueue one optional product shot per garment, in the admission transaction."""
     return await enqueue(
         session,
         job_type=JOB_TYPE,
-        idempotency_key=cutout_job_key(item_id),
+        idempotency_key=cutout_job_key(item_id, request_id),
         payload={
             "item_id": str(item_id),
             "source_url": source_url,
@@ -71,6 +73,7 @@ async def enqueue_item_cutout(
             "category": category,
             "title": title,
             "color": color,
+            **({"manual": True} if request_id else {}),
         },
         user_id=user_id,
         target_id=item_id,
@@ -86,7 +89,7 @@ def _still_queued(item: WardrobeItem, payload: dict[str, Any]) -> bool:
         or item.embedding_source_version != payload.get("source_version")
     ):
         return False
-    if payload.get("source_version") is not None:
+    if payload.get("manual") or payload.get("source_version") is not None:
         return item.cover_image_url == payload.get("expected_cover_url")
     # Legacy pending work is allowed to finish only while the old item still
     # points to its original photo or the crop saved in that job.
@@ -237,6 +240,7 @@ async def drain_cutout_jobs(ctx: object) -> int:
 
 async def reconcile_dead_cutout_items(ctx: object) -> int:
     """Converge item status and reservation state after terminal lease recovery."""
+    newer = aliased(AsyncJob)
     async with AsyncSessionLocal() as session:
         rows = (
             await session.execute(
@@ -246,6 +250,12 @@ async def reconcile_dead_cutout_items(ctx: object) -> int:
                     AsyncJob.job_type == JOB_TYPE,
                     AsyncJob.status.in_((JOB_STATUS_DEAD, JOB_STATUS_FAILED)),
                     AsyncJob.user_id == WardrobeItem.user_id,
+                    ~select(newer.id).where(
+                        newer.job_type == JOB_TYPE,
+                        newer.user_id == AsyncJob.user_id,
+                        newer.target_id == AsyncJob.target_id,
+                        tuple_(newer.created_at, newer.id) > tuple_(AsyncJob.created_at, AsyncJob.id),
+                    ).exists(),
                     WardrobeItem.cutout_status == CutoutStatus.QUEUED.value,
                     WardrobeItem.deleted_at.is_(None),
                 )

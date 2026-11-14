@@ -1534,6 +1534,156 @@
         }
       }
     },
+    "/v1/wardrobe-items/{item_id}/recognize": {
+      "post": {
+        "tags": [
+          "wardrobe"
+        ],
+        "summary": "Recognize Wardrobe Item",
+        "operationId": "recognize_wardrobe_item_v1_wardrobe_items__item_id__recognize_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Item Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_WardrobeRecognitionResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/wardrobe-items/{item_id}/product-image": {
+      "post": {
+        "tags": [
+          "wardrobe"
+        ],
+        "summary": "Request Wardrobe Product Image",
+        "operationId": "request_wardrobe_product_image_v1_wardrobe_items__item_id__product_image_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Item Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_WardrobeItemResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/wardrobe-items/{item_id}/wear-history": {
       "get": {
         "tags": [
@@ -13584,6 +13734,32 @@
         "type": "object",
         "title": "ResponseModel[WardrobeListResponse]"
       },
+      "ResponseModel_WardrobeRecognitionResponse_": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WardrobeRecognitionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ResponseModel[WardrobeRecognitionResponse]"
+      },
       "ResponseModel_WearOutfitResponse_": {
         "properties": {
           "code": {
@@ -15492,6 +15668,29 @@
           "total"
         ],
         "title": "WardrobeListResponse"
+      },
+      "WardrobeRecognitionResponse": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category"
+          },
+          "color_main": {
+            "type": "string",
+            "title": "Color Main"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "category",
+          "color_main"
+        ],
+        "title": "WardrobeRecognitionResponse"
       },
       "WardrobeReportResponse": {
         "properties": {
