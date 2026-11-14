@@ -209,29 +209,28 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str]:
     settings = get_settings()
     if generate and (not settings.ENABLE_ITEM_CUTOUT or settings.IMAGE_CUTOUT_PROVIDER != "openai"):
         raise ValueError("Outfit image generation is disabled")
-    references: list[bytes] = []
+    references: dict[tuple[str | None, str | None], tuple[bytes, list[str]]] = {}
 
     for item, role, box in zip(items, roles, boxes, strict=True):
-
-        img = await _load_snapshot_image(
-            storage,
-            object_key=item.get("cutout_object_key"),
-            fallback_url=item.get("cutout_image_url"),
-        )
+        reference = (item.get("cutout_object_key"), item.get("cutout_image_url"))
+        img = await _load_snapshot_image(storage, object_key=reference[0], fallback_url=reference[1])
         if img is None:
-            img = await _load_snapshot_image(
-                storage,
-                object_key=item.get("thumbnail_object_key"),
-                fallback_url=item.get("thumbnail_url"),
-            )
+            reference = (item.get("thumbnail_object_key"), item.get("thumbnail_url"))
+            if generate and reference in references:
+                references[reference][1].append(role)
+                continue
+            img = await _load_snapshot_image(storage, object_key=reference[0], fallback_url=reference[1])
 
         if generate:
             if img is None:
                 raise ValueError("Missing garment photo for the outfit")
+            if reference in references:
+                references[reference][1].append(role)
+                continue
             img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
             frame = io.BytesIO()
             img.convert("RGB").save(frame, format="JPEG", quality=90)
-            references.append(frame.getvalue())
+            references[reference] = (frame.getvalue(), [role])
         elif img is not None:
             _paste_item(canvas, img, box)
         else:
@@ -240,7 +239,9 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str]:
     if generate:
         if not references:
             raise ValueError("No garment photos for the outfit")
-        generated = await OpenAIImageCutout(settings).render_outfit(references, roles)
+        images = [reference[0] for reference in references.values()]
+        pieces = [" and ".join(reference[1]) for reference in references.values()]
+        generated = await OpenAIImageCutout(settings).render_outfit(images, pieces)
         key = f"users/{snapshot.user_id}/outfit_boards/{snapshot.id}.png"
         return await storage.put_object(key, generated, "image/png"), key
 

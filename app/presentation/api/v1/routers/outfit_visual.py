@@ -214,7 +214,6 @@ async def create_outfit_share_asset(
             raise FriendlyException(
                 error_codes.VALIDATION_ERROR, "Outfit has missing or unsupported pieces", status_code=422
             )
-        await assert_within_quota(db, current_user.id, "outfit_image", redis_client=get_redis_client())
     asset = OutfitVisualAsset(
         user_id=current_user.id,
         outfit_id=outfit_id,
@@ -233,6 +232,8 @@ async def create_outfit_share_asset(
         correlation_id=correlation_id if isinstance(correlation_id, str) else None,
     )
     if inserted:
+        if generate:
+            await assert_within_quota(db, current_user.id, "outfit_image", redis_client=get_redis_client())
         return _response_for_asset(asset)
 
     # The job table's unique key resolves a concurrent producer race. Discard
