@@ -7981,6 +7981,13 @@
                 "type": "null"
               }
             ]
+          },
+          "used": {
+            "items": {
+              "$ref": "#/components/schemas/AskToolUse"
+            },
+            "type": "array",
+            "title": "Used"
           }
         },
         "type": "object",
@@ -7991,6 +7998,25 @@
           "tokens_used"
         ],
         "title": "AskResponse"
+      },
+      "AskToolUse": {
+        "properties": {
+          "tool": {
+            "type": "string",
+            "title": "Tool"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tool",
+          "summary"
+        ],
+        "title": "AskToolUse",
+        "description": "One tool the answer was based on, e.g. {\"tool\": \"get_weather\",\n\"summary\": \"看了明天的天气：小雨 14°\"}. `tool` is a plain string so older\nclients can ignore names they don't know."
       },
       "AskTripIntent": {
         "properties": {
