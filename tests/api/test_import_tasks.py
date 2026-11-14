@@ -460,16 +460,26 @@ async def test_pending_import_review_is_owned_and_can_skip_all(db_session: Async
         "original_image_url": "https://cdn/candidate.jpg",
         "temp_item_id": "sweater",
     }
+    jeans = {
+        **candidate,
+        "title": "浅蓝色阔腿牛仔裤",
+        "category": "bottom",
+        "color_main": "blue",
+        "temp_item_id": "jeans",
+    }
     own_task = await _seed_task(
-        db_session, user_id, status="waiting_confirm", candidate_payload={"candidate_items": [candidate]}
+        db_session, user_id, status="waiting_confirm", candidate_payload={"candidate_items": [candidate, jeans]}
     )
     await _seed_task(
         db_session, other_user, status="waiting_confirm", candidate_payload={"candidate_items": [candidate]}
     )
     owned_sweater = WardrobeItem(user_id=user_id, title="黄色毛衣", category="top", color_main="yellow")
+    owned_jeans = WardrobeItem(user_id=user_id, title="浅蓝色牛仔裤", category="bottom", color_main="light_blue")
     db_session.add_all([
         owned_sweater,
+        owned_jeans,
         WardrobeItem(user_id=user_id, title="黄色 T恤", category="top", color_main="yellow"),
+        WardrobeItem(user_id=user_id, title="浅蓝色西裤", category="bottom", color_main="light_blue"),
         WardrobeItem(user_id=other_user, title="黄色毛衣", category="top", color_main="yellow"),
     ])
     await db_session.flush()
@@ -484,8 +494,11 @@ async def test_pending_import_review_is_owned_and_can_skip_all(db_session: Async
 
         path = f"/v1/import-tasks/{own_task}"
         detail = await client.get(path, headers=headers)
-        matches = detail.json()["data"]["candidate_items"][0]["possible_duplicates"]
-        assert [match["item_id"] for match in matches] == [str(owned_sweater.id)]
+        candidates = detail.json()["data"]["candidate_items"]
+        assert [[match["item_id"] for match in candidate["possible_duplicates"]] for candidate in candidates] == [
+            [str(owned_sweater.id)],
+            [str(owned_jeans.id)],
+        ]
 
         invalid = await client.post(f"{path}/confirm-items", headers=headers, json={"items": []})
         assert invalid.status_code == 422
