@@ -29,8 +29,10 @@ from PIL import Image, ImageDraw
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.storage import ObjectStoragePort
+from app.config.settings import get_settings
 from app.infrastructure.importers.link_parser import BROWSER_HEADERS, is_safe_url
 from app.infrastructure.persistence.models.async_job import AsyncJob
+from app.infrastructure.storage.source_image import key_from_url
 from app.infrastructure.workers._visual_asset_runtime import (
     VisualAssetSnapshot,
     drain_visual_jobs,
@@ -134,8 +136,37 @@ async def _load_snapshot_image(
             if fallback_url is None:
                 raise
     if fallback_url:
+        # Most item images are stored as our own public file URL with no key.
+        # Read those from storage: the public host is for devices and may not
+        # resolve from the worker (and the SSRF guard rightly blocks private
+        # hosts), which left boards full of placeholders.
+        bucket = get_settings().S3_BUCKET
+        own_key = key_from_url(fallback_url, bucket) if bucket else None
+        if own_key:
+            image = _image_from_bytes(await storage.get_object(own_key))
+            if image is None:
+                raise ValueError(f"invalid image bytes in object storage: {own_key}")
+            return image
         return await _download_image(fallback_url)
     return None
+
+
+def centered_boxes(boxes: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
+    """Shift the used slots as a group to the middle of the canvas.
+
+    The slots are fixed per role (outerwear on top, bag on the right), so an
+    outfit without those left a blank band at the top and an empty right half.
+    Sizes and relative positions are kept; only the group moves.
+    """
+    if not boxes:
+        return boxes
+    left = min(x for x, _, _, _ in boxes)
+    top = min(y for _, y, _, _ in boxes)
+    right = max(x + w for x, _, w, _ in boxes)
+    bottom = max(y + h for _, y, _, h in boxes)
+    dx = (CANVAS_W - (right - left)) // 2 - left
+    dy = (CANVAS_H - (bottom - top)) // 2 - top
+    return [(x + dx, y + dy, w, h) for x, y, w, h in boxes]
 
 
 def _paste_item(canvas: Image.Image, item_img: Image.Image, box: tuple[int, int, int, int]) -> None:
@@ -171,10 +202,10 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str]:
     items = snapshot.input_snapshot.get("item_list", [])
     canvas = Image.new("RGBA", (CANVAS_W, CANVAS_H), (255, 255, 255, 255))
     storage = object_storage()
+    roles = [(item.get("role") or item.get("category") or "top").lower() for item in items]
+    boxes = centered_boxes([LAYOUT.get(role, DEFAULT_BOX) for role in roles])
 
-    for item in items:
-        role = (item.get("role") or item.get("category") or "top").lower()
-        box = LAYOUT.get(role, DEFAULT_BOX)
+    for item, role, box in zip(items, roles, boxes, strict=True):
 
         img = await _load_snapshot_image(
             storage,

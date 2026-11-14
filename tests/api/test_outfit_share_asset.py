@@ -153,10 +153,10 @@ async def test_share_asset_queues_a_pollable_worker_compatible_board(
     for forbidden in ("selfie", "prompt", "reason_text", "title", "email"):
         assert forbidden not in snapshot_text
     assert job.target_id == asset.id
-    assert job.idempotency_key == f"outfit_board:{outfit_id}:v1"
+    assert job.idempotency_key == f"outfit_board:{outfit_id}:v2"
     assert job.payload == {
         "asset_id": str(asset.id),
-        "layout_version": "v1",
+        "layout_version": "v2",
         "outfit_id": str(outfit_id),
     }
 

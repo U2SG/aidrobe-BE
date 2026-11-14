@@ -447,3 +447,46 @@ async def test_load_snapshot_image_raises_for_unreadable_object_without_fallback
             object_key="users/u/items/i/cutout.png",
             fallback_url=None,
         )
+
+
+async def test_load_snapshot_image_reads_own_bucket_url_from_storage(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Seen locally (2026-11-14): items stored as our own public URL with no key
+    # were fetched over HTTP, blocked by the SSRF guard (localhost) and drawn
+    # as placeholders. Our own bucket is read by key instead.
+    from app.config.settings import Settings
+
+    monkeypatch.setattr(outfit_board_worker, "get_settings", lambda: Settings(S3_BUCKET="aidrobe"))
+    png = io.BytesIO()
+    Image.new("RGBA", (4, 4), (255, 0, 0, 255)).save(png, format="PNG")
+    reads: list[str] = []
+
+    class _Storage:
+        async def get_object(self, key: str) -> bytes:
+            reads.append(key)
+            return png.getvalue()
+
+    async def _no_download(url: str) -> None:
+        raise AssertionError(f"must not fetch {url} over HTTP")
+
+    monkeypatch.setattr(outfit_board_worker, "_download_image", _no_download)
+    image = await outfit_board_worker._load_snapshot_image(
+        _Storage(), object_key=None, fallback_url="http://localhost:9000/aidrobe/users/u/wardrobe/x/top.jpg"
+    )
+
+    assert image is not None
+    assert reads == ["users/u/wardrobe/x/top.jpg"]
+
+
+def test_used_slots_are_centred_as_a_group() -> None:
+    # top + bottom + shoes only: v1 left the outerwear band and the bag column empty.
+    layout = outfit_board_worker.LAYOUT
+    boxes = outfit_board_worker.centered_boxes([layout["top"], layout["bottom"], layout["shoes"]])
+    left = min(x for x, _, _, _ in boxes)
+    right = max(x + w for x, _, w, _ in boxes)
+    top = min(y for _, y, _, _ in boxes)
+    bottom = max(y + h for _, y, _, h in boxes)
+
+    assert abs(left - (outfit_board_worker.CANVAS_W - right)) <= 1
+    assert abs(top - (outfit_board_worker.CANVAS_H - bottom)) <= 1
+    # sizes unchanged
+    assert [(w, h) for _, _, w, h in boxes] == [(280, 280), (320, 280), (240, 100)]

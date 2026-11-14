@@ -35,7 +35,8 @@ logger = structlog.get_logger(__name__)
 # stale — surface 'failed' so the frontend stops polling instead of looping
 # until the user navigates away.
 _STALE_QUEUED_MINUTES = 15
-_OUTFIT_BOARD_LAYOUT_VERSION = "v1"
+# v2: used slots are centred as a group (v1 left blank bands for missing roles).
+_OUTFIT_BOARD_LAYOUT_VERSION = "v2"
 _IMAGE_TYPE_PRIORITY = ("cutout", "thumbnail", "standard", "original")
 
 
