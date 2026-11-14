@@ -437,7 +437,7 @@ async def test_outfit_vision_worker_omits_layers_without_enough_evidence(
     async def identify(self: FakeVision, image_url: str, locale: str) -> list[VisionResult]:
         top, bottom = await analyze_outfit(self, image_url, locale)
         uncertain_layer = replace(top, title="White T-shirt", canonical_name="White T-shirt", style_unverified=True)
-        guessed_layer = replace(top, title="白色内搭T恤", canonical_name="White T-shirt", bbox=None)
+        guessed_layer = replace(top, title="白色圆领T恤", canonical_name="White T-shirt", bbox=None)
         return [uncertain_layer, guessed_layer, top, bottom]
 
     monkeypatch.setattr(FakeVision, "analyze_outfit", identify)

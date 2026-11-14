@@ -54,13 +54,17 @@ def _import_idempotency_key(task_id: uuid.UUID) -> str:
     return f"import_task:{task_id}"
 
 
-def _is_unverified_layer(candidate: dict[str, object], result: VisionResult) -> bool:
+def _is_unverified_layer(
+    candidate: dict[str, object], result: VisionResult, *, has_located_upper_garment: bool
+) -> bool:
     if result.style_unverified:
         return True
     if candidate.get("crop_image_url"):
         return False
     name = f"{result.title} {result.display_name} {result.canonical_name}".casefold()
-    return any(word in name for word in ("内搭", "打底", "inner layer", "base layer", "undershirt"))
+    return any(word in name for word in ("内搭", "打底", "inner layer", "base layer", "undershirt")) or (
+        has_located_upper_garment and result.category == "top" and result.bbox is None
+    )
 
 
 class ProcessImageImportTask:
@@ -162,10 +166,14 @@ class ProcessImageImportTask:
             )
             if fingerprint:
                 task.input_payload = {**task.input_payload, "photo_fingerprint": fingerprint}
+            has_located_upper_garment = any(
+                result.category in {"top", "outerwear"} and result.bbox is not None and not result.style_unverified
+                for result in results
+            )
             candidate_items = [
                 candidate
                 for candidate, result in zip(candidate_items, results, strict=True)
-                if not _is_unverified_layer(candidate, result)
+                if not _is_unverified_layer(candidate, result, has_located_upper_garment=has_located_upper_garment)
             ]
             if not candidate_items:
                 task.task_status = ImportStatus.FAILED.value
