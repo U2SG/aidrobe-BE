@@ -223,6 +223,7 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] |
     generation_images: list[bytes] = []
     review_images: list[bytes] = []
     garments: list[str] = []
+    footwear_reference: bytes | None = None
 
     for item, role, box in zip(items, roles, boxes, strict=True):
         img = await _load_snapshot_image(
@@ -248,6 +249,12 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] |
             shoes = role == "shoes" or item.get("category") == "shoes"
             generation_images.append(review_frame if shoes else frame)
             review_images.append(review_frame)
+            if shoes:
+                # Recommendations have one footwear slot. A board with
+                # multiple pairs cannot reliably assign them to references.
+                if footwear_reference is not None:
+                    return None
+                footwear_reference = review_frame
             title = item.get("title") or role
             color = item.get("color")
             garments.append(f"{role}: {title} ({color})" if color else f"{role}: {title}")
@@ -259,12 +266,22 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] |
     if generate:
         if not generation_images:
             return None
-        generated = await OpenAIImageCutout(settings).render_outfit(generation_images, garments)
+        provider = OpenAIImageCutout(settings)
         reviewer = QwenVision(settings)
-        if not await reviewer.matches_outfit_photo(review_images, generated, garments=garments):
-            return None
-        key = f"users/{snapshot.user_id}/outfit_boards/{snapshot.id}-{snapshot.attempt}.png"
-        return await storage.put_object(key, generated, "image/png"), key
+        attempts = (False, True) if footwear_reference is not None else (False,)
+        for preserve_shoe_cover in attempts:
+            generated = await provider.render_outfit(
+                generation_images, garments, preserve_shoe_cover=preserve_shoe_cover
+            )
+            if not await reviewer.matches_outfit_photo(review_images, generated, garments=garments):
+                continue
+            if footwear_reference is not None and not await reviewer.matches_outfit_footwear(
+                footwear_reference, generated
+            ):
+                continue
+            key = f"users/{snapshot.user_id}/outfit_boards/{snapshot.id}-{snapshot.attempt}.png"
+            return await storage.put_object(key, generated, "image/png"), key
+        return None
 
     rgb = canvas.convert("RGB")
     buf = io.BytesIO()

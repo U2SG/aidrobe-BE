@@ -263,6 +263,28 @@ class QwenVision:
             raise ValueError("Invalid outfit quality review response")
         return result["composition_matches"] is True and all(marks)
 
+    async def matches_outfit_footwear(self, source: bytes, generated: bytes) -> bool:
+        content = await self._request_content(
+            _image_data_uri(source),
+            "Compare the actual shoe photo in image 1 with the shoes at the bottom of the outfit in image 2. "
+            "Ignore all other garments except where they occlude the shoes. Compare the two photos visually. "
+            "Check whether the toe shape, edge seam, visible sole and color match. Confirm that image 2 "
+            "does not show a larger exposed shoe area or newly visible regions of lacing, eyelets, tongue, "
+            "collar, insole, heel or side, and does not add logos or perforations. Keep the shoes attached to "
+            "the trouser hems if they are covered; detached fragments fail. More coverage is allowed when "
+            "the visible part still matches. If a feature is too blurry or hidden in image 1, do not guess. "
+            'Return JSON with boolean fields "visible_design_matches" and "no_newly_exposed_details".',
+            _image_data_uri(generated),
+        )
+        result = json.loads(self._strip_json_fence(content))
+        if not isinstance(result, dict):
+            raise ValueError("Invalid footwear quality review response")
+        visible_design = result.get("visible_design_matches")
+        details_preserved = result.get("no_newly_exposed_details")
+        if not isinstance(visible_design, bool) or not isinstance(details_preserved, bool):
+            raise ValueError("Invalid footwear quality review response")
+        return visible_design and details_preserved
+
     async def _request_content(self, image_url: str, prompt: str, *reference_urls: str) -> str:
         # Inline private wardrobe images instead of exposing signed URLs to the
         # third-party vision provider.

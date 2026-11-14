@@ -246,7 +246,7 @@ async def test_gpt_outfit_board_uses_a_separate_reusable_asset(
         assert replay.json()["asset_id"] == generated.json()["asset_id"]
 
     job = (await db_session.scalars(
-        select(AsyncJob).where(AsyncJob.idempotency_key.endswith(":gpt-reviewed-v1"))
+        select(AsyncJob).where(AsyncJob.idempotency_key.endswith(":gpt-reviewed-v2"))
     )).one()
     asset = await db_session.get(OutfitVisualAsset, job.target_id)
     assert asset is not None and asset.input_snapshot["generate"] is True

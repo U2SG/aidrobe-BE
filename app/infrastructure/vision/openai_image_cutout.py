@@ -67,8 +67,14 @@ class OpenAIImageCutout:
             return generated
         return None
 
-    async def render_outfit(self, images: list[bytes], garments: list[str]) -> bytes:
+    async def render_outfit(self, images: list[bytes], garments: list[str], *, preserve_shoe_cover: bool = False) -> bytes:
         pieces = "; ".join(f"image {index}: {garment}" for index, garment in enumerate(garments, 1))
+        footwear = (
+            "Place only the verifiable front toe shapes below the hems for partially covered shoes. "
+            "Preserve the photographed curved toe seams and any asymmetry; extend the hem to conceal "
+            "the entire remaining shoe area, especially the lacing area. "
+            if preserve_shoe_cover else ""
+        )
         return await self._edit(
             images,
             "Create one cohesive fashion flat lay on a clean light neutral background. "
@@ -79,7 +85,7 @@ class OpenAIImageCutout:
             "hems far enough over each shoe to keep all unverified details covered. Preserve asymmetry "
             "and partial framing. Do not reconstruct hidden shoe openings, laces, heels, logos, perforations, "
             "sides or soles, and do not show detached shoe fragments. Keep the shoes naturally aligned under "
-            "the trouser hems. Keep the other garments recognizable as a full coordinated look. "
+            f"the trouser hems. {footwear}Keep the other garments recognizable as a full coordinated look. "
             "Remove people, phones, hangers and surroundings. Use no text or labels.",
         )
 

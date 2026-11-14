@@ -442,20 +442,24 @@ async def test_generated_outfit_uses_original_shoe_reference_and_only_uploads_on
     )
     monkeypatch.setattr(outfit_board_worker, "get_settings", lambda: settings)
 
-    async def generate(images: list[bytes], garments: list[str]) -> bytes:
+    async def generate(images: list[bytes], garments: list[str], *, preserve_shoe_cover: bool) -> bytes:
         assert len(images) == 1
         assert garments == ["shoes: White sneakers (white)"]
         return _png_bytes()
 
-    async def reject(sources: list[bytes], generated: bytes, *, garments: list[str]) -> bool:
+    async def check_outfit(sources: list[bytes], generated: bytes, *, garments: list[str]) -> bool:
         assert storage.get_calls == ["generated-shoes.png", "original-shoes.jpg"]
         assert len(sources) == 1
         assert generated == _png_bytes()
+        return True
+
+    async def reject_footwear(source: bytes, generated: bytes) -> bool:
         return False
 
     class FakeProvider:
         render_outfit = staticmethod(generate)
-        matches_outfit_photo = staticmethod(reject)
+        matches_outfit_photo = staticmethod(check_outfit)
+        matches_outfit_footwear = staticmethod(reject_footwear)
 
     monkeypatch.setattr(outfit_board_worker, "OpenAIImageCutout", lambda _: FakeProvider())
     monkeypatch.setattr(outfit_board_worker, "QwenVision", lambda _: FakeProvider())
