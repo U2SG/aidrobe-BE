@@ -94,20 +94,19 @@ async def _checkpoint_source(
     job: AsyncJob | None,
 ) -> tuple[str, str, bytes] | None:
     settings = get_settings()
-    url = payload.get("image_url")
-    key = payload.get("source_object_key")
-    if not key:
-        if not url and payload.get("source_url"):
-            url = await RoutedLinkParser(settings, strict=True).extract_image_url(payload["source_url"])
-        if not isinstance(url, str) or not url:
-            raise InvalidSourceImage("Missing image")
-        key = upload_key(url, user_id)
+    raw_url = payload.get("image_url")
+    url = raw_url if isinstance(raw_url, str) else None
+    raw_key = payload.get("source_object_key")
+    key = raw_key if isinstance(raw_key, str) else None
+    if not (key or url) and isinstance(payload.get("source_url"), str):
+        url = await RoutedLinkParser(settings, strict=True).extract_image_url(payload["source_url"])
+    if not url:
+        raise InvalidSourceImage("Missing image reference")
+    key = upload_key(url, user_id, expected_key=key)
 
     if key:
         data = await load_source_bytes(url, key, user_id=user_id)
         # Legacy references may contain expired signatures; the key is authoritative.
-        if not url:
-            raise InvalidSourceImage("Missing image reference")
         url = url.split("?", 1)[0].split("#", 1)[0]
     else:
         data, mime = await download_external_source_image(url, settings)
@@ -161,16 +160,17 @@ def _classify(exc: Exception, stage: str) -> ImportFailure:
         return ImportFailure("provider_configuration", False, stage)
     if stage == "source":
         # S3 and OSS expose HTTP status through their service errors.
-        status = getattr(exc, "status", None)
+        storage_status = getattr(exc, "status", None)
         response = getattr(exc, "response", None)
         if isinstance(response, dict):
-            status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-        if status == 404:
-            return ImportFailure("source_invalid", False, stage, status)
-        if isinstance(status, int) and (status == 429 or status >= 500):
-            return ImportFailure("provider_unavailable", True, stage, status)
-        if status in (401, 403):
-            return ImportFailure("provider_configuration", False, stage, status)
+            storage_status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if isinstance(storage_status, int):
+            if storage_status == 404:
+                return ImportFailure("source_invalid", False, stage, storage_status)
+            if storage_status == 429 or storage_status >= 500:
+                return ImportFailure("provider_unavailable", True, stage, storage_status)
+            if storage_status in (401, 403):
+                return ImportFailure("provider_configuration", False, stage, storage_status)
     if stage in ("vision", "ocr") and isinstance(exc, ValueError | TypeError | KeyError | IndexError):
         return ImportFailure("provider_response_invalid", True, stage)
     return ImportFailure("import_failed", True, stage)

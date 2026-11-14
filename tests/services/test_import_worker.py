@@ -248,12 +248,12 @@ async def test_crop_retry_preserves_recognized_candidates(
     real_load = garment_crops.load_source_bytes
     calls = 0
 
-    async def load(url: str | None, key: str | None) -> bytes:
+    async def load(url: str | None, key: str | None, **kwargs) -> bytes:
         nonlocal calls
         calls += 1
         if calls == 1:
             raise OSError("transient storage outage")
-        return await real_load(url, key)
+        return await real_load(url, key, **kwargs)
 
     monkeypatch.setattr(garment_crops, "load_source_bytes", load)
     user_id, task_id = await _seed_task(patched_session_factory, input_type="outfit_image")
@@ -533,12 +533,12 @@ async def test_import_crop_first_outfit_pipeline(
         load = garment_crops.load_source_bytes
         crop_calls = 0
 
-        async def fail_first_crop(url: str | None, key: str | None) -> bytes:
+        async def fail_first_crop(url: str | None, key: str | None, **kwargs) -> bytes:
             nonlocal crop_calls
             crop_calls += 1
             if crop_calls == 1:
                 raise OSError("temporary storage outage")
-            return await load(url, key)
+            return await load(url, key, **kwargs)
 
         monkeypatch.setattr(garment_crops, "load_source_bytes", fail_first_crop)
         assert await garment_crops.drain_garment_crop_jobs(ctx=None) == 3
@@ -604,3 +604,66 @@ async def test_import_crop_first_outfit_pipeline(
         ),
         encoding="utf-8",
     )
+
+
+async def test_stale_crop_upload_cannot_replace_adopted_image(
+    patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from app.bootstrap import container
+    from app.infrastructure.workers.job_runtime import recover_expired_leases
+
+    user_id, task_id = await _seed_task(patched_session_factory, input_type="outfit_image")
+    async with patched_session_factory() as session:
+        await enqueue_import_task(session, task_id=task_id, user_id=user_id)
+        await session.commit()
+    assert await drain_import_jobs(ctx=None) == 1
+    async with patched_session_factory() as session:
+        old = await claim_one(session, [garment_crops.CROP_JOB_TYPE])
+        assert old is not None
+        payload = old.payload
+
+    uploading = asyncio.Event()
+    resume = asyncio.Event()
+    store = container.object_storage()
+    written: list[str] = []
+
+    class DelayedStore:
+        async def get_object(self, key: str) -> bytes:
+            return await store.get_object(key)
+
+        async def put_object(self, key: str, data: bytes, content_type: str) -> str:
+            if key.endswith("/1.jpg"):
+                uploading.set()
+                await resume.wait()
+            written.append(key)
+            return await store.put_object(key, data, content_type)
+
+    monkeypatch.setattr(container, "object_storage", DelayedStore)
+    stale = asyncio.create_task(garment_crops._process_crop(old))
+    try:
+        await asyncio.wait_for(uploading.wait(), timeout=10)
+        async with patched_session_factory() as session:
+            assert await recover_expired_leases(
+                session, now=datetime.now(UTC) + timedelta(minutes=11), job_type=garment_crops.CROP_JOB_TYPE,
+            ) == 1
+            current = await session.get(AsyncJob, old.id)
+            current.next_run_at = datetime.now(UTC) - timedelta(seconds=1)
+            await session.commit()
+            new = await claim_one(session, [garment_crops.CROP_JOB_TYPE])
+            assert new is not None and new.id == old.id and new.attempts == 2
+        await garment_crops._process_crop(new)
+    finally:
+        resume.set()
+        await stale
+
+    async with patched_session_factory() as session:
+        task = await session.get(ImportTask, task_id)
+        candidate = next(
+            c for c in task.candidate_payload["candidate_items"] if c["temp_item_id"] == payload["candidate_id"]
+        )
+        assert candidate["crop_object_key"] == written[0]
+        assert written[0].endswith("/2.jpg") and written[1].endswith("/1.jpg")
+        job = await session.get(AsyncJob, old.id)
+        assert job.status == JOB_STATUS_SUCCEEDED and job.attempts == 2

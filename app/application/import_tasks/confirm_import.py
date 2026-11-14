@@ -175,14 +175,14 @@ class ConfirmImageImportTask:
         self, task: ImportTask, candidate: dict[str, Any], entry: ConfirmItemInput
     ) -> WardrobeItem:
         original_url = candidate.get("original_image_url") or task.input_payload.get("image_url")
-        original_key = task.input_payload.get("source_object_key")
-        if not original_key:
-            try:
-                original_key = upload_key(original_url, task.user_id)
-            except InvalidSourceImage:
-                raise FriendlyException(error_codes.VALIDATION_ERROR, "Invalid import image", 422) from None
         crop_url = candidate.get("crop_image_url")
-        crop_key = candidate.get("crop_object_key")
+        try:
+            original_key = upload_key(
+                original_url, task.user_id, expected_key=task.input_payload.get("source_object_key"),
+            )
+            crop_key = upload_key(crop_url, task.user_id, expected_key=candidate.get("crop_object_key"))
+        except InvalidSourceImage:
+            raise FriendlyException(error_codes.VALIDATION_ERROR, "Invalid import image", 422) from None
         generated_url = candidate.get("cutout_image_url")
         cover_url = generated_url or crop_url or original_url
         cover_key = None if generated_url else (crop_key if crop_url else original_key)
@@ -276,7 +276,7 @@ async def apply_confirmed_crop(
         standard = await session.scalar(
             select(WardrobeItemImage).where(
                 WardrobeItemImage.item_id == item.id, WardrobeItemImage.image_type == ImageType.STANDARD.value,
-            )
+            ).order_by(WardrobeItemImage.created_at.desc(), WardrobeItemImage.id).limit(1)
         )
         if standard is not None:
             standard.image_url = crop_url

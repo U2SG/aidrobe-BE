@@ -533,7 +533,7 @@ async def settle_terminal_reservations(
             outcome = {
                 "not_called": PaidGenerationOutcome.ABANDONED,
                 "quality_rejected": PaidGenerationOutcome.QUALITY_REJECTED,
-            }.get((job_result or {}).get("outcome"), PaidGenerationOutcome.SUCCEEDED)
+            }.get(str((job_result or {}).get("outcome")), PaidGenerationOutcome.SUCCEEDED)
         else:
             # The join is what makes this distinguishable at all: V3-018 marks a
             # quality rejection as a SUCCEEDED job, so the job row alone would

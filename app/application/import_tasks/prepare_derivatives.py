@@ -31,6 +31,8 @@ async def prepare_item_derivatives(
 
     if item.deleted_at is not None or not (source_key or source_url):
         return
+    if source_key and source_url:
+        source_url = source_url.split("?", 1)[0].split("#", 1)[0]
     item.embedding_source_version = source_version
     await enqueue_embedding(
         session,

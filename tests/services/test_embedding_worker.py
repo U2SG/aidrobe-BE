@@ -474,7 +474,7 @@ async def test_outfit_confirm_enqueues_only_the_two_candidates_with_real_crops(
         payload = by_item[confirmed_entry.item.id]
         assert payload is not None
         assert payload["image_key"] == key
-        assert payload["image_url"] is None
+        assert payload["image_url"] == f"http://localhost:9000/local/files/{key}"
         assert payload["source_version"] == confirmed_entry.item.embedding_source_version
     assert confirmed[2].item.id not in by_item
     assert confirmed[2].item.embedding_source_version is None

@@ -125,7 +125,7 @@ async def _crop_one(session: AsyncSession, job: AsyncJob) -> None:
         await session.commit()
         return
 
-    source = await load_source_bytes(url, key)
+    source = await load_source_bytes(url, key, user_id=job.user_id)
     crop = (await asyncio.to_thread(crop_regions, source, [box]))[0]
     if crop is None:
         await mark_succeeded(session, job.id, claimed_attempt=job.attempts, result={"outcome": "no_usable_crop"})

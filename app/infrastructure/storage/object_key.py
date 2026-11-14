@@ -107,10 +107,10 @@ def names_unresolvable_per_purpose_bucket(image_url: str | None, settings: Setti
     recognizes the bucket in the host or path, using the same
     scheme-qualified-endpoint assumption as `_key_after_endpoint_bucket`.
     """
-    if not image_url or not settings.ALIYUN_OSS_ENDPOINT:
+    parsed = _parsed_url(image_url) if image_url else None
+    endpoint = _parsed_url(oss_endpoint_url(settings))
+    if parsed is None or endpoint is None or not endpoint.hostname or not parsed.hostname:
         return False
-    parsed = urlparse(image_url)
-    endpoint = urlparse(settings.ALIYUN_OSS_ENDPOINT)
     endpoint_path = endpoint.path.rstrip("/")
     for field in _PER_PURPOSE_BUCKET_FIELDS:
         bucket = str(getattr(settings, field, "") or "")
@@ -118,9 +118,9 @@ def names_unresolvable_per_purpose_bucket(image_url: str | None, settings: Setti
         # bucket IS resolvable, so it is not this case.
         if not bucket or bucket == settings.ALIYUN_OSS_BUCKET:
             continue
-        if parsed.netloc == f"{bucket}.{endpoint.netloc}":
+        if parsed.hostname.rstrip(".") == f"{bucket}.{endpoint.hostname}":
             return True
-        if parsed.netloc == endpoint.netloc and parsed.path.startswith(f"{endpoint_path}/{bucket}/"):
+        if parsed.hostname.rstrip(".") == endpoint.hostname and parsed.path.startswith(f"{endpoint_path}/{bucket}/"):
             return True
     return False
 
@@ -130,6 +130,8 @@ def extract_internal_object_key(
 ) -> str | None:
     """Return an object key only for known backend-generated storage URLs."""
     if not image_url:
+        return None
+    if names_unresolvable_per_purpose_bucket(image_url, settings):
         return None
 
     for provider in ("local", "s3", "aliyun_oss"):
@@ -142,6 +144,8 @@ def extract_internal_object_key(
 def active_object_key(image_url: str | None, settings: Settings) -> str | None:
     """Resolve only URLs the configured adapter can actually read and sign."""
     if not image_url:
+        return None
+    if names_unresolvable_per_purpose_bucket(image_url, settings):
         return None
     return _key_for_provider(image_url, settings, settings.STORAGE_PROVIDER)
 
@@ -162,13 +166,21 @@ def _key_for_provider(image_url: str, settings: Settings, provider: str) -> str 
                     break
         return key
     if provider == "aliyun_oss" and settings.ALIYUN_OSS_BUCKET:
-        return _key_after_base_path(image_url, settings.ALIYUN_OSS_PUBLIC_BASE_URL) or _key_after_endpoint_bucket(
-            image_url, _oss_endpoint(settings), settings.ALIYUN_OSS_BUCKET
-        )
+        key = _key_after_base_path(image_url, settings.ALIYUN_OSS_PUBLIC_BASE_URL)
+        endpoint = oss_endpoint_url(settings)
+        if key is None and endpoint:
+            key = _key_after_endpoint_bucket(image_url, endpoint, settings.ALIYUN_OSS_BUCKET)
+            if key is None and "://" not in settings.ALIYUN_OSS_ENDPOINT:
+                # oss2 historically signs a bare endpoint with HTTP. Clients
+                # may also construct HTTPS URLs for the same configured host.
+                key = _key_after_endpoint_bucket(
+                    image_url, f"http://{settings.ALIYUN_OSS_ENDPOINT}", settings.ALIYUN_OSS_BUCKET
+                )
+        return key
     return None
 
 
-def _oss_endpoint(settings: Settings) -> str:
+def oss_endpoint_url(settings: Settings) -> str:
     endpoint = settings.ALIYUN_OSS_ENDPOINT
     return f"https://{endpoint}" if endpoint and "://" not in endpoint else endpoint
 
@@ -200,7 +212,7 @@ def names_internal_storage(url: str, settings: Settings) -> bool:
         base = _parsed_url(base_url) if base_url else None
         if base and host == base.hostname:
             return True
-    for address in (settings.S3_ENDPOINT_URL, _oss_endpoint(settings)):
+    for address in (settings.S3_ENDPOINT_URL, oss_endpoint_url(settings)):
         endpoint = _parsed_url(address) if address else None
         if endpoint and endpoint.hostname and (host == endpoint.hostname or host.endswith(f".{endpoint.hostname}")):
             return True

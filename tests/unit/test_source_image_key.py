@@ -33,6 +33,8 @@ def _s3() -> Settings:
         (Settings(STORAGE_PROVIDER="local"), "http://localhost:9000/local/files"),
         (_s3(), "https://images.example/aidrobe"),
         (_s3(), "http://minio:9000/aidrobe"),
+        (_s3(), "https://aidrobe.s3.amazonaws.com"),
+        (_s3(), "https://s3.amazonaws.com/aidrobe"),
         (_s3(), "https://aidrobe.s3.us-east-1.amazonaws.com"),
         (
             Settings(
@@ -91,6 +93,54 @@ def test_legacy_generated_key_only_resolves_for_an_owned_item() -> None:
     assert trusted_item_image_key(url, uuid.uuid4(), _s3()) is None
     with pytest.raises(InvalidSourceImage):
         resolve_import_source_key(url, USER_ID, _s3())
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        None,
+        f"https://images.example/other/users/{USER_ID}/x.jpg",
+        f"https://images.example/aidrobe/users/{USER_ID}/different.jpg",
+        f"https://shop.example/asset/users/{USER_ID}/x.jpg",
+        f"http://localhost:9000/local/files/users/{USER_ID}/x.jpg",
+    ],
+)
+def test_saved_reference_must_still_name_the_active_bucket_and_exact_key(url: str | None) -> None:
+    with pytest.raises(InvalidSourceImage, match="unavailable"):
+        resolve_import_source_key(url, USER_ID, _s3(), expected_key=f"users/{USER_ID}/x.jpg")
+
+
+async def test_put_object_urls_round_trip_exact_keys_without_provider_network(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from app.infrastructure.storage.aliyun_oss import AliyunOssStorage
+    from app.infrastructure.storage.local_storage import LocalObjectStorage
+    from app.infrastructure.storage.s3_storage import S3ObjectStorage
+
+    def no_network(*args, **kwargs) -> None:
+        pass
+
+    client = SimpleNamespace(put_object=no_network)
+    monkeypatch.setattr("app.infrastructure.storage.s3_storage.boto3.client", lambda *args, **kwargs: client)
+    monkeypatch.setattr(AliyunOssStorage, "_build_bucket", lambda _: client)
+    local_cfg = Settings(STORAGE_PROVIDER="local")
+    s3_cfg = Settings(STORAGE_PROVIDER="s3", S3_BUCKET="aidrobe")
+    oss_cfg = Settings(
+        STORAGE_PROVIDER="aliyun_oss",
+        ALIYUN_OSS_BUCKET="aidrobe",
+        ALIYUN_OSS_ENDPOINT="oss-cn-hangzhou.aliyuncs.com",
+        ALIYUN_OSS_ACCESS_KEY_ID="stub",
+        ALIYUN_OSS_ACCESS_KEY_SECRET="stub",
+    )
+    stores = (
+        (local_cfg, LocalObjectStorage(storage_root=str(tmp_path))),
+        (s3_cfg, S3ObjectStorage(s3_cfg)),
+        (oss_cfg, AliyunOssStorage(oss_cfg)),
+    )
+    key = f"users/{USER_ID}/wardrobe/imports/photo.jpg"
+    for cfg, storage in stores:
+        url = await storage.put_object(key, b"snapshot", "image/jpeg")
+        assert resolve_import_source_key(url, USER_ID, cfg, expected_key=key) == key
 
 
 @pytest.fixture

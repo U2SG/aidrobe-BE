@@ -20,9 +20,13 @@ class InvalidSourceImage(ValueError):
     """The source reference or image content cannot be used."""
 
 
-def resolve_import_source_key(url: str | None, user_id: uuid.UUID, settings: Settings) -> str | None:
+def resolve_import_source_key(
+    url: str | None, user_id: uuid.UUID, settings: Settings, *, expected_key: str | None = None
+) -> str | None:
     """Validate an upload reference before it reaches backend credentials."""
     if url is None:
+        if expected_key is not None:
+            raise InvalidSourceImage("Source image is unavailable")
         return None
     try:
         parsed = urlsplit(url)
@@ -39,10 +43,10 @@ def resolve_import_source_key(url: str | None, user_id: uuid.UUID, settings: Set
         raise InvalidSourceImage("Invalid source image URL") from exc
     key = active_object_key(url, settings)
     if key is not None:
-        if is_owned_object_key(key, user_id):
+        if is_owned_object_key(key, user_id) and (expected_key is None or expected_key == key):
             return key
         raise InvalidSourceImage("Source image is unavailable")
-    if names_internal_storage(url, settings):
+    if expected_key is not None or names_internal_storage(url, settings):
         raise InvalidSourceImage("Source image is unavailable")
     return None
 
@@ -93,12 +97,10 @@ async def load_source_bytes(
     from app.config.settings import get_settings
 
     settings = get_settings()
-    key = source_key
-    if key is None and user_id is not None:
-        key = resolve_import_source_key(source_url, user_id, settings)
+    key = source_key if user_id is None else resolve_import_source_key(
+        source_url, user_id, settings, expected_key=source_key
+    )
     if key is not None:
-        if user_id is not None and not is_owned_object_key(key, user_id):
-            raise InvalidSourceImage("Source image is unavailable")
         return await object_storage().get_object(key)
     if source_url is None:
         raise InvalidSourceImage("Source image is required")

@@ -151,7 +151,7 @@ class RecommendationGenerator:
         # WeatherInfo has no source observation time, so persist when the
         # provider/cache boundary returned the facts used by this generation.
         weather_resolved_at = datetime.now(UTC) if weather is not None else None
-        fit_profile = await self._load_fit_profile(user_id, user_settings)
+        fit_profile = await self._load_fit_profile(user_id)
         # BE#82 — infer indoor-climate tendency (flag-gated; None → legacy ranking).
         indoor_climate = (
             await self._load_indoor_climate(
@@ -550,14 +550,16 @@ class RecommendationGenerator:
             logger.warning("style_profile_load_failed", user_id=str(user_id), error=str(exc))
             return {}
 
-    async def _load_fit_profile(self, user_id: uuid.UUID, settings: UserSettings | None) -> dict[str, Any]:
-        if settings is not None and isinstance(settings.preferences_json, dict):
-            fit_profile = settings.preferences_json.get("fit_profile")
-            if isinstance(fit_profile, dict):
-                return fit_profile
+    async def _load_fit_profile(self, user_id: uuid.UUID) -> dict[str, Any]:
+        session = self.repository.session
         try:
-            async with self.repository.session.begin_nested():
-                return await build_fit_profile(self.repository.session, user_id, persist=False)
+            async with session.begin_nested():
+                settings = await session.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
+                if settings is not None and isinstance(settings.preferences_json, dict):
+                    fit_profile = settings.preferences_json.get("fit_profile")
+                    if isinstance(fit_profile, dict):
+                        return fit_profile
+                return await build_fit_profile(session, user_id, persist=False)
         except Exception as exc:
             logger.warning("fit_profile_load_failed", user_id=str(user_id), error=str(exc))
             return {}

@@ -100,12 +100,15 @@ def import_api_environment(db_session: AsyncSession, monkeypatch: pytest.MonkeyP
     async def download(url: str, settings: object) -> tuple[bytes, str]:
         return url.encode(), "image/jpeg"
 
+    objects: dict[str, bytes] = {}
+
     async def load(url: str, key: str, **kwargs: object) -> bytes:
-        return url.encode()
+        return objects.get(key, url.encode())
 
     class Storage:
         async def put_object(self, key: str, data: bytes, content_type: str) -> str:
-            return f"http://localhost:9000/local/files/{key}/{data.decode().rsplit('/', 1)[-1]}"
+            objects[key] = data
+            return f"http://localhost:9000/local/files/{key}"
 
     # Stub transport and encoding here. Storage security and image decoding
     # run against real bytes in the separate import pipeline regressions.

@@ -12,12 +12,13 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
+from app.infrastructure.embedding.clip_embedder import ClipEmbedder
 from app.infrastructure.embedding.fake_embedding import FakeEmbedding
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.embedding import ItemEmbedding
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.session import AsyncSessionLocal
-from app.infrastructure.storage.object_key import is_owned_object_key
+from app.infrastructure.storage.source_image import InvalidSourceImage, load_source_bytes, resolve_import_source_key
 from app.infrastructure.workers.job_runtime import (
     claim_is_current,
     claim_one,
@@ -56,7 +57,7 @@ async def enqueue_embedding(
         idempotency_key=_idempotency_key(item_id, model_version, source_version),
         payload={
             "item_id": str(item_id),
-            "image_url": None if image_key else image_url,
+            "image_url": image_url,
             "image_key": image_key,
             "model_version": model_version,
             "source_version": source_version,
@@ -115,20 +116,27 @@ async def _process_one(job: AsyncJob) -> None:
                 await _fail(job, "model_version mismatch")
                 return
             if isinstance(image_key, str) and image_key:
-                if not is_owned_object_key(image_key, job.user_id):
-                    await _fail(job, "invalid_source_key")
-                    return
-                image_url = object_storage().sign_render_url(image_key)
+                if isinstance(embedder, ClipEmbedder):
+                    raw = await load_source_bytes(image_url, image_key, user_id=job.user_id)
+                    vector = await embedder.embed_bytes(raw)
+                else:
+                    resolve_import_source_key(image_url, job.user_id, get_settings(), expected_key=image_key)
+                    vector = await embedder.embed_image(object_storage().sign_render_url(image_key))
             elif model_version != FakeEmbedding.model_version:
                 # New imports snapshot external URLs. Legacy rows without a
                 # verified object must not be fetched by an embedding provider.
                 async with AsyncSessionLocal() as session:
                     await _skip(session, job, "unverified_source")
                 return
-            if not isinstance(image_url, str) or not image_url:
+            elif not isinstance(image_url, str) or not image_url:
                 await _fail(job, "missing payload fields")
                 return
-            vector = await embedder.embed_image(image_url)
+            else:
+                vector = await embedder.embed_image(image_url)
+        except InvalidSourceImage:
+            async with AsyncSessionLocal() as session:
+                await _skip(session, job, "unverified_source")
+            return
         except Exception as exc:
             logger.warning("embedding.provider_failed", error_type=type(exc).__name__)
             await _fail(job, "embedding_provider_failed")

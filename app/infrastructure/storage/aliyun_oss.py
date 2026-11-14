@@ -22,6 +22,7 @@ import structlog
 
 from app.application.ports.storage import PresignResult
 from app.config.settings import Settings
+from app.infrastructure.storage.object_key import oss_endpoint_url
 from app.infrastructure.storage.sdk_io import CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS, run_sdk
 
 logger = structlog.get_logger(__name__)
@@ -54,7 +55,7 @@ class AliyunOssStorage:
         )
         return oss2.Bucket(
             auth,
-            self.settings.ALIYUN_OSS_ENDPOINT,
+            oss_endpoint_url(self.settings),
             self.settings.ALIYUN_OSS_BUCKET,
             connect_timeout=_OSS_TIMEOUT,
         )
@@ -144,7 +145,7 @@ class AliyunOssStorage:
 
         deleted = 0
         for name in sorted(bucket_names):
-            bucket = oss2.Bucket(auth, self.settings.ALIYUN_OSS_ENDPOINT, name, connect_timeout=_OSS_TIMEOUT)
+            bucket = oss2.Bucket(auth, oss_endpoint_url(self.settings), name, connect_timeout=_OSS_TIMEOUT)
             keys = [obj.key for obj in oss2.ObjectIterator(bucket, prefix=prefix)]
             for i in range(0, len(keys), 1000):
                 batch = keys[i : i + 1000]
@@ -186,7 +187,7 @@ class AliyunOssStorage:
         # Fallback: synthesize from endpoint + bucket. NOTE this is the OSS
         # raw URL — for private buckets use `sign_get_url` instead (or
         # route through CDN via cdn_url.py once that is enabled).
-        return f"{self.settings.ALIYUN_OSS_ENDPOINT}/{self.settings.ALIYUN_OSS_BUCKET}/{key}"
+        return f"{oss_endpoint_url(self.settings).rstrip('/')}/{self.settings.ALIYUN_OSS_BUCKET}/{key}"
 
     def sign_render_url(
         self,

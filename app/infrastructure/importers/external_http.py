@@ -56,7 +56,7 @@ def is_safe_url(url: str) -> bool:
     try:
         host, port = _host_and_port(url)
         results = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-        _public_address(result[4][0] for result in results)
+        _public_address(str(result[4][0]) for result in results)
     except (OSError, ValueError):
         return False
     return True
@@ -65,9 +65,13 @@ def is_safe_url(url: str) -> bool:
 async def _resolve_public_address(host: str, port: int) -> str:
     try:
         results = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        if exc.errno == socket.EAI_NONAME:
+            raise InvalidExternalSource("External source host could not be found") from exc
+        raise httpx.ConnectError("External host resolution failed") from exc
     except OSError as exc:
         raise httpx.ConnectError("External host resolution failed") from exc
-    return _public_address(result[4][0] for result in results)
+    return _public_address(str(result[4][0]) for result in results)
 
 
 async def fetch_external(

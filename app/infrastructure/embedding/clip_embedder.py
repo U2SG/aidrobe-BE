@@ -26,6 +26,9 @@ class ClipEmbedder:
             response = await client.get(image_url)
             response.raise_for_status()
             image_bytes = response.content
+        return await self.embed_bytes(image_bytes)
+
+    async def embed_bytes(self, image_bytes: bytes) -> list[float]:
         return await asyncio.to_thread(self._embed_image_bytes, image_bytes)
 
     def _embed_image_bytes(self, image_bytes: bytes) -> list[float]:

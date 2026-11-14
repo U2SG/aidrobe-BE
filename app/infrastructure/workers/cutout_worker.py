@@ -63,7 +63,7 @@ async def enqueue_item_cutout(
         idempotency_key=cutout_job_key(item_id),
         payload={
             "item_id": str(item_id),
-            "source_url": None if source_key else source_url,
+            "source_url": source_url,
             "source_key": source_key,
             "source_version": source_version,
             "expected_cover_url": expected_cover_url,
