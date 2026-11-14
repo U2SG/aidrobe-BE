@@ -1,14 +1,15 @@
-"""Match a garment re-imported from the same stored source photo."""
+"""Match a garment re-imported from the same photograph."""
 
 import hashlib
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.purchase.garment_type import garment_type
 from app.config.settings import get_settings
+from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.storage.object_key import extract_internal_object_key, is_owned_object_key
 
@@ -25,6 +26,7 @@ async def existing_photo_item(
     siblings: list[dict[str, Any]],
     confirmed_category: str,
     *,
+    fingerprint: str | None = None,
     lock_photo: bool = True,
 ) -> WardrobeItem | None:
     category = candidate.get("category")
@@ -40,16 +42,25 @@ async def existing_photo_item(
     key = extract_internal_object_key(source, get_settings())
     owned_key = key if key and is_owned_object_key(key, user_id) else None
     # Fresh tasks have different IDs. Serialize confirmations of the same photo.
-    lock = int.from_bytes(
-        hashlib.sha256(f"same-import-photo:{user_id}:{owned_key or source}".encode()).digest()[:8], "big", signed=True
-    )
     if lock_photo:
-        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock})
+        lock_parts = {owned_key or source}
+        if fingerprint:
+            lock_parts.add(fingerprint)
+        for part in sorted(lock_parts):
+            digest = hashlib.sha256(f"same-import-photo:{user_id}:{part}".encode()).digest()
+            lock = int.from_bytes(digest[:8], "big", signed=True)
+            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock})
     same_source = WardrobeItem.original_image_url == source
     if owned_key:
         same_source = func.split_part(WardrobeItem.original_image_url, "?", 1).endswith(
             f"/{owned_key}", autoescape=True
         )
+    if fingerprint:
+        sibling_sources = select(ImportTask.input_payload["image_url"].astext).where(
+            ImportTask.user_id == user_id,
+            ImportTask.input_payload["photo_fingerprint"].astext == fingerprint,
+        )
+        same_source = or_(same_source, WardrobeItem.original_image_url.in_(sibling_sources))
     existing = await session.scalars(
         select(WardrobeItem).where(
             WardrobeItem.user_id == user_id,

@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
@@ -243,17 +244,25 @@ async def seed_multi_candidate_task(
     return task
 
 
-async def test_confirm_reimport_of_same_outfit_photo_reuses_item_even_if_color_changes(
-    db_session: AsyncSession,
+@pytest.mark.parametrize("new_upload", [False, True])
+async def test_confirm_reimport_reuses_item_even_if_color_changes(
+    db_session: AsyncSession, new_upload: bool,
 ) -> None:
     user_id = uuid.uuid4()
     first = await seed_multi_candidate_task(db_session, user_id)
     first.input_type = "outfit_image"
     assert first.candidate_payload is not None
     reidentified = dict(first.candidate_payload["candidate_items"][0], color_main="cream")
+    if new_upload:
+        source = reidentified["original_image_url"]
+        first.input_payload = {"image_url": source, "photo_fingerprint": "test-digest"}
+        reidentified["original_image_url"] = "https://cdn/new-upload.jpg"
+        second_payload = {**first.input_payload, "image_url": reidentified["original_image_url"]}
+    else:
+        second_payload = first.input_payload
     second = ImportTask(
         user_id=user_id, input_type="outfit_image", source_type="album", task_status="waiting_confirm",
-        input_payload=first.input_payload,
+        input_payload=second_payload,
         candidate_payload={"candidate_items": [reidentified]},
     )
     db_session.add(second)

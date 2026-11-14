@@ -225,6 +225,7 @@ class ConfirmImageImportTask:
                     candidate,
                     list(candidate_by_temp_id.values()),
                     entry.category,
+                    fingerprint=task.input_payload.get("photo_fingerprint"),
                 )
             if existing is not None:
                 confirmed[entry.temp_item_id] = str(existing.id)

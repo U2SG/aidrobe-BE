@@ -125,7 +125,7 @@ def _review_photos(response: ImportTaskResponse, user_id: uuid.UUID) -> None:
 
 
 async def _attach_duplicates(
-    response: ImportTaskResponse, session: AsyncSession, user_id: uuid.UUID, *, outfit_photo: bool
+    response: ImportTaskResponse, session: AsyncSession, user_id: uuid.UUID, *, task: ImportTask
 ) -> None:
     pending = [candidate for candidate in response.candidate_items if candidate.confirmed_item_id is None]
     matching_colors = {
@@ -150,11 +150,13 @@ async def _attach_duplicates(
     items = list(matching)
     siblings = [candidate.model_dump() for candidate in response.candidate_items]
     for candidate in pending:
-        if outfit_photo:
+        if task.input_type == InputType.OUTFIT_IMAGE.value:
             # Match the original, unmodified URL before signing it for review.
             existing = await existing_photo_item(
                 session, user_id, candidate.original_image_url, candidate.model_dump(), siblings,
-                candidate.category, lock_photo=False,
+                candidate.category,
+                fingerprint=task.input_payload.get("photo_fingerprint"),
+                lock_photo=False,
             )
             if existing is not None:
                 candidate.confirmed_item_id = existing.id
@@ -399,8 +401,6 @@ async def get_import_task(
         )
     result = to_response(task)
     if task.task_status == ImportStatus.WAITING_CONFIRM.value:
-        await _attach_duplicates(
-            result, session, current_user.id, outfit_photo=task.input_type == InputType.OUTFIT_IMAGE.value
-        )
+        await _attach_duplicates(result, session, current_user.id, task=task)
     _review_photos(result, current_user.id)
     return ResponseModel(data=result)

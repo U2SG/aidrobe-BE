@@ -147,9 +147,11 @@ class ProcessImageImportTask:
 
         if task.input_type == InputType.OUTFIT_IMAGE.value:
             # One picture per garment instead of the whole outfit photo.
-            await attach_garment_crops(
+            fingerprint = await attach_garment_crops(
                 candidate_items, results, image_url=image_url, user_id=user_id, task_id=task_id, vision=self.vision
             )
+            if fingerprint:
+                task.input_payload = {**task.input_payload, "photo_fingerprint": fingerprint}
 
         # Keep the first result in the legacy top-level shape while exposing all
         # garments through the existing multi-candidate contract.
