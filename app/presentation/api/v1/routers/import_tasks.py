@@ -15,6 +15,7 @@ from app.application.import_tasks.confirm_import import (
 )
 from app.application.import_tasks.create_import import CreateImageImportTask
 from app.application.import_tasks.failures import public_error_message
+from app.application.import_tasks.same_photo import existing_photo_item
 from app.application.import_tasks.source import upload_key
 from app.application.purchase.garment_type import garment_type
 from app.common import error_codes
@@ -126,9 +127,25 @@ def _correlation_id() -> str | None:
 
 
 async def _attach_duplicates(
-    response: ImportTaskResponse, session: AsyncSession, user_id: uuid.UUID
+    response: ImportTaskResponse, session: AsyncSession, task: ImportTask
 ) -> None:
+    user_id = task.user_id
     pending = [candidate for candidate in response.candidate_items if candidate.confirmed_item_id is None]
+    if task.input_type == InputType.OUTFIT_IMAGE:
+        siblings = normalize_candidates(task)
+        raw_by_id = {candidate["temp_item_id"]: candidate for candidate in siblings}
+        for candidate in pending:
+            raw = raw_by_id.get(candidate.temp_item_id)
+            if raw is None:
+                continue
+            original_url = raw.get("original_image_url") or task.input_payload.get("image_url")
+            existing = await existing_photo_item(
+                session, user_id, original_url, raw, siblings, candidate.category,
+                fingerprint=task.input_payload.get("photo_fingerprint"), lock_photo=False,
+            )
+            if existing is not None:
+                candidate.confirmed_item_id = existing.id
+        pending = [candidate for candidate in pending if candidate.confirmed_item_id is None]
     matching_colors = {
         candidate.color_main: _BLUE_SHADES if candidate.color_main in _BLUE_SHADES else {candidate.color_main}
         for candidate in pending
@@ -426,5 +443,5 @@ async def get_import_task(
         )
     result = to_response(task)
     if task.task_status == ImportStatus.WAITING_CONFIRM.value:
-        await _attach_duplicates(result, session, current_user.id)
+        await _attach_duplicates(result, session, task)
     return ResponseModel(data=result)

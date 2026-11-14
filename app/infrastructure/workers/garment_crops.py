@@ -167,7 +167,7 @@ async def _crop_one(session: AsyncSession, job: AsyncJob) -> None:
     if item_id:
         await apply_confirmed_crop(
             SqlAlchemyWardrobeRepository(session), user_id=job.user_id, item_id=uuid.UUID(item_id),
-            original_url=url, crop_url=crop_url, crop_key=crop_key,
+            original_url=url, recognized_category=candidate["category"], crop_url=crop_url, crop_key=crop_key,
         )
     candidate["crop_object_key"] = crop_key
     candidate["crop_image_url"] = crop_url

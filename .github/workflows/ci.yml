@@ -72,6 +72,7 @@ jobs:
             tests/api/test_wear_history_endpoint.py tests/unit/test_v3_outfit_composition.py \
             tests/unit/test_v3_similarity_query_count.py tests/services/test_v3_similarity_evidence.py \
             tests/services/test_import_worker.py tests/services/test_cutout_worker.py \
+            tests/services/test_import_generation_fence.py tests/services/test_import_crop_concurrency.py \
             tests/services/test_embedding_worker.py tests/services/test_recommendation_recompute_worker.py \
             tests/services/test_v3_paid_generation_admission.py tests/services/test_current_vector_consumers.py \
             tests/unit/test_object_key.py tests/unit/test_source_image_key.py tests/unit/test_storage_sdk_io.py

@@ -1,6 +1,7 @@
 """Recoverable garment recognition, separate from the crop and paid-image jobs."""
 
 import asyncio
+import hashlib
 import uuid
 from typing import Any
 
@@ -255,6 +256,7 @@ async def _recognize(
     store_candidates(task, candidates)
     task.task_status = ImportStatus.WAITING_CONFIRM.value
     if input_type == InputType.OUTFIT_IMAGE:
+        task.input_payload = {**task.input_payload, "photo_fingerprint": hashlib.sha256(data).hexdigest()}
         for candidate in candidates:
             if candidate.get("bbox") and candidate.get("should_import") is not False:
                 await enqueue_garment_crop(session, task, candidate["temp_item_id"], version, job)

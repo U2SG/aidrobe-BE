@@ -22,10 +22,12 @@ from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.application.ports.vision import VisionResult
 from app.common.enums import ImportStatus
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.user import User
+from app.infrastructure.vision.fake_vision import FakeVision
 from app.infrastructure.workers import garment_crops, import_worker
 from app.infrastructure.workers.import_worker import (
     IMPORT_JOB_TYPE,
@@ -292,12 +294,77 @@ async def test_crop_retry_preserves_recognized_candidates(
         assert all(c["original_image_url"] == task.input_payload["image_url"] for c in final)
 
 
-@pytest.mark.parametrize("status", [429, 503])
-async def test_provider_error_retries_using_committed_snapshot(
-    patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch, status: int,
+async def test_abandoned_crop_lease_recovers_without_repeating_recognition(
+    patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.infrastructure.vision.fake_vision import FakeVision
+    vision_calls = 0
 
+    class Vision(FakeVision):
+        async def analyze_outfit(self, image_url: str, locale: str = "zh-CN") -> list[VisionResult]:
+            nonlocal vision_calls
+            vision_calls += 1
+            return await super().analyze_outfit(image_url, locale)
+
+    monkeypatch.setattr(import_worker, "vision_service", Vision)
+    user_id, task_id = await _seed_task(patched_session_factory, input_type="outfit_image")
+    async with patched_session_factory() as session:
+        recognition, _ = await enqueue_import_task(session, task_id=task_id, user_id=user_id)
+        recognition_id = recognition.id
+        await session.commit()
+
+    assert await drain_import_jobs(ctx=None) == 1
+    async with patched_session_factory() as session:
+        task = await session.get(ImportTask, task_id)
+        assert task is not None and task.task_status == ImportStatus.WAITING_CONFIRM
+        assert task.candidate_payload is not None
+        initial = task.candidate_payload["candidate_items"]
+        assert len(initial) == 2 and all(not candidate.get("crop_object_key") for candidate in initial)
+        source_key = task.input_payload["source_object_key"]
+        assert source_key
+        queued = list(await session.scalars(
+            select(AsyncJob).where(AsyncJob.target_id == task_id, AsyncJob.job_type == garment_crops.CROP_JOB_TYPE)
+        ))
+        assert len(queued) == 2
+        # Persist a real claim that a worker never finalizes. Backdate only
+        # the chosen job's eligibility and claim so recovery needs no sleep.
+        claim_time = datetime.now(UTC) - timedelta(minutes=1)
+        queued[0].next_run_at = claim_time
+        await session.commit()
+        abandoned = await claim_one(
+            session, [garment_crops.CROP_JOB_TYPE], now=claim_time, lease_seconds=1,
+        )
+        assert abandoned is not None and abandoned.status == JOB_STATUS_RUNNING
+        assert abandoned.attempts == 1
+        abandoned_id = abandoned.id
+
+    assert await garment_crops.drain_garment_crop_jobs(ctx=None) == 2
+    assert await drain_import_jobs(ctx=None) == 0
+    assert vision_calls == 1
+    async with patched_session_factory() as session:
+        task = await session.get(ImportTask, task_id)
+        assert task is not None and task.task_status == ImportStatus.WAITING_CONFIRM
+        assert task.input_payload["source_object_key"] == source_key
+        assert task.candidate_payload is not None
+        final = task.candidate_payload["candidate_items"]
+        assert [
+            {key: value for key, value in candidate.items() if key not in {"crop_object_key", "crop_image_url"}}
+            for candidate in final
+        ] == initial
+        assert len({candidate["crop_object_key"] for candidate in final}) == 2
+        recovered = await session.get(AsyncJob, abandoned_id)
+        assert recovered is not None and recovered.status == JOB_STATUS_SUCCEEDED and recovered.attempts == 2
+        recovered_candidate = next(
+            candidate for candidate in final if candidate["temp_item_id"] == recovered.payload["candidate_id"]
+        )
+        assert recovered_candidate["crop_object_key"].endswith(f"/{abandoned_id}/2.jpg")
+        recognition = await session.get(AsyncJob, recognition_id)
+        assert recognition is not None and recognition.status == JOB_STATUS_SUCCEEDED and recognition.attempts == 1
+
+
+@pytest.mark.parametrize("status", [429, 503, "network"])
+async def test_provider_error_retries_using_committed_snapshot(
+    patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch, status: int | str,
+) -> None:
     vision_calls = 0
     download_calls = 0
     download_image = import_worker.download_external_source_image
@@ -309,6 +376,8 @@ async def test_provider_error_retries_using_committed_snapshot(
             assert image_url.startswith("data:image/jpeg;base64,")
             if vision_calls == 1:
                 request = httpx.Request("POST", "https://provider.test/recognize?token=secret")
+                if status == "network":
+                    raise httpx.ConnectError("network unavailable", request=request)
                 response = httpx.Response(status, request=request)
                 response.raise_for_status()
             return await super().analyze_image(image_url, locale)
@@ -332,9 +401,15 @@ async def test_provider_error_retries_using_committed_snapshot(
         task = await session.get(ImportTask, task_id)
         job = await session.get(AsyncJob, job_id)
         assert task is not None and task.task_status == ImportStatus.PROCESSING
+        assert task.candidate_payload is None
         assert task.input_payload["source_object_key"]
         assert job is not None and job.last_error == "provider_unavailable"
         assert job.status == JOB_STATUS_QUEUED and job.attempts == 1
+        assert job.next_run_at > job.updated_at
+        early_claim = await claim_one(
+            session, [IMPORT_JOB_TYPE], now=job.next_run_at - timedelta(microseconds=1),
+        )
+        assert early_claim is None
         job.next_run_at = datetime.now(UTC)
         await session.commit()
 
@@ -343,6 +418,8 @@ async def test_provider_error_retries_using_committed_snapshot(
         task = await session.get(ImportTask, task_id)
         assert task is not None and task.task_status == ImportStatus.WAITING_CONFIRM
         assert len(task.candidate_payload["candidate_items"]) == 1
+        job = await session.get(AsyncJob, job_id)
+        assert job is not None and job.status == JOB_STATUS_SUCCEEDED and job.attempts == 2
     assert vision_calls == 2
     assert download_calls == 1
 
@@ -351,8 +428,6 @@ async def test_provider_error_retries_using_committed_snapshot(
 async def test_recognition_rejection_preserves_a_sanitized_business_outcome(
     patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch, mode: str,
 ) -> None:
-    from app.infrastructure.vision.fake_vision import FakeVision
-
     class Vision(FakeVision):
         async def analyze_outfit(self, image_url: str, locale: str = "zh-CN"):
             if mode == "empty":
@@ -479,7 +554,6 @@ async def test_import_crop_first_outfit_pipeline(
     from app.infrastructure.persistence.models.paid_generation import PaidGenerationReservation
     from app.infrastructure.persistence.models.wardrobe import WardrobeItemImage
     from app.infrastructure.persistence.session import get_db_session
-    from app.infrastructure.vision.fake_vision import FakeVision
     from app.presentation.api.v1.routers import import_tasks, recommendations
 
     class Vision(FakeVision):
@@ -699,8 +773,6 @@ async def test_stale_crop_upload_cannot_replace_adopted_image(
 async def test_rejected_crop_does_not_get_adopted_or_repeat_recognition(
     patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.infrastructure.vision.fake_vision import FakeVision
-
     async def review(self, crops, garments):
         assert len(crops) == len(garments) == 1
         return [garments[0].category == "top"]

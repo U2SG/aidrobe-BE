@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.application.import_tasks.candidates import confirmed_item_ids, normalize_candidates, store_candidates
 from app.application.import_tasks.prepare_derivatives import prepare_item_derivatives
+from app.application.import_tasks.same_photo import existing_photo_item
 from app.application.import_tasks.source import source_version, upload_key
 from app.application.recommendations.background import schedule_today_recompute
 from app.common import error_codes
@@ -133,9 +134,19 @@ class ConfirmImageImportTask:
                     raise FriendlyException(error_codes.STATE_CONFLICT, "Confirmed item was removed", 409)
                 results.append(ConfirmedEntry(candidate_id, existing, created=False))
                 continue
-            item = await self._create_item(task, by_id[candidate_id], entry)
+            candidate = by_id[candidate_id]
+            original_url = candidate.get("original_image_url") or task.input_payload.get("image_url")
+            original_key = _validated_source_key(original_url, task, task.input_payload.get("source_object_key"))
+            reusable = None
+            if task.input_type in (InputType.IMAGE, InputType.OUTFIT_IMAGE):
+                reusable = await existing_photo_item(
+                    self.wardrobe_repository.session, task.user_id, original_url,
+                    candidate, candidates, entry.category,
+                    fingerprint=task.input_payload.get("photo_fingerprint"),
+                )
+            item = reusable or await self._create_item(task, candidate, entry, original_url, original_key)
             confirmed[candidate_id] = str(item.id)
-            results.append(ConfirmedEntry(candidate_id, item, created=True))
+            results.append(ConfirmedEntry(candidate_id, item, created=reusable is None))
 
         if task.task_status == ImportStatus.WAITING_CONFIRM.value:
             if candidates:
@@ -173,21 +184,21 @@ class ConfirmImageImportTask:
         return await self.wardrobe_repository.get_for_user(parsed, user_id)
 
     async def _create_item(
-        self, task: ImportTask, candidate: dict[str, Any], entry: ConfirmItemInput
+        self,
+        task: ImportTask,
+        candidate: dict[str, Any],
+        entry: ConfirmItemInput,
+        original_url: str | None,
+        original_key: str | None,
     ) -> WardrobeItem:
-        original_url = candidate.get("original_image_url") or task.input_payload.get("image_url")
         crop_url = candidate.get("crop_image_url")
         crop_key = candidate.get("crop_object_key")
-        if is_legacy_garment_crop(crop_key or crop_url, task.user_id):
-            crop_url, crop_key = None, None
-        try:
-            original_key = upload_key(
-                original_url, task.user_id, expected_key=task.input_payload.get("source_object_key"),
-            )
-            crop_key = upload_key(crop_url, task.user_id, expected_key=crop_key)
-        except InvalidSourceImage:
-            raise FriendlyException(error_codes.VALIDATION_ERROR, "Invalid import image", 422) from None
         generated_url = candidate.get("cutout_image_url")
+        if candidate.get("category") != entry.category:
+            crop_url, crop_key, generated_url = None, None, None
+        elif is_legacy_garment_crop(crop_key or crop_url, task.user_id):
+            crop_url, crop_key = None, None
+        crop_key = _validated_source_key(crop_url, task, crop_key)
         cover_url = generated_url or crop_url or original_url
         cover_key = None if generated_url else (crop_key if crop_url else original_key)
         ai_title = candidate.get("display_name") or candidate.get("title")
@@ -247,6 +258,13 @@ class ConfirmImageImportTask:
         return item
 
 
+def _validated_source_key(url: str | None, task: ImportTask, key: str | None) -> str | None:
+    try:
+        return upload_key(url, task.user_id, expected_key=key)
+    except InvalidSourceImage:
+        raise FriendlyException(error_codes.VALIDATION_ERROR, "Invalid import image", 422) from None
+
+
 _RECEIPT_TYPES = {InputType.RECEIPT_SCREENSHOT, InputType.ORDER_SCREENSHOT, InputType.SHOPPING_EMAIL}
 
 
@@ -256,6 +274,7 @@ async def apply_confirmed_crop(
     user_id: uuid.UUID,
     item_id: uuid.UUID,
     original_url: str,
+    recognized_category: str,
     crop_url: str,
     crop_key: str,
 ) -> None:
@@ -271,6 +290,7 @@ async def apply_confirmed_crop(
     if (
         item is None
         or item.original_image_url != original_url
+        or item.category != recognized_category
         or item.embedding_source_version is not None
         or (item.cover_image_url != original_url and item.cutout_status != CutoutStatus.READY.value)
     ):
