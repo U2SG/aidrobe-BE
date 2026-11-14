@@ -33,6 +33,8 @@ class VisionResult:
     # (x_min, y_min, x_max, y_max). Only for multi-garment photos; None when
     # the model gave no usable box (the candidate then keeps the full photo).
     bbox: tuple[float, float, float, float] | None = None
+    # Outfit recognition can see a layer without enough evidence to name its style.
+    style_unverified: bool = False
 
 
 @dataclass(frozen=True)
