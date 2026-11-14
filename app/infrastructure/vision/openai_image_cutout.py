@@ -67,15 +67,20 @@ class OpenAIImageCutout:
             return generated
         return None
 
-    async def render_outfit(self, images: list[bytes], roles: list[str]) -> bytes:
-        pieces = ", ".join(f"image {index}: {role}" for index, role in enumerate(roles, 1))
+    async def render_outfit(self, images: list[bytes], garments: list[str]) -> bytes:
+        pieces = "; ".join(f"image {index}: {garment}" for index, garment in enumerate(garments, 1))
         return await self._edit(
             images,
             "Create one cohesive fashion flat lay on a clean light neutral background. "
-            f"The images are clothing references for these slots: {pieces}. Show exactly one "
-            "garment per slot and a pair for shoes. Keep the exact colours, prints, fabrics and "
-            "silhouettes. Remove all people, phones, hangers and surroundings. Arrange the outfit "
-            "as a full, coordinated look with all pieces fully in view. Use no text or labels.",
+            f"The numbered references show these garments: {pieces}. Show every listed garment and no extras. "
+            "Match the actual color, fabric, cut, seams, fasteners and markings visible in each reference. "
+            "Keep any areas hidden by fabric, cropping or framing hidden in the finished outfit. "
+            "For partly covered shoes, trace the photographed toe outlines and seams, and pull the trouser "
+            "hems far enough over each shoe to keep all unverified details covered. Preserve asymmetry "
+            "and partial framing. Do not reconstruct hidden shoe openings, laces, heels, logos, perforations, "
+            "sides or soles, and do not show detached shoe fragments. Keep the shoes naturally aligned under "
+            "the trouser hems. Keep the other garments recognizable as a full coordinated look. "
+            "Remove people, phones, hangers and surroundings. Use no text or labels.",
         )
 
     async def _edit(self, images: list[bytes], prompt: str) -> bytes:

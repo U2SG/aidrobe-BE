@@ -211,12 +211,9 @@ class QwenVision:
     async def matches_product_photo(
         self, source: bytes, generated: bytes, *, category: str, title: str, color: str
     ) -> bool:
-        def data_uri(image: bytes) -> str:
-            return f"data:{_image_mime(image)};base64,{base64.b64encode(image).decode('ascii')}"
-
         expected = json.dumps({"category": category, "title": title, "color": color}, ensure_ascii=False)
         content = await self._request_content(
-            data_uri(source),
+            _image_data_uri(source),
             "Check a generated clothing product photo against the real reference. The first image "
             "is the reference and the second is the generated product. "
             f"Expected item metadata: {expected}. "
@@ -227,10 +224,44 @@ class QwenVision:
             "out of view, if the product shows those areas. Check logos, toe perforations, stitching, "
             "and sole shape individually. A matching generic type and color is insufficient. "
             "Return only JSON with a boolean field accepted.",
-            data_uri(generated),
+            _image_data_uri(generated),
         )
         result = json.loads(self._strip_json_fence(content))
         return isinstance(result, dict) and result.get("accepted") is True
+
+    async def matches_outfit_photo(
+        self, sources: list[bytes], generated: bytes, *, garments: list[str]
+    ) -> bool:
+        content = await self._request_content(
+            _image_data_uri(generated),
+            "Verify the outfit flat lay in image 1 using only the references that follow it. "
+            "The names help identify the target in a reference and do not prove any feature is visible. "
+            f"The reference garments in order are {json.dumps(garments, ensure_ascii=False)}. "
+            "Check each target garment separately. Match the visible color, neckline or collar, sleeves, "
+            "hem, leg width, fabric, pockets, seams, fasteners and marks. Reject changed construction, "
+            "extra pieces, and any concealed feature that the render introduces. A change in angle or "
+            "more overlap is acceptable if the exposed parts still match. Specifically compare the "
+            "shoe toe shape and seams, allowing more of the lacing to be covered by the trousers. "
+            "If shoes were partly concealed, reject an exposed opening, heel, insole, sole side, "
+            "full lacing, invented perforations or logos. Detached shoe fragments also fail. "
+            "Decide whether each item is present independently from whether its details match. "
+            "Mark uncertainty as false. "
+            'Return JSON with "composition_matches" (boolean for every piece present and no extras) and '
+            '"garment_matches" (array of one boolean per reference, in reference order, true only if '
+            "visible features match and the concealed parts remain hidden).",
+            *(_image_data_uri(source) for source in sources),
+        )
+        result = json.loads(self._strip_json_fence(content))
+        if not isinstance(result, dict):
+            raise ValueError("Invalid outfit quality review response")
+        marks = result.get("garment_matches")
+        if (
+            not isinstance(marks, list) or len(marks) != len(garments)
+            or not all(isinstance(mark, bool) for mark in marks)
+            or not isinstance(result.get("composition_matches"), bool)
+        ):
+            raise ValueError("Invalid outfit quality review response")
+        return result["composition_matches"] is True and all(marks)
 
     async def _request_content(self, image_url: str, prompt: str, *reference_urls: str) -> str:
         # Inline private wardrobe images instead of exposing signed URLs to the
@@ -274,8 +305,7 @@ class QwenVision:
         # devices and may not resolve from the worker (in the local stack it is
         # localhost:9000). External import links are fetched behind the SSRF guard.
         data = await load_source_bytes(image_url, None)
-        encoded = base64.b64encode(data).decode("ascii")
-        return f"data:{_image_mime(data)};base64,{encoded}"
+        return _image_data_uri(data)
 
     @staticmethod
     def _strip_json_fence(content: str) -> str:
@@ -401,6 +431,10 @@ def merge_paired_garments(results: list[VisionResult]) -> list[VisionResult]:
             confidence_score=max(first.confidence_score, result.confidence_score),
         )
     return merged
+
+
+def _image_data_uri(data: bytes) -> str:
+    return f"data:{_image_mime(data)};base64,{base64.b64encode(data).decode('ascii')}"
 
 
 def _image_mime(data: bytes) -> str:

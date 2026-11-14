@@ -34,6 +34,7 @@ from app.infrastructure.importers.link_parser import BROWSER_HEADERS, is_safe_ur
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.storage.source_image import key_from_url
 from app.infrastructure.vision.openai_image_cutout import OpenAIImageCutout
+from app.infrastructure.vision.qwen_vision import QwenVision
 from app.infrastructure.workers._visual_asset_runtime import (
     VisualAssetSnapshot,
     drain_visual_jobs,
@@ -196,8 +197,18 @@ def _draw_placeholder(canvas: Image.Image, box: tuple[int, int, int, int], label
     )
 
 
-async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str]:
-    """Render the composite board and upload to object storage."""
+def _jpeg_reference(image: Image.Image) -> bytes:
+    scale = min(1024 / max(image.size), max(1.0, 512 / max(image.size)))
+    if scale != 1:
+        size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+        image = image.resize(size, Image.Resampling.LANCZOS)
+    frame = io.BytesIO()
+    image.convert("RGB").save(frame, format="JPEG", quality=90)
+    return frame.getvalue()
+
+
+async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] | None:
+    """Render the board and upload it if its references support the result."""
     from app.bootstrap.container import object_storage
 
     items = snapshot.input_snapshot.get("item_list", [])
@@ -209,40 +220,50 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str]:
     settings = get_settings()
     if generate and (not settings.ENABLE_ITEM_CUTOUT or settings.IMAGE_CUTOUT_PROVIDER != "openai"):
         raise ValueError("Outfit image generation is disabled")
-    references: dict[tuple[str | None, str | None], tuple[bytes, list[str]]] = {}
+    generation_images: list[bytes] = []
+    review_images: list[bytes] = []
+    garments: list[str] = []
 
     for item, role, box in zip(items, roles, boxes, strict=True):
-        reference = (item.get("cutout_object_key"), item.get("cutout_image_url"))
-        img = await _load_snapshot_image(storage, object_key=reference[0], fallback_url=reference[1])
+        img = await _load_snapshot_image(
+            storage, object_key=item.get("cutout_object_key"), fallback_url=item.get("cutout_image_url")
+        )
         if img is None:
-            reference = (item.get("thumbnail_object_key"), item.get("thumbnail_url"))
-            if generate and reference in references:
-                references[reference][1].append(role)
-                continue
-            img = await _load_snapshot_image(storage, object_key=reference[0], fallback_url=reference[1])
+            img = await _load_snapshot_image(
+                storage, object_key=item.get("thumbnail_object_key"), fallback_url=item.get("thumbnail_url")
+            )
 
         if generate:
             if img is None:
-                raise ValueError("Missing garment photo for the outfit")
-            if reference in references:
-                references[reference][1].append(role)
-                continue
-            img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
-            frame = io.BytesIO()
-            img.convert("RGB").save(frame, format="JPEG", quality=90)
-            references[reference] = (frame.getvalue(), [role])
+                return None
+            frame = _jpeg_reference(img)
+            review_frame = frame
+            review_key = item.get("review_object_key")
+            review_url = item.get("review_image_url")
+            if review_key or review_url:
+                reference = await _load_snapshot_image(storage, object_key=review_key, fallback_url=review_url)
+                if reference is None:
+                    return None
+                review_frame = _jpeg_reference(reference)
+            shoes = role == "shoes" or item.get("category") == "shoes"
+            generation_images.append(review_frame if shoes else frame)
+            review_images.append(review_frame)
+            title = item.get("title") or role
+            color = item.get("color")
+            garments.append(f"{role}: {title} ({color})" if color else f"{role}: {title}")
         elif img is not None:
             _paste_item(canvas, img, box)
         else:
             _draw_placeholder(canvas, box, role)
 
     if generate:
-        if not references:
-            raise ValueError("No garment photos for the outfit")
-        images = [reference[0] for reference in references.values()]
-        pieces = [" and ".join(reference[1]) for reference in references.values()]
-        generated = await OpenAIImageCutout(settings).render_outfit(images, pieces)
-        key = f"users/{snapshot.user_id}/outfit_boards/{snapshot.id}.png"
+        if not generation_images:
+            return None
+        generated = await OpenAIImageCutout(settings).render_outfit(generation_images, garments)
+        reviewer = QwenVision(settings)
+        if not await reviewer.matches_outfit_photo(review_images, generated, garments=garments):
+            return None
+        key = f"users/{snapshot.user_id}/outfit_boards/{snapshot.id}-{snapshot.attempt}.png"
         return await storage.put_object(key, generated, "image/png"), key
 
     rgb = canvas.convert("RGB")

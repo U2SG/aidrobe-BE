@@ -40,7 +40,7 @@ logger = structlog.get_logger(__name__)
 _STALE_QUEUED_MINUTES = 15
 # v2: used slots are centred as a group (v1 left blank bands for missing roles).
 _OUTFIT_BOARD_LAYOUT_VERSION = "v2"
-_GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-v1"
+_GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-reviewed-v1"
 _IMAGE_TYPE_PRIORITY = ("cutout", "thumbnail", "standard", "original")
 
 
@@ -99,7 +99,7 @@ async def _existing_outfit_board_asset(
 
 
 async def _outfit_board_item_list(
-    db: AsyncSession, *, outfit_id: uuid.UUID, user_id: uuid.UUID
+    db: AsyncSession, *, outfit_id: uuid.UUID, user_id: uuid.UUID, generate: bool = False
 ) -> list[dict[str, str]]:
     rows = (
         await db.execute(
@@ -126,10 +126,34 @@ async def _outfit_board_item_list(
         if image is not None and image.image_type not in item_images.setdefault(item.id, {}):
             item_images[item.id][image.image_type] = image
 
+    review_sources = {}
+    if generate and items:
+        sources = await db.execute(
+            select(AsyncJob.target_id, AsyncJob.payload).where(
+                AsyncJob.job_type == "cutout",
+                AsyncJob.user_id == user_id,
+                AsyncJob.target_id.in_(items),
+            )
+        )
+        review_sources = {item_id: payload or {} for item_id, payload in sources}
+
     item_list: list[dict[str, str]] = []
     for item_id, item in items.items():
         images = item_images.get(item_id, {})
         board_item = {"role": roles[item_id], "category": item.category}
+        if generate:
+            board_item.update(title=item.title, color=item.color_main)
+            source = review_sources.get(item_id, {})
+            if source.get("source_key"):
+                board_item["review_object_key"] = source["source_key"]
+            elif source.get("source_url"):
+                board_item["review_image_url"] = source["source_url"]
+            elif item.cutout_status == "ready":
+                original = images.get("original")
+                if original is not None and original.object_key:
+                    board_item["review_object_key"] = original.object_key
+                elif item.original_image_url:
+                    board_item["review_image_url"] = item.original_image_url
 
         cutout = images.get("cutout")
         if cutout is not None:
@@ -205,10 +229,15 @@ async def create_outfit_share_asset(
 
     if generate:
         settings = get_settings()
-        if not settings.ENABLE_ITEM_CUTOUT or settings.IMAGE_CUTOUT_PROVIDER != "openai" or not settings.OPENAI_API_KEY:
+        if (
+            not settings.ENABLE_ITEM_CUTOUT
+            or settings.IMAGE_CUTOUT_PROVIDER != "openai"
+            or not settings.OPENAI_API_KEY
+            or not settings.QWEN_API_KEY
+        ):
             raise FriendlyException(error_codes.FORBIDDEN, "Outfit image generation is not enabled", status_code=503)
 
-    item_list = await _outfit_board_item_list(db, outfit_id=outfit_id, user_id=current_user.id)
+    item_list = await _outfit_board_item_list(db, outfit_id=outfit_id, user_id=current_user.id, generate=generate)
     if generate:
         if not item_list or len(item_list) > 16 or len(item_list) != len(outfit.items):
             raise FriendlyException(
@@ -270,6 +299,13 @@ async def get_outfit_visual_asset(
     generation_status = asset.generation_status
     error_code = asset.error_code
 
+    # Generated assets from before the review was introduced remain available
+    # as records, but clients cannot display their unreviewed images.
+    if asset.visual_type == VisualType.OUTFIT_BOARD.value and (asset.input_snapshot or {}).get("generate") is True:
+        job = await db.scalar(select(AsyncJob).where(AsyncJob.target_id == asset.id, AsyncJob.job_type == "outfit_board"))
+        if job is None or (job.payload or {}).get("layout_version") != _GENERATED_OUTFIT_LAYOUT_VERSION:
+            generation_status = "rejected_by_quality_gate"
+
     # `quality_check` is V3-018's §6.2 intermediate state: non-terminal, so a
     # worker that dead-letters mid-gate must surface `failed` here exactly as
     # it does from `processing` — a poller stops only on terminal states.
@@ -284,7 +320,10 @@ async def get_outfit_visual_asset(
         # Phase E5 — prefer object_key + sign at request time so private
         # buckets work without a long-TTL URL baked into the row. Fall
         # back to the persisted image_url for legacy / non-OSS deploys.
-        image_url=_resolve_render_url(asset.object_key, asset.image_url),
+        image_url=(
+            None if generation_status == "rejected_by_quality_gate"
+            else _resolve_render_url(asset.object_key, asset.image_url)
+        ),
         visual_type=asset.visual_type,
         error_code=error_code,
         error_message=asset.error_message,
