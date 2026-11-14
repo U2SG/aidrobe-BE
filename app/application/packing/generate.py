@@ -10,12 +10,14 @@ plain status flip.
 
 import uuid
 from datetime import date, timedelta
+from typing import cast
 
 import structlog
 
 from app.application.ports.weather import WeatherInfo, WeatherPort
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
+from app.common.locale import DEFAULT_LOCALE
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.packing_list import PackingList
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -36,6 +38,13 @@ SCENE_CATEGORIES: dict[str, list[str]] = {
     "beach": ["top", "bottom", "shoes"],
     "formal": ["outerwear", "top", "bottom", "shoes"],
 }
+# Scene keys the client sends that map onto a generator scene.
+SCENE_ALIASES: dict[str, str] = {
+    "commute": "business",
+    "travel": "casual",
+    "date": "dinner",
+    "leisure": "casual",
+}
 # Fallback when a scene is not recognised.
 DEFAULT_CATEGORIES: list[str] = ["top", "bottom", "shoes"]
 
@@ -43,7 +52,13 @@ RECENT_WEAR_DAYS = 7
 
 
 def _categories_for_scene(scene: str) -> list[str]:
-    return SCENE_CATEGORIES.get(scene.lower(), DEFAULT_CATEGORIES)
+    key = scene.lower()
+    key = SCENE_ALIASES.get(key, key)
+    categories = SCENE_CATEGORIES.get(key)
+    if categories is None:
+        logger.info("packing.unknown_scene", scene=scene)
+        return DEFAULT_CATEGORIES
+    return categories
 
 
 class GeneratePackingList:
@@ -63,6 +78,7 @@ class GeneratePackingList:
         scenes: list[str],
         weather_hint: str | None,
         departure_date: date | None,
+        locale: str = DEFAULT_LOCALE,
     ) -> PackingList:
         if days < 1:
             raise FriendlyException(
@@ -91,7 +107,7 @@ class GeneratePackingList:
         # so both views stay consistent. Flag off → the legacy round-robin below.
         if get_settings().ENABLE_PACKING_PLANNER:
             return await self._generate_with_planner(
-                user_id, destination, days, scenes, weather_hint, departure_date, candidates
+                user_id, destination, days, scenes, weather_hint, departure_date, candidates, locale
             )
 
         by_category: dict[str, list[WardrobeItem]] = {}
@@ -169,6 +185,7 @@ class GeneratePackingList:
         weather_hint: str | None,
         departure_date: date | None,
         candidates: list[WardrobeItem],
+        locale: str,
     ) -> PackingList:
         # Lazy import breaks the planner<->generate import cycle (planner imports
         # SCENE_CATEGORIES from this module at load time).
@@ -211,6 +228,7 @@ class GeneratePackingList:
             style_profile=style_profile,
             fit_profile=fit_profile,
             destination=destination,
+            locale=locale,
         )
         # Flatten the per-day plan into the legacy checklist so `items` and the
         # rich `plan_json` describe the same selection.
@@ -261,6 +279,10 @@ class ListPackingLists:
         return await self.repository.list_for_user(user_id)
 
 
+def _selection(rows: list[dict[str, object]]) -> set[tuple[str, object, object]]:
+    return {(str(r["item_id"]), r["day"], r["scene"]) for r in rows}
+
+
 class UpdatePackingList:
     """User edits: replace the item selection and/or flip status (draft/confirmed)."""
 
@@ -288,11 +310,13 @@ class UpdatePackingList:
                 error_codes.NOT_FOUND, "Packing list not found", status_code=404
             )
         if items is not None:
-            packing_list.items = items
             # BE#68 review: a user-edited checklist no longer matches the planner
             # snapshot, so drop the now-stale rich plan rather than serve an
-            # inconsistent items-vs-plan response.
-            packing_list.plan_json = None
+            # inconsistent items-vs-plan response. Only the planned selection
+            # counts: toggling `packed` / editing `notes` keeps the plan.
+            if _selection(items) != _selection(cast(list[dict[str, object]], packing_list.items or [])):
+                packing_list.plan_json = None
+            packing_list.items = items
         if status is not None:
             packing_list.status = status
         return await self.repository.update(packing_list)

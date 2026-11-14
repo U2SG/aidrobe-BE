@@ -58,7 +58,8 @@ async def _seed_health_data(session: AsyncSession, user_id: uuid.UUID) -> None:
 
     Resulting signal over 5 items (3 top / 1 bottom / 1 shoes):
     - worn in last 90d: 2 (30d, 10d) → coverage 40%
-    - unused: 60d → 3, 90d → 3, 180d → 1
+    - unused (last worn, else date added): 60d → 2, 90d → 2, 180d → 0; the
+      never-worn item was just added, so it is not unused yet
     """
     session.add(User(id=user_id))
     today = date.today()
@@ -129,8 +130,8 @@ async def test_wardrobe_health_unused_item_counts(
     data = await _get_health(db_session, user_id, settings)
 
     unused = {item["type"]: item for item in data["insights"]}["unused_items"]
-    assert unused["severity"] == "high"
-    assert unused["metrics"] == {"unused_60": 3, "unused_90": 3, "unused_180": 1}
+    assert unused["severity"] == "medium"
+    assert unused["metrics"] == {"unused_60": 2, "unused_90": 2, "unused_180": 0}
 
 
 async def test_wardrobe_health_category_balance(

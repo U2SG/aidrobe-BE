@@ -8,13 +8,16 @@ import structlog
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.application.avatar.enqueue_candidate_detection import enqueue_candidate_detection
 from app.common import error_codes
+from app.common.category_to_role import map_category_to_role
 from app.common.enums import AvatarSourceType
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.recommendation import Outfit, OutfitFeedback, WearHistory
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.session import get_db_session as get_db
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.schemas.outfit_history import (
@@ -22,11 +25,84 @@ from app.presentation.api.v1.schemas.outfit_history import (
     OotdUploadResponse,
     OutfitCalendarResponse,
     OutfitHistoryEntry,
+    OutfitHistoryItem,
     OutfitHistoryListResponse,
     OutfitSummary,
 )
 
 router = APIRouter(prefix="/v1/outfit-history", tags=["outfit-history"])
+
+
+def _reason_tags(raw: Any) -> list[str]:
+    """Stored shape is ``{"tags": [...]}``; a bare list is accepted too."""
+    tags = raw.get("tags", []) if isinstance(raw, dict) else raw
+    return [str(t) for t in tags] if isinstance(tags, list) else []
+
+
+async def _build_entries(
+    db: AsyncSession, user_id: uuid.UUID, histories: list[WearHistory]
+) -> list[OutfitHistoryEntry]:
+    """Batch-load outfits (+ items), wardrobe items and feedback: fixed query count."""
+    outfit_ids = [h.outfit_id for h in histories]
+
+    outfit_result = await db.execute(
+        select(Outfit).options(selectinload(Outfit.items)).where(Outfit.id.in_(outfit_ids))
+    )
+    outfits_by_id = {o.id: o for o in outfit_result.scalars().all()}
+
+    item_ids = {oi.item_id for o in outfits_by_id.values() for oi in o.items}
+    wardrobe_by_id: dict[uuid.UUID, WardrobeItem] = {}
+    if item_ids:
+        wardrobe_result = await db.execute(select(WardrobeItem).where(WardrobeItem.id.in_(item_ids)))
+        wardrobe_by_id = {w.id: w for w in wardrobe_result.scalars().all()}
+
+    fb_result = await db.execute(
+        select(OutfitFeedback).where(
+            OutfitFeedback.outfit_id.in_(outfit_ids),
+            OutfitFeedback.user_id == user_id,
+        )
+    )
+    feedbacks_by_outfit = {fb.outfit_id: fb for fb in fb_result.scalars().all()}
+
+    entries = []
+    for h in histories:
+        outfit = outfits_by_id.get(h.outfit_id)
+        outfit_summary = None
+        if outfit:
+            items = []
+            for oi in sorted(outfit.items, key=lambda i: i.display_order):
+                wardrobe = wardrobe_by_id.get(oi.item_id)
+                category = wardrobe.category if wardrobe else oi.role
+                items.append(
+                    OutfitHistoryItem(
+                        item_id=oi.item_id,
+                        title=wardrobe.title if wardrobe else None,
+                        category=category,
+                        display_role=map_category_to_role(category),
+                        cover_image_url=wardrobe.cover_image_url if wardrobe else None,
+                    )
+                )
+            outfit_summary = OutfitSummary(
+                outfit_id=outfit.id,
+                outfit_type=outfit.outfit_type,
+                title=outfit.title,
+                reason_text=outfit.reason_text,
+                items=items,
+            )
+
+        fb = feedbacks_by_outfit.get(h.outfit_id)
+        entries.append(
+            OutfitHistoryEntry(
+                wear_history_id=h.id,
+                worn_date=h.worn_date,
+                outfit=outfit_summary,
+                feedback_type=fb.feedback_type if fb else None,
+                reason_tags=_reason_tags(fb.reason_tags) if fb else [],
+                ootd_image_url=h.ootd_image_url,
+                selected_at=h.selected_at,
+            )
+        )
+    return entries
 
 
 @router.get("", response_model=OutfitHistoryListResponse)
@@ -55,44 +131,7 @@ async def list_outfit_history(
     if not histories:
         return OutfitHistoryListResponse(items=[], page=page, page_size=page_size, total=total)
 
-    # Batch-load outfits and feedbacks to avoid N+1
-    outfit_ids = [h.outfit_id for h in histories]
-
-    outfit_result = await db.execute(select(Outfit).where(Outfit.id.in_(outfit_ids)))
-    outfits_by_id = {o.id: o for o in outfit_result.scalars().all()}
-
-    fb_result = await db.execute(
-        select(OutfitFeedback).where(
-            OutfitFeedback.outfit_id.in_(outfit_ids),
-            OutfitFeedback.user_id == current_user.id,
-        )
-    )
-    feedbacks_by_outfit = {fb.outfit_id: fb for fb in fb_result.scalars().all()}
-
-    entries = []
-    for h in histories:
-        outfit = outfits_by_id.get(h.outfit_id)
-        outfit_summary = None
-        if outfit:
-            outfit_summary = OutfitSummary(
-                outfit_id=outfit.id,
-                outfit_type=outfit.outfit_type,
-                title=outfit.title,
-                reason_text=outfit.reason_text,
-            )
-
-        fb = feedbacks_by_outfit.get(h.outfit_id)
-        entries.append(
-            OutfitHistoryEntry(
-                wear_history_id=h.id,
-                worn_date=h.worn_date,
-                outfit=outfit_summary,
-                feedback_type=fb.feedback_type if fb else None,
-                reason_tags=list(fb.reason_tags or []) if fb else [],
-                ootd_image_url=h.ootd_image_url,
-                selected_at=h.selected_at,
-            )
-        )
+    entries = await _build_entries(db, current_user.id, histories)
 
     return OutfitHistoryListResponse(items=entries, page=page, page_size=page_size, total=total)
 
@@ -128,29 +167,14 @@ async def get_outfit_history_by_date(
             WearHistory.user_id == current_user.id,
             WearHistory.worn_date == worn_date,
         )
+        .order_by(WearHistory.created_at.desc(), WearHistory.selected_at.desc())
+        .limit(1)
     )
-    h = result.scalar_one_or_none()
+    h = result.scalars().first()
     if h is None:
         raise FriendlyException(error_codes.NOT_FOUND, "No record for that date", status_code=404)
 
-    outfit_summary = None
-    outfit_result = await db.execute(select(Outfit).where(Outfit.id == h.outfit_id))
-    outfit = outfit_result.scalar_one_or_none()
-    if outfit:
-        outfit_summary = OutfitSummary(
-            outfit_id=outfit.id,
-            outfit_type=outfit.outfit_type,
-            title=outfit.title,
-            reason_text=outfit.reason_text,
-        )
-
-    return OutfitHistoryEntry(
-        wear_history_id=h.id,
-        worn_date=h.worn_date,
-        outfit=outfit_summary,
-        ootd_image_url=h.ootd_image_url,
-        selected_at=h.selected_at,
-    )
+    return (await _build_entries(db, current_user.id, [h]))[0]
 
 
 @router.post("/{wear_history_id}/ootd", response_model=OotdUploadResponse)

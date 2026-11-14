@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.insights.idle import idle_predicate
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.recommendation import WearHistory
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -23,21 +24,13 @@ _SUFFICIENT_WEAR_THRESHOLD = 10
 
 
 async def get_summary(user_id: uuid.UUID, session: AsyncSession) -> dict[str, Any]:
-    cutoff = datetime.now(tz=UTC) - timedelta(days=60)
+    cutoff = datetime.now(tz=UTC).date() - timedelta(days=60)
 
     row = await session.execute(
         select(
             func.count().label("total"),
             func.sum(case((WardrobeItem.wear_count > 0, 1), else_=0)).label("active_count"),
-            func.sum(
-                case(
-                    (
-                        (WardrobeItem.wear_count == 0) & (WardrobeItem.created_at < cutoff),
-                        1,
-                    ),
-                    else_=0,
-                )
-            ).label("idle_count"),
+            func.sum(case((idle_predicate(cutoff), 1), else_=0)).label("idle_count"),
             func.coalesce(func.sum(WardrobeItem.wear_count), 0).label("wear_history_count"),
         ).where(
             WardrobeItem.user_id == user_id,
@@ -120,14 +113,13 @@ async def get_top_items(user_id: uuid.UUID, session: AsyncSession, limit: int = 
 async def get_idle_items(
     user_id: uuid.UUID, session: AsyncSession, threshold_days: int = 60
 ) -> list[Any]:
-    cutoff = datetime.now(tz=UTC) - timedelta(days=threshold_days)
+    cutoff = datetime.now(tz=UTC).date() - timedelta(days=threshold_days)
     result = await session.execute(
         select(WardrobeItem)
         .where(
             WardrobeItem.user_id == user_id,
             WardrobeItem.deleted_at.is_(None),
-            WardrobeItem.wear_count == 0,
-            WardrobeItem.created_at < cutoff,
+            idle_predicate(cutoff),
         )
     )
     return list(result.scalars().all())

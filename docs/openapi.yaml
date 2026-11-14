@@ -3911,7 +3911,9 @@ paths:
 
         a download link (push / email) when ready. Idempotent per pending
 
-        request: re-calling while one is in flight returns the same job_id.'
+        request: re-calling while one is in flight returns the same job_id, with
+
+        its real `status`; a `dead` job is replaced by a fresh one.'
       operationId: request_my_data_export_v1_me_data_export_post
       parameters:
       - name: Authorization
@@ -4040,6 +4042,15 @@ paths:
       summary: List Learned Memory
       operationId: list_learned_memory_v1_profile_memory_get
       parameters:
+      - name: locale
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Locale
       - name: Authorization
         in: header
         required: false
@@ -6279,6 +6290,9 @@ components:
         wear_history_count:
           type: integer
           title: Wear History Count
+          description: 'Sum of item-level wear counts over live items, including manual
+            item wears. Not the number of outfit records: compare `GET /v1/outfit-history`
+            `total`.'
           default: 0
         has_sufficient_wear_history:
           type: boolean
@@ -6412,6 +6426,9 @@ components:
         label:
           type: string
           title: Label
+        display_text:
+          type: string
+          title: Display Text
         polarity:
           type: string
           title: Polarity
@@ -6429,6 +6446,7 @@ components:
       - id
       - type
       - label
+      - display_text
       - polarity
       - source
       - confidence
@@ -6570,6 +6588,41 @@ components:
       - worn_date
       - selected_at
       title: OutfitHistoryEntry
+    OutfitHistoryItem:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+        category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Category
+        display_role:
+          type: string
+          enum:
+          - top
+          - outer
+          - bottom
+          - shoes
+          - accessory
+          title: Display Role
+          default: accessory
+        cover_image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cover Image Url
+      type: object
+      required:
+      - item_id
+      title: OutfitHistoryItem
     OutfitHistoryItemResponse:
       properties:
         outfit_id:
@@ -6620,6 +6673,9 @@ components:
         total:
           type: integer
           title: Total
+          description: Number of outfit-level wear records (one per outfit worn on
+            a day). Not comparable to insights `wear_history_count`, which sums item-level
+            wears including manual item wears.
       type: object
       required:
       - items
@@ -6818,8 +6874,7 @@ components:
           title: Outfit Board Url
         items:
           items:
-            additionalProperties: true
-            type: object
+            $ref: '#/components/schemas/OutfitHistoryItem'
           type: array
           title: Items
           default: []

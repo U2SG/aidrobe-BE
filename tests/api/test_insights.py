@@ -1,7 +1,7 @@
 """Tests for V3 M12: wardrobe insights endpoints."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -44,6 +44,17 @@ async def seed_wardrobe(session: AsyncSession, user_id: uuid.UUID) -> list[Wardr
             wear_count=0,
             created_at=datetime(2020, 1, 1, tzinfo=UTC),
         ),
+        # Never worn but only just added: not idle.
+        WardrobeItem(user_id=user_id, title="New scarf", category="accessory", color_main="red", wear_count=0),
+        # Worn once, but long ago: idle.
+        WardrobeItem(
+            user_id=user_id,
+            title="Old sweater",
+            category="top",
+            color_main="white",
+            wear_count=1,
+            last_worn_at=(datetime.now(UTC) - timedelta(days=200)).date(),
+        ),
     ]
     for i in items:
         session.add(i)
@@ -61,8 +72,8 @@ async def test_insights_summary(db_session: AsyncSession) -> None:
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["total_items"] == 3
-    assert data["idle_count"] == 1
+    assert data["total_items"] == 5
+    assert data["idle_count"] == 2
     assert data["active_rate"] > 0
     assert data["most_worn_category"] in ("top", "bottom")  # tie-break is DB-dependent
     assert data["favorite_color"] in ("white", "black")
@@ -92,8 +103,7 @@ async def test_insights_idle_items(db_session: AsyncSession) -> None:
 
     assert resp.status_code == 200
     items = resp.json()
-    assert len(items) == 1
-    assert items[0]["title"] == "Old coat"
+    assert {i["title"] for i in items} == {"Old coat", "Old sweater"}
 
 
 async def test_insights_color_palette(db_session: AsyncSession) -> None:

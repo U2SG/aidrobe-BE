@@ -18,6 +18,7 @@ from datetime import date, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.insights.idle import idle_since_expr
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 # Single coverage weight. ``coverage_ratio`` (share of items worn in the last
@@ -55,6 +56,7 @@ class _ItemSnapshot:
     id: uuid.UUID
     category: str
     last_worn_at: date | None
+    idle_since: date
 
 
 async def build_health(
@@ -84,8 +86,11 @@ async def build_health(
 
     total = len(items)
     coverage_ratio = _coverage_ratio(last_worn_values, today, _COVERAGE_WINDOW_DAYS)
+    # "Unused" shares the idle definition (last worn, else date added) with the
+    # insights summary / idle-items / report; see ``insights.idle``.
+    idle_since_values = [item.idle_since for item in items]
     unused_counts = {
-        window: _unused_count(last_worn_values, today, window) for window in (60, 90, 180)
+        window: _unused_count(idle_since_values, today, window) for window in (60, 90, 180)
     }
     dominant_category, dominant_ratio, category_counts = _category_balance(items)
 
@@ -102,7 +107,12 @@ async def build_health(
 
 async def _load_items(user_id: uuid.UUID, session: AsyncSession) -> list[_ItemSnapshot]:
     result = await session.execute(
-        select(WardrobeItem.id, WardrobeItem.category, WardrobeItem.last_worn_at)
+        select(
+            WardrobeItem.id,
+            WardrobeItem.category,
+            WardrobeItem.last_worn_at,
+            idle_since_expr().label("idle_since"),
+        )
         .where(
             WardrobeItem.user_id == user_id,
             WardrobeItem.deleted_at.is_(None),
@@ -110,7 +120,12 @@ async def _load_items(user_id: uuid.UUID, session: AsyncSession) -> list[_ItemSn
         .order_by(WardrobeItem.id)
     )
     return [
-        _ItemSnapshot(id=row.id, category=row.category, last_worn_at=row.last_worn_at)
+        _ItemSnapshot(
+            id=row.id,
+            category=row.category,
+            last_worn_at=row.last_worn_at,
+            idle_since=row.idle_since,
+        )
         for row in result.all()
     ]
 
@@ -124,9 +139,9 @@ def _coverage_ratio(last_worn_dates: Iterable[date | None], today: date, days: i
     return worn_count / len(dates)
 
 
-def _unused_count(last_worn_dates: Iterable[date | None], today: date, days: int) -> int:
+def _unused_count(idle_since_dates: Iterable[date], today: date, days: int) -> int:
     cutoff = today - timedelta(days=days)
-    return sum(1 for worn_date in last_worn_dates if worn_date is None or worn_date < cutoff)
+    return sum(1 for idle_since in idle_since_dates if idle_since < cutoff)
 
 
 def _category_balance(items: list[_ItemSnapshot]) -> tuple[str | None, float, dict[str, int]]:

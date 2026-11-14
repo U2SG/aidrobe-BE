@@ -27,7 +27,7 @@ from app.infrastructure.persistence.repositories.packing_list_repo import (
     SqlAlchemyPackingListRepository,
 )
 from app.infrastructure.persistence.session import get_db_session
-from app.presentation.api.v1.deps import get_current_user
+from app.presentation.api.v1.deps import get_current_user, resolve_user_locale
 from app.presentation.api.v1.schemas.packing_list import (
     CreatePackingListRequest,
     PackingItem,
@@ -85,6 +85,7 @@ async def create_packing_list(
         payload.scenes,
         payload.weather_hint,
         payload.departure_date,
+        await resolve_user_locale(session, current_user.id),
     )
     return _to_response(packing_list)
 

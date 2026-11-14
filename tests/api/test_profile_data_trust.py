@@ -101,6 +101,31 @@ async def test_list_memory_maps_source_and_confidence(
     assert by_label["偏好深色"]["confidence"] == "low"
 
 
+async def test_memory_display_text_is_localized(
+    db_session: AsyncSession, data_trust_on: None
+) -> None:
+    user_id = await _seed_user(db_session)
+    await _seed_pref(db_session, user_id, "too_formal", pref_type="formality", source="feedback_signal")
+    await _seed_pref(db_session, user_id, "mystery_token", pref_type="style", source="feedback_signal")
+    await _seed_pref(db_session, user_id, "不喜欢亮色")
+    headers = {"X-User-Id": str(user_id)}
+    async with _client(db_session) as client:
+        zh = (await client.get("/v1/profile/memory", headers=headers)).json()["data"]["preferences"]
+        en = (
+            await client.get("/v1/profile/memory?locale=en-US", headers=headers)
+        ).json()["data"]["preferences"]
+
+    zh_by_label = {p["label"]: p for p in zh}
+    en_by_label = {p["label"]: p for p in en}
+    # `label` is unchanged (raw value); `display_text` is localized.
+    assert zh_by_label["too_formal"]["display_text"] == "不喜欢太正式"
+    assert en_by_label["too_formal"]["display_text"] == "Prefers less formal looks"
+    # Unknown token never leaks; the user's own words stay as written.
+    assert zh_by_label["mystery_token"]["display_text"] == "已记录的偏好"
+    assert en_by_label["mystery_token"]["display_text"] == "Learned preference"
+    assert zh_by_label["不喜欢亮色"]["display_text"] == "不喜欢亮色"
+
+
 async def test_body_shape_labels_replaced_with_functional_copy(
     db_session: AsyncSession, data_trust_on: None
 ) -> None:

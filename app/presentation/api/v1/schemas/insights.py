@@ -4,7 +4,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class InsightsSummaryResponse(BaseModel):
@@ -14,7 +14,13 @@ class InsightsSummaryResponse(BaseModel):
     idle_threshold_days: int
     most_worn_category: str | None = None
     favorite_color: str | None = None
-    wear_history_count: int = 0
+    wear_history_count: int = Field(
+        default=0,
+        description=(
+            "Sum of item-level wear counts over live items, including manual item wears. "
+            "Not the number of outfit records: compare `GET /v1/outfit-history` `total`."
+        ),
+    )
     has_sufficient_wear_history: bool = False
     report_available: bool = False
 

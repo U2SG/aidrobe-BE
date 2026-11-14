@@ -18,7 +18,6 @@ Flow:
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 
 import structlog
@@ -38,15 +37,17 @@ EXPORT_JOB_TYPE = "user_export"
 async def request_data_export(
     session: AsyncSession,
     user: User,
-) -> uuid.UUID:
+) -> AsyncJob:
     """Enqueue an export job and audit the request. Caller owns commit.
-    Returns the job_id for GET /v1/me/data-export/{job_id} polling.
+    Returns the job (its `id` is the job_id for GET /v1/me/data-export/{job_id}
+    polling, its `status` the real state — an existing job may already be done).
 
     Concurrency: at most one in-flight export per user across days. A
     long-running export on day 1 still pending on day 2 must NOT spawn
     a second concurrent job — the first call into a new day returns
     the existing pending job until it terminates. After terminal status
-    (succeeded/failed/dead) the per-day key opens up a fresh request."""
+    (succeeded/failed/dead) the per-day key opens up a fresh request; a `dead`
+    job never blocks a retry, it gets a fresh attempt-suffixed key the same day."""
     # Look up any in-flight export for this user regardless of key date.
     in_flight = (
         await session.execute(
@@ -66,21 +67,28 @@ async def request_data_export(
             user_id=str(user.id),
             job_id=str(in_flight.id),
         )
-        return in_flight.id
+        return in_flight
 
     today = datetime.now(UTC).date().isoformat()
-    job, inserted = await enqueue(
-        session,
-        job_type=EXPORT_JOB_TYPE,
-        # Day-keyed: today's request is idempotent within the day, but
-        # tomorrow gets a fresh idempotency_key. Combined with the
-        # in-flight short-circuit above, this gives "≤1 in-flight job
-        # globally" + "fresh attempts after terminal status the next day".
-        idempotency_key=f"user_export:{user.id}:{today}",
-        payload={"user_id": str(user.id), "requested_for_date": today},
-        user_id=user.id,
-        target_id=user.id,
-    )
+    # Day-keyed: today's request is idempotent within the day, but tomorrow
+    # gets a fresh idempotency_key. Combined with the in-flight short-circuit
+    # above, this gives "≤1 in-flight job globally" + "fresh attempts after
+    # terminal status the next day". A dead job is retried the same day under
+    # an attempt-suffixed key.
+    base_key = f"user_export:{user.id}:{today}"
+    attempt = 1
+    while True:
+        job, inserted = await enqueue(
+            session,
+            job_type=EXPORT_JOB_TYPE,
+            idempotency_key=base_key if attempt == 1 else f"{base_key}:{attempt}",
+            payload={"user_id": str(user.id), "requested_for_date": today},
+            user_id=user.id,
+            target_id=user.id,
+        )
+        if inserted or job.status != "dead":
+            break
+        attempt += 1
     if inserted:
         await record(
             session,
@@ -97,4 +105,4 @@ async def request_data_export(
             user_id=str(user.id),
             job_id=str(job.id),
         )
-    return job.id
+    return job
