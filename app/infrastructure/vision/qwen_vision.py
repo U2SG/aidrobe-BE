@@ -268,7 +268,9 @@ class QwenVision:
             "Reject a different garment, extra clothing, or changed visible details. "
             "Allow plain, consistent completion of parts genuinely hidden by another garment or the frame. "
             "Allow reasonable changes in folds and lighting from wearing versus a product display. "
-            "Check lettering, the position and scale of logos, and shoe toe panels, perforations, stitching "
+            "Compare exact visible lettering or graphic shape, orientation, position and scale of marks. "
+            "Inspect waistbands. Reject guessed lettering where a mark is visible but too blurry to read. "
+            "Check shoe toe panels, perforations, stitching "
             "and sole shape. Score corresponding visible areas. A generic match in type and color is insufficient. "
             "Return only JSON with a boolean field accepted.",
             _image_data_uri(generated),

@@ -3,11 +3,12 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, cast
+from urllib.parse import urlsplit
 
 import structlog
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.cost_guard import assert_within_quota
@@ -44,6 +45,11 @@ _STALE_QUEUED_MINUTES = 15
 _OUTFIT_BOARD_LAYOUT_VERSION = "v2"
 _GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-reviewed-v7"
 _IMAGE_TYPE_PRIORITY = ("cutout", "thumbnail", "standard", "crop", "original")
+
+_REFERENCE_FIELDS = (
+    "review_object_key", "review_image_url", "cutout_object_key", "cutout_image_url",
+    "thumbnail_object_key", "thumbnail_url",
+)
 
 
 class OutfitVisualAssetResponse(BaseModel):
@@ -140,7 +146,7 @@ async def _outfit_board_item_list(
                 AsyncJob.job_type == "cutout",
                 AsyncJob.user_id == user_id,
                 AsyncJob.target_id.in_(items),
-            )
+            ).order_by(AsyncJob.created_at, AsyncJob.id)
         )
         review_sources = {
             item_id: (payload or {}, job_status, result)
@@ -226,6 +232,83 @@ async def _outfit_board_item_list(
     return item_list
 
 
+def _outfit_signature(slots: list[OutfitItem]) -> list[list[str]]:
+    return sorted([slot.role, str(slot.item_id)] for slot in slots)
+
+
+def _individual_references(item: dict[str, Any]) -> set[str]:
+    # Older snapshots lack item IDs. A stored single-item crop or product image
+    # can establish identity. An outfit's full original photo can belong to several pieces.
+    references = set()
+    for field in _REFERENCE_FIELDS:
+        value = item.get(field)
+        if isinstance(value, str):
+            path = urlsplit(value).path.lstrip("/")
+            if "/wardrobe/crops/" in path or "/wardrobe/verified-crops/" in path or "/items/" in path:
+                references.add(path)
+    return references
+
+
+def _matches_item_id(references: set[str], item_id: str) -> bool:
+    return any(
+        f"/items/{item_id}/" in path or path.rsplit("/", 1)[-1].startswith(f"{item_id}-")
+        for path in references
+    )
+
+
+async def _reusable_generated_board(
+    db: AsyncSession, *, user_id: uuid.UUID, slots: list[OutfitItem], items: list[dict[str, str]],
+) -> OutfitVisualAsset | None:
+    signature = _outfit_signature(slots)
+    if not signature or len(items) != len(slots):
+        return None
+    matching_snapshots = [OutfitVisualAsset.input_snapshot["garment_slots"].contains(signature)]
+    references = [_individual_references(item) for item in items]
+    ids_by_role = dict(signature)
+    if len(ids_by_role) == len(items):
+        matching_snapshots.extend(
+            OutfitVisualAsset.input_snapshot["item_list"].contains([{"role": item["role"], field: value}])
+            for item, refs in zip(items, references, strict=True)
+            for field in _REFERENCE_FIELDS
+            if (value := item.get(field)) and urlsplit(value).path.lstrip("/") in refs
+        )
+    assets = await db.scalars(
+        select(OutfitVisualAsset)
+        .join(AsyncJob, AsyncJob.target_id == OutfitVisualAsset.id)
+        .where(
+            OutfitVisualAsset.user_id == user_id,
+            OutfitVisualAsset.visual_type == VisualType.OUTFIT_BOARD.value,
+            OutfitVisualAsset.generation_status == "completed",
+            or_(OutfitVisualAsset.object_key.is_not(None), OutfitVisualAsset.image_url.is_not(None)),
+            AsyncJob.job_type == "outfit_board",
+            AsyncJob.user_id == user_id,
+            AsyncJob.payload["layout_version"].as_string() == _GENERATED_OUTFIT_LAYOUT_VERSION,
+            or_(*matching_snapshots),
+        )
+        .order_by(OutfitVisualAsset.created_at.desc(), OutfitVisualAsset.id.desc())
+    )
+    for asset in assets:
+        snapshot = asset.input_snapshot or {}
+        if "garment_slots" in snapshot:
+            if snapshot["garment_slots"] == signature:
+                return asset
+            continue
+        previous_items = snapshot.get("item_list")
+        if not isinstance(previous_items, list) or len(previous_items) != len(items):
+            continue
+        previous_by_role = {
+            entry["role"]: _individual_references(entry)
+            for entry in previous_items if isinstance(entry, dict) and "role" in entry
+        }
+        if previous_by_role.keys() == ids_by_role.keys() and len(ids_by_role) == len(items) and all(
+            previous_by_role.get(item["role"], set()) & refs
+            or _matches_item_id(previous_by_role.get(item["role"], set()), ids_by_role[item["role"]])
+            for item, refs in zip(items, references, strict=True)
+        ):
+            return asset
+    return None
+
+
 @router.get("/outfits/{outfit_id}/share-asset", response_model=OutfitVisualAssetResponse)
 async def get_generated_outfit_image(
     outfit_id: uuid.UUID,
@@ -236,6 +319,13 @@ async def get_generated_outfit_image(
     asset = await _existing_outfit_board_asset(
         db, user_id=current_user.id, outfit_id=outfit_id, layout_version=_GENERATED_OUTFIT_LAYOUT_VERSION
     )
+    if asset is None or asset.generation_status in {"failed", "rejected_by_quality_gate"}:
+        outfit = await SqlAlchemyRecommendationRepository(db).get_outfit_for_user(outfit_id, current_user.id)
+        if outfit is not None:
+            items = await _outfit_board_item_list(db, outfit_id=outfit_id, user_id=current_user.id, generate=True)
+            asset = await _reusable_generated_board(
+                db, user_id=current_user.id, slots=outfit.items, items=items,
+            ) or asset
     if asset is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Generated image not found", status_code=404)
     return await get_outfit_visual_asset(asset.id, db, current_user)
@@ -263,9 +353,21 @@ async def create_outfit_share_asset(
         db, user_id=current_user.id, outfit_id=outfit_id, layout_version=layout_version
     )
     if existing is not None:
+        if generate and existing.generation_status == "completed":
+            return await get_outfit_visual_asset(existing.id, db, current_user)
         return _response_for_asset(existing)
 
+    item_list = await _outfit_board_item_list(db, outfit_id=outfit_id, user_id=current_user.id, generate=generate)
     if generate:
+        if not item_list or len(item_list) > 16 or len(item_list) != len(outfit.items):
+            raise FriendlyException(
+                error_codes.VALIDATION_ERROR, "Outfit has missing or unsupported pieces", status_code=422
+            )
+        reusable = await _reusable_generated_board(
+            db, user_id=current_user.id, slots=outfit.items, items=item_list,
+        )
+        if reusable is not None:
+            return await get_outfit_visual_asset(reusable.id, db, current_user)
         settings = get_settings()
         if (
             not settings.ENABLE_ITEM_CUTOUT
@@ -274,19 +376,15 @@ async def create_outfit_share_asset(
             or not settings.QWEN_API_KEY
         ):
             raise FriendlyException(error_codes.FORBIDDEN, "Outfit image generation is not enabled", status_code=503)
-
-    item_list = await _outfit_board_item_list(db, outfit_id=outfit_id, user_id=current_user.id, generate=generate)
-    if generate:
-        if not item_list or len(item_list) > 16 or len(item_list) != len(outfit.items):
-            raise FriendlyException(
-                error_codes.VALIDATION_ERROR, "Outfit has missing or unsupported pieces", status_code=422
-            )
     asset = OutfitVisualAsset(
         user_id=current_user.id,
         outfit_id=outfit_id,
         visual_type=VisualType.OUTFIT_BOARD.value,
         generation_status="queued",
-        input_snapshot={"item_list": item_list, **({"generate": True} if generate else {})},
+        input_snapshot={
+            "item_list": item_list,
+            **({"generate": True, "garment_slots": _outfit_signature(outfit.items)} if generate else {}),
+        },
     )
     await SqlAlchemyOutfitVisualRepository(db).add(asset)
     correlation_id = structlog.contextvars.get_contextvars().get("correlation_id")
@@ -311,6 +409,8 @@ async def create_outfit_share_asset(
         db, user_id=current_user.id, outfit_id=outfit_id, layout_version=layout_version
     )
     if existing is not None:
+        if generate and existing.generation_status == "completed":
+            return await get_outfit_visual_asset(existing.id, db, current_user)
         return _response_for_asset(existing)
     logger.error("outfit_board_idempotency_target_missing", outfit_id=str(outfit_id))
     raise FriendlyException(error_codes.INTERNAL_ERROR, "Could not create share asset", status_code=500)

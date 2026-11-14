@@ -3,14 +3,19 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, cast
 
+import structlog
 from fastapi import APIRouter, Depends, Query
 from redis.asyncio import Redis
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.cost_guard import resolve_quota_limit
+from app.application.paid_generation_admission import attach, reserve
 from app.application.wardrobe.delete_item import DeleteWardrobeItem
+from app.application.wardrobe.item_photo import item_reference
 from app.application.wardrobe.list_items import ListWardrobeItems
 from app.application.wardrobe.update_item import UpdateWardrobeItem
+from app.bootstrap.container import object_storage, vision_rate_limiter, vision_service
 from app.common import error_codes
 from app.common.enums import CutoutStatus, RecommendationEventType, WardrobeItemStatus
 from app.common.exceptions import FriendlyException
@@ -40,6 +45,8 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
 from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
+from app.infrastructure.storage.source_image import image_data_uri
+from app.infrastructure.workers.cutout_worker import MAX_ATTEMPTS, cutout_job_key, enqueue_item_cutout
 from app.presentation.api.v1.deps import get_current_user, resolve_user_locale
 from app.presentation.api.v1.render_url import WardrobeImageUrls, wardrobe_image_urls
 from app.presentation.api.v1.schemas.common import ResponseModel
@@ -50,11 +57,13 @@ from app.presentation.api.v1.schemas.wardrobe import (
     UpdateWardrobeItemRequest,
     WardrobeItemResponse,
     WardrobeListResponse,
+    WardrobeRecognitionResponse,
     WearHistoryEntry,
     season_tag_list,
 )
 
 router = APIRouter(prefix="/v1/wardrobe-items", tags=["wardrobe"])
+logger = structlog.get_logger(__name__)
 
 
 async def _rejected_product_images(
@@ -167,6 +176,100 @@ async def get_wardrobe_item(
     images = await wardrobe_image_urls(session, [item])
     rejected = await _rejected_product_images(session, current_user.id, [item])
     return ResponseModel(data=item_response(item, effective_locale, images[item.id], rejected=item.id in rejected))
+
+
+@router.post("/{item_id}/recognize", response_model=ResponseModel[WardrobeRecognitionResponse])
+async def recognize_wardrobe_item(
+    item_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[WardrobeRecognitionResponse]:
+    item = await SqlAlchemyWardrobeRepository(session).get_for_user(item_id, current_user.id)
+    if item is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Wardrobe item not found", status_code=404)
+    locale = await resolve_user_locale(session, current_user.id)
+    vision_rate_limiter().check(current_user.id)
+    try:
+        vision = vision_service()
+        reference = await item_reference(session, item, vision, locale)
+        if reference.crop is None:
+            result = await vision.analyze_image(reference.url, locale, source_key=reference.key)
+        else:
+            result = await vision.analyze_image(image_data_uri(reference.crop), locale)
+    except FriendlyException:
+        raise
+    except Exception as exc:
+        logger.warning("wardrobe_recognition_failed", item_id=str(item_id), error_type=type(exc).__name__)
+        raise FriendlyException(error_codes.STATE_CONFLICT, "暂时无法重新识别这件衣物", status_code=503) from None
+    return ResponseModel(data=WardrobeRecognitionResponse(
+        title=result.display_name or result.title,
+        category=result.category,
+        color_main=result.color_main,
+    ))
+
+
+@router.post("/{item_id}/product-image", response_model=ResponseModel[WardrobeItemResponse], status_code=202)
+async def request_wardrobe_product_image(
+    item_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[WardrobeItemResponse]:
+    settings = get_settings()
+    if not settings.ENABLE_ITEM_CUTOUT:
+        raise FriendlyException(error_codes.FORBIDDEN, "当前服务未开启商品图生成", status_code=503)
+    repository = SqlAlchemyWardrobeRepository(session)
+    item = await repository.get_for_user(item_id, current_user.id)
+    if item is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Wardrobe item not found", status_code=404)
+    locale = await resolve_user_locale(session, current_user.id)
+    if item.cutout_status == CutoutStatus.QUEUED.value:
+        return await get_wardrobe_item(item_id, current_user, session, locale)
+
+    original_fields = (
+        item.original_image_url, item.category, item.title, item.color_main, item.embedding_source_version,
+    )
+    try:
+        reference = await item_reference(session, item, vision_service(), locale)
+    except FriendlyException:
+        raise
+    except Exception as exc:
+        logger.warning("wardrobe_product_reference_failed", item_id=str(item_id), error_type=type(exc).__name__)
+        raise FriendlyException(error_codes.STATE_CONFLICT, "暂时无法读取这件衣物的参考图", status_code=503) from None
+    item = await repository.get_for_user(item_id, current_user.id, for_update=True)
+    if item is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Wardrobe item not found", status_code=404)
+    if item.cutout_status == CutoutStatus.QUEUED.value:
+        return await get_wardrobe_item(item_id, current_user, session, locale)
+    if original_fields != (
+        item.original_image_url, item.category, item.title, item.color_main, item.embedding_source_version,
+    ):
+        raise FriendlyException(error_codes.STATE_CONFLICT, "衣物刚刚更新，请再试一次", status_code=409)
+
+    request_id = uuid.uuid4()
+    source_url, source_key = reference.url, reference.key
+    if reference.crop is not None:
+        source_key = f"users/{current_user.id}/wardrobe/verified-crops/{item_id}/{request_id}.jpg"
+        try:
+            source_url = await object_storage().put_object(source_key, reference.crop, "image/jpeg")
+        except Exception as exc:
+            logger.warning(
+                "wardrobe_product_reference_upload_failed", item_id=str(item_id), error_type=type(exc).__name__,
+            )
+            raise FriendlyException(error_codes.STATE_CONFLICT, "暂时无法保存衣物参考图", status_code=503) from None
+    admission = await reserve(
+        session, user_id=current_user.id, job_type="cutout",
+        reservation_key=cutout_job_key(item_id, request_id), attempt_grant=MAX_ATTEMPTS,
+        limit=resolve_quota_limit("cutout"),
+    )
+    job, _ = await enqueue_item_cutout(
+        session, item_id=item_id, user_id=current_user.id, source_url=source_url, source_key=source_key,
+        category=item.category, title=item.title, color=item.color_main, request_id=request_id,
+        source_version=item.embedding_source_version, expected_cover_url=item.cover_image_url,
+    )
+    await attach(session, admission.reservation_id, job_id=job.id, target_id=None)
+    item.cutout_status = CutoutStatus.QUEUED.value
+    await repository.flush()
+    return await get_wardrobe_item(item_id, current_user, session, locale)
 
 
 @router.patch("/{item_id}", response_model=ResponseModel[WardrobeItemResponse])

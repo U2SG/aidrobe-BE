@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.common.enums import CutoutStatus, ItemStatus, RecommendationStatus, VisualType
 from app.config.settings import Settings
@@ -324,3 +325,72 @@ async def test_generated_board_keeps_legacy_crop_only_for_a_current_reviewed_cut
     bottom = next(entry for entry in items if entry["role"] == "bottom")
     assert bottom["thumbnail_object_key"] == cutout_key
     assert bottom.get("review_object_key") == (crop_key if uses_crop else None)
+
+
+@pytest.mark.parametrize("legacy_snapshot", [False, True])
+async def test_generated_board_survives_recommendation_replacement(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, legacy_snapshot: bool,
+) -> None:
+    monkeypatch.setattr(
+        outfit_visual, "get_settings",
+        lambda: Settings(
+            ENABLE_ITEM_CUTOUT=True, IMAGE_CUTOUT_PROVIDER="openai", OPENAI_API_KEY="test", QWEN_API_KEY="test",
+        ),
+    )
+
+    async def allow(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(outfit_visual, "assert_within_quota", allow)
+    user_id = uuid.uuid4()
+    outfit_id = await _seed_outfit(db_session, user_id)
+    old = await db_session.get(Outfit, outfit_id, options=[selectinload(Outfit.items)])
+    assert old is not None
+    bottom = next(slot for slot in old.items if slot.role == "bottom")
+    bottom_image = await db_session.scalar(select(WardrobeItemImage).where(WardrobeItemImage.item_id == bottom.item_id))
+    assert bottom_image is not None
+    bottom_image.object_key = f"users/{user_id}/wardrobe/verified-crops/{bottom.item_id}-fixture.jpg"
+    await db_session.flush()
+
+    headers = {"X-User-Id": str(user_id)}
+    params = {"generate": "true"}
+    async with AsyncClient(transport=ASGITransport(app=_app(db_session)), base_url="http://testserver") as client:
+        response = await client.post(f"/v1/outfits/{outfit_id}/share-asset", headers=headers, params=params)
+        assert response.status_code == 202, response.text
+        asset_id = response.json()["asset_id"]
+        asset = await db_session.get(OutfitVisualAsset, uuid.UUID(asset_id))
+        assert asset and asset.input_snapshot
+        if legacy_snapshot:
+            asset.input_snapshot = {"generate": True, "item_list": asset.input_snapshot["item_list"]}
+        asset.generation_status = "completed"
+        asset.image_url = "https://storage.example/verified-board.png"
+
+        replacement = Outfit(
+            user_id=user_id, daily_recommendation_id=old.daily_recommendation_id,
+            outfit_type=old.outfit_type, title=old.title, reason_text=old.reason_text,
+            score_total=old.score_total, rank_order=old.rank_order, created_at=old.created_at,
+        )
+        slots = [(slot.item_id, slot.role, slot.display_order) for slot in old.items]
+        await db_session.delete(old)
+        await db_session.flush()
+        db_session.add(replacement)
+        await db_session.flush()
+        replacement_slots = [
+            OutfitItem(outfit_id=replacement.id, item_id=item_id, role=role,
+                       display_order=order, created_at=replacement.created_at)
+            for item_id, role, order in slots
+        ]
+        db_session.add_all(replacement_slots)
+        await db_session.flush()
+
+        path = f"/v1/outfits/{replacement.id}/share-asset"
+        lookup = await client.get(path, headers=headers)
+        replay = await client.post(path, headers=headers, params=params)
+        assert (lookup.status_code, replay.status_code) == (200, 202), (lookup.text, replay.text)
+        assert all(result.json()["asset_id"] == asset_id for result in (lookup, replay))
+        assert all(result.json()["image_url"] == asset.image_url for result in (lookup, replay))
+        assert await db_session.scalar(select(func.count()).select_from(AsyncJob)) == 1
+
+        replacement_slots[-1].role = "outerwear"
+        await db_session.flush()
+        assert (await client.get(path, headers=headers)).status_code == 404

@@ -85,16 +85,17 @@ class SqlAlchemyWardrobeRepository:
         await self.session.flush()
         return image
 
-    async def get_for_user(self, item_id: uuid.UUID, user_id: uuid.UUID) -> WardrobeItem | None:
+    async def get_for_user(
+        self, item_id: uuid.UUID, user_id: uuid.UUID, *, for_update: bool = False,
+    ) -> WardrobeItem | None:
+        stmt = select(WardrobeItem).where(
+            WardrobeItem.id == item_id, WardrobeItem.user_id == user_id, WardrobeItem.deleted_at.is_(None),
+        )
+        if for_update:
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
         return cast(
             WardrobeItem | None,
-            await self.session.scalar(
-            select(WardrobeItem).where(
-                WardrobeItem.id == item_id,
-                WardrobeItem.user_id == user_id,
-                WardrobeItem.deleted_at.is_(None),
-            )
-            ),
+            await self.session.scalar(stmt),
         )
 
     async def list_for_user(
