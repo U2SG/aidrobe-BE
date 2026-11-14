@@ -488,7 +488,7 @@ async def _resolve_pending_status(
 
     This bypasses the APScheduler-based reconciler so the frontend receives
     a terminal state without waiting for the scheduler cron."""
-    from sqlalchemy import or_, select
+    from sqlalchemy import select
 
     from app.infrastructure.persistence.models.async_job import AsyncJob
 
@@ -513,7 +513,7 @@ async def get_item_images(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> WardrobeItemImagesResponse:
-    from sqlalchemy import or_, select
+    from sqlalchemy import select
 
     from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 
