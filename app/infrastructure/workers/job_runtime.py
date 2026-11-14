@@ -395,6 +395,7 @@ async def recover_expired_leases(
     session: AsyncSession,
     *,
     now: datetime | None = None,
+    job_type: str | None = None,
 ) -> int:
     """Recover `running` rows whose lease has expired.
 
@@ -409,14 +410,18 @@ async def recover_expired_leases(
     Preserves `attempts` in both cases. Caller owns commit. Returns total
     rows touched (dead + re-queued)."""
     now = now or datetime.now(UTC)
+    expired = [
+        AsyncJob.status == JOB_STATUS_RUNNING,
+        AsyncJob.lease_expires_at < now,
+    ]
+    if job_type is not None:
+        expired.append(AsyncJob.job_type == job_type)
 
     dead_rows = (
         await session.execute(
             update(AsyncJob)
             .where(
-                AsyncJob.status == JOB_STATUS_RUNNING,
-                AsyncJob.lease_expires_at.is_not(None),
-                AsyncJob.lease_expires_at < now,
+                *expired,
                 AsyncJob.attempts >= AsyncJob.max_attempts,
             )
             .values(
@@ -452,11 +457,7 @@ async def recover_expired_leases(
         CursorResult[Any],
         await session.execute(
             update(AsyncJob)
-            .where(
-                AsyncJob.status == JOB_STATUS_RUNNING,
-                AsyncJob.lease_expires_at.is_not(None),
-                AsyncJob.lease_expires_at < now,
-            )
+            .where(*expired)
             .values(
                 status=JOB_STATUS_QUEUED,
                 lease_expires_at=None,
