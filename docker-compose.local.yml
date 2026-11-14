@@ -8,11 +8,15 @@
 #
 # To test from a phone, export AIDROBE_PUBLIC_HOST=<this Mac's LAN/Tailscale IP>
 # before dev-up so presigned upload / image URLs resolve from the device.
+#
+# Real garment recognition is opt-in: set AIDROBE_VISION_PROVIDER=qwen (in the
+# shell or in .env, which compose reads for substitution) with QWEN_API_KEY in
+# .env. Cost ≈ ¥0.0025 per single-garment photo, ≈ ¥0.007 per outfit photo.
 
 x-zero-cost: &zero-cost
   APP_ENV: dev
   GIT_SHA: ${GIT_SHA:-unknown}
-  VISION_PROVIDER: fake
+  VISION_PROVIDER: ${AIDROBE_VISION_PROVIDER:-fake}
   OCR_PROVIDER: fake
   LLM_PROVIDER: none
   EMBEDDING_PROVIDER: fake
