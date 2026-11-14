@@ -2,8 +2,8 @@
 
 Cover:
 - enqueue idempotency (per-item key)
-- drain happy path: claim → cutout (fake provider) → stored as a separate
-  `cutout` image; cover + standard stay on the user's photo; cutout_status='ready'
+- drain happy path: claim → cutout (fake provider) → item cover + standard
+  image show the cutout, the original photo stays, cutout_status='ready'
 - invalid payload surfaces as a structured failure, not a crash
 - dead-letter reconcile flips a stuck queued item to 'failed'
 """
@@ -158,17 +158,20 @@ async def test_drain_updates_item_and_marks_succeeded(
         item = await s.get(WardrobeItem, item_id)
         assert item is not None
         assert item.cutout_status == CutoutStatus.READY.value
-        # The generated image never replaces the user's photo.
-        assert item.cover_image_url == "https://x/original.jpg"
+        # The cutout is what the item shows (for outfit-photo garments it is
+        # the only picture of just that garment)...
+        assert item.cover_image_url == f"https://fake-storage/{user_id}/items/{item_id}/cutout.png"
+        assert item.original_image_url == "https://x/original.jpg"
 
-        images = {
-            image.image_type: image
-            for image in (
-                await s.execute(select(WardrobeItemImage).where(WardrobeItemImage.item_id == item_id))
-            ).scalars()
-        }
-        assert images[ImageType.CUTOUT.value].object_key == f"{user_id}/items/{item_id}/cutout.png"
-        assert images[ImageType.STANDARD.value].object_key != f"{user_id}/items/{item_id}/cutout.png"
+        standard = (
+            await s.execute(
+                select(WardrobeItemImage).where(
+                    WardrobeItemImage.item_id == item_id,
+                    WardrobeItemImage.image_type == ImageType.STANDARD.value,
+                )
+            )
+        ).scalar_one()
+        assert standard.object_key == f"{user_id}/items/{item_id}/cutout.png"
 
 
 async def test_drain_skips_invalid_payload(

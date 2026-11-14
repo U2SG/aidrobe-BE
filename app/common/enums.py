@@ -152,9 +152,6 @@ class RecommendationGenerationSource(StrEnum):
 class ImageType(StrEnum):
     ORIGINAL = "original"
     STANDARD = "standard"
-    # Generated product-shot cutout. Kept beside the user's photo, never in
-    # place of it: generative re-renders can shift colour, pattern or cut.
-    CUTOUT = "cutout"
 
 
 class CutoutStatus(StrEnum):
