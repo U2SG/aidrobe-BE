@@ -259,9 +259,19 @@ rule).
   "silhouette": "string",
   "material_hints": ["string"],
   "price": "string",
-  "scene_tags": ["string"]
+  "scene_tags": ["string"],
+  "garment_type": "string"
 }
 ```
+
+Revision 2026-11-14 (additive, BE + FE + iOS copies updated together):
+`garment_type` is a coarse type key (`tee`, `turtleneck`, `shirt`, `knit`,
+`jeans`, `trousers`, `blazer`, `coat`, `sneakers`, `loafers`, `boots`, `dress`,
+…), nullable, derived from recognition. When both the candidate's and an owned
+item's type are known, only items of the same type count as `covers` and can
+make the decision `avoid_duplicate`; a same-colour item of another type (a
+black graphic tee vs a black turtleneck) no longer does. Unknown type keeps the
+previous category-based rule. Clients must ignore unknown keys here (§3).
 
 ### 5.3 Decision
 

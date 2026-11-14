@@ -36,8 +36,9 @@ import httpx
 import structlog
 
 from app.application.ports.ocr import OcrPort
-from app.application.ports.vision import VisionPort
+from app.application.ports.vision import VisionPort, VisionResult
 from app.application.purchase.candidate_normalizer import ParsedItem, normalize_candidate
+from app.application.purchase.garment_type import garment_type
 from app.common import error_codes
 from app.common.enums import PurchaseCandidateSource, PurchaseCandidateStatus
 from app.common.exceptions import FriendlyException
@@ -192,18 +193,17 @@ class IngestPurchaseCandidate:
     async def _parse_link(self, source_url: str | None) -> tuple[ParsedItem, bool]:
         assert source_url is not None
         page = await self._fetch_page(source_url)
-        vision_category: str | None = None
-        vision_color: str | None = None
+        reading: VisionResult | None = None
         if page.image_url:
             reading = await self._analyze_image(page.image_url)
-            if reading is not None:
-                vision_category, vision_color = reading
         # Page text alone still yields material / scene / price hints, so a
         # candidate whose image could not be read is partial, not empty.
         parsed = normalize_candidate(
-            category=vision_category,
-            color=vision_color,
+            category=reading.category if reading else None,
+            color=reading.color_main if reading else None,
             raw_text=page.text,
+            garment_type=_garment_type(reading),
+            material=reading.material if reading else None,
         )
         return parsed, parsed.is_usable
 
@@ -215,8 +215,12 @@ class IngestPurchaseCandidate:
         reading = await self._analyze_image(image_url)
         if reading is None:
             return ParsedItem(), False
-        category, color = reading
-        parsed = normalize_candidate(category=category, color=color)
+        parsed = normalize_candidate(
+            category=reading.category,
+            color=reading.color_main,
+            garment_type=_garment_type(reading),
+            material=reading.material,
+        )
         return parsed, parsed.is_usable
 
     async def _parse_order_image(self, source_object_key: str | None) -> tuple[ParsedItem, bool]:
@@ -248,7 +252,7 @@ class IngestPurchaseCandidate:
             logger.info("v3.purchase_candidate.link_parse_failed")
             return ProductPage()
 
-    async def _analyze_image(self, image_url: str) -> tuple[str, str] | None:
+    async def _analyze_image(self, image_url: str) -> VisionResult | None:
         try:
             reading = await self.vision.analyze_image(image_url)
         except (ValueError, RuntimeError, httpx.HTTPError):
@@ -256,8 +260,14 @@ class IngestPurchaseCandidate:
             # candidate degrades to parse_failed (contract §5.2), never a 500.
             logger.info("v3.purchase_candidate.vision_failed", exc_info=True)
             return None
-        return reading.category, reading.color_main
+        return reading
 
     def _sign(self, object_key: str) -> str | None:
         """Mint a short-lived read URL for the provider call. Never persisted."""
         return self.signer(object_key)
+
+
+def _garment_type(reading: VisionResult | None) -> str | None:
+    if reading is None:
+        return None
+    return garment_type(reading.canonical_name, reading.display_name, reading.title)

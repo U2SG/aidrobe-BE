@@ -856,3 +856,18 @@ def test_low_band_copy_never_invents_an_attribute_comparison() -> None:
     )
     red_compared = next(r for r in compared.reasons if r.kind == rules.REASON_REDUNDANCY)
     assert "不一样" in red_compared.text
+
+
+def test_a_same_type_other_colour_does_not_say_try_another_colour() -> None:
+    # Real run (2026-11-14): a black tee next to an owned white tee is a medium
+    # band, not a colour clash — "check a different colour" was the wrong advice.
+    similar = decide(
+        _candidate(), _closet(REDUNDANCY_MEDIUM, covers=1, top_reasons=_SAME_MATERIAL), _outfit(), locale="en-US"
+    )
+    clash = decide(_candidate(), _closet(REDUNDANCY_NONE), _outfit(conflict=True), locale="en-US")
+
+    assert similar.decision == clash.decision == PurchaseDecision.CONSIDER_ALTERNATE.value
+    assert "different colour" not in similar.decision_text
+    assert "another colour" in similar.decision_text
+    assert ACTION_RECHECK_COLOR not in similar.next_actions
+    assert "different colour" in clash.decision_text

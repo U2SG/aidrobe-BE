@@ -390,3 +390,44 @@ def test_payload_has_no_percentage_or_score_shaped_key() -> None:
     keys = {path.rsplit(".", 1)[-1] for path, _ in _leaves(evidence.as_payload())}
     for banned in ("score", "percent", "percentage", "confidence", "similarity", "rating", "fit"):
         assert not any(banned in key for key in keys), f"payload exposes a {banned}-shaped key"
+
+
+# ── garment type: same colour is not enough when the types differ ─────────
+
+
+def _top(item_id: uuid.UUID, color: str, garment_type: str | None) -> OwnedItemFacts:
+    return OwnedItemFacts(item_id=item_id, category=Category.TOP.value, color_main=color, garment_type=garment_type)
+
+
+def test_same_colour_different_type_is_not_a_duplicate() -> None:
+    # Real Qwen run (2026-11-14): a black graphic tee was "avoid_duplicate"
+    # because the wardrobe had a black turtleneck base layer.
+    tee = ParsedItem(category=Category.TOP.value, colors=["black"], garment_type="tee")
+    owned = [_top(ITEM_A, "black", "turtleneck"), _top(ITEM_B, "white", "tee"), _top(ITEM_C, "blue", "shirt")]
+
+    evidence = build_evidence(tee, owned)
+
+    covers = [s for s in evidence.similar_items if s.relation == RELATION_COVERS]
+    assert [s.item_id for s in covers] == [ITEM_B]  # only the other tee could do its job
+    assert evidence.similar_item_count == 1
+    assert evidence.redundancy_level != REDUNDANCY_HIGH
+
+
+def test_same_colour_same_type_is_a_duplicate() -> None:
+    tee = ParsedItem(category=Category.TOP.value, colors=["white"], garment_type="tee")
+    evidence = build_evidence(tee, [_top(ITEM_A, "black", "turtleneck"), _top(ITEM_B, "white", "tee")])
+
+    assert evidence.redundancy_level == REDUNDANCY_HIGH
+    assert [s.item_id for s in evidence.similar_items if s.relation == RELATION_COVERS] == [ITEM_B]
+
+
+def test_unknown_type_keeps_the_category_rule() -> None:
+    # A page-text candidate or an item imported before types were recognised:
+    # we cannot tell the jobs apart, so same category + colour still counts.
+    unknown = ParsedItem(category=Category.TOP.value, colors=["black"])
+    evidence = build_evidence(unknown, [_top(ITEM_A, "black", "turtleneck")])
+    assert evidence.redundancy_level == REDUNDANCY_HIGH
+
+    typed = ParsedItem(category=Category.TOP.value, colors=["black"], garment_type="tee")
+    evidence = build_evidence(typed, [_top(ITEM_A, "black", None)])
+    assert evidence.redundancy_level == REDUNDANCY_HIGH

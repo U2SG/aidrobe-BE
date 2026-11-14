@@ -103,6 +103,9 @@ class ParsedItem:
     material_hints: list[str] | None = None
     price: str | None = None
     scene_tags: list[str] | None = None
+    # Coarse garment type ("tee", "turtleneck", "jeans"…; see garment_type.py).
+    # Additive to the frozen §5.2 shape; None when recognition gave no name.
+    garment_type: str | None = None
 
     def as_payload(self) -> dict[str, object]:
         """JSONB/response payload; every contract key is always present."""
@@ -113,6 +116,7 @@ class ParsedItem:
             "material_hints": self.material_hints,
             "price": self.price,
             "scene_tags": self.scene_tags,
+            "garment_type": self.garment_type,
         }
 
     @property
@@ -160,6 +164,8 @@ def normalize_candidate(
     color: str | None = None,
     price: str | None = None,
     raw_text: str | None = None,
+    garment_type: str | None = None,
+    material: str | None = None,
 ) -> ParsedItem:
     """Fold a vision/OCR reading plus (untrusted) page text into `parsed_item`.
 
@@ -170,6 +176,10 @@ def normalize_candidate(
     """
     text = bound_untrusted_text(raw_text).lower()
     materials = _matches(text, MATERIAL_HINTS)[:_MAX_HINTS]
+    # A recognised material (provider vocabulary) leads the page-text hints.
+    provider_material = (material or "").strip().lower()
+    if provider_material in MATERIAL_HINTS and provider_material not in materials:
+        materials = [provider_material, *materials][:_MAX_HINTS]
     scenes = _matches(text, SCENE_TAGS)[:_MAX_HINTS]
     return ParsedItem(
         category=category or None,
@@ -178,4 +188,5 @@ def normalize_candidate(
         material_hints=materials or None,
         price=price or extract_price(text),
         scene_tags=scenes or None,
+        garment_type=garment_type,
     )

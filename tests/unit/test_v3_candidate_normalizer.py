@@ -163,3 +163,13 @@ def test_untrusted_text_is_length_bounded_before_extraction() -> None:
 
     assert beyond_cap.material_hints is None
     assert within_cap.material_hints == ["cashmere"]
+
+
+
+def test_provider_garment_type_and_material_are_kept() -> None:
+    from app.application.purchase.candidate_normalizer import normalize_candidate
+
+    parsed = normalize_candidate(category="top", color="black", garment_type="tee", material="Cotton")
+    assert parsed.garment_type == "tee"
+    assert parsed.material_hints == ["cotton"]
+    assert parsed.as_payload()["garment_type"] == "tee"
