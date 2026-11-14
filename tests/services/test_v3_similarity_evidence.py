@@ -150,6 +150,34 @@ async def test_only_the_callers_own_wearable_items_are_compared(
     assert evidence.redundancy_level == REDUNDANCY_HIGH
 
 
+@pytest.mark.parametrize(
+    ("title", "name_source", "canonical_name", "covers"),
+    [
+        ("驼色羊毛大衣", "user", "White shirt", True),
+        ("驼色羊毛大衣", "ai", "White shirt", False),
+        ("秋日常穿", "user", "Camel wool coat", True),
+        ("秋日常穿", "user", "Camel blazer", False),
+    ],
+)
+async def test_user_named_coat_is_compared_by_its_corrected_type(
+    db_session: AsyncSession, title: str, name_source: str, canonical_name: str, covers: bool
+) -> None:
+    user_id = await _seed_user(db_session)
+    coat = await _add_item(db_session, user_id, title=title, color="camel")
+    coat.name_source = name_source
+    coat.canonical_name = canonical_name
+    await db_session.flush()
+
+    evidence = await compute_similarity_evidence(
+        db_session, user_id, _candidate(colors=["camel"], garment_type="coat")
+    )
+
+    assert [item.item_id for item in evidence.similar_items if item.relation == RELATION_COVERS] == (
+        [coat.id] if covers else []
+    )
+    assert evidence.redundancy_level == (REDUNDANCY_HIGH if covers else REDUNDANCY_NONE)
+
+
 async def test_complementary_categories_are_loaded_in_the_same_pass(
     db_session: AsyncSession,
 ) -> None:
