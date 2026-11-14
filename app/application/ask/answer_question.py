@@ -1024,6 +1024,9 @@ async def answer_question(
         _strip_ordinal_leaks(answer_text),
         fallback=_ASK_FALLBACK_COPY,
     )
+    weather_summaries = list(dict.fromkeys(tool.summary for tool in used_tools if tool.tool == "get_weather"))
+    if weather_summaries:
+        answer_text = "\n".join([*weather_summaries, "", answer_text])
     tokens_used = answer.tokens_used + loop_tokens
     heuristic_constraints = _heuristic_constraints(
         question=sanitized_question,

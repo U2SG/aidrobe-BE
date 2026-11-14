@@ -80,7 +80,7 @@ class _ButlerLlm:
         return ToolAskAnswer(
             text=json.dumps(
                 {
-                    "answer": "明天小雨，穿衬衫、长裤、夹克和靴子。",
+                    "answer": "穿衬衫、长裤、夹克和靴子。",
                     "reply_kind": "outfit",
                     "referenced_items": positions,
                 },
@@ -159,10 +159,11 @@ async def test_ask_butler_releases_only_the_checked_outfit(
     data = resp.json()
     assert data["tokens_used"] == 123
     assert data["used"][0]["tool"] == "get_weather"
+    assert data["answer"].startswith(data["used"][0]["summary"])
     if scenario == "approved":
         assert set(data["item_refs"]) == {str(item.id) for item in items}
         assert {snap["item_id"] for snap in data["item_ref_snapshots"]} == set(data["item_refs"])
-        assert data["answer"].startswith("明天小雨")
+        assert data["answer"].endswith("穿衬衫、长裤、夹克和靴子。")
     else:
         assert data["item_refs"] == data["item_ref_snapshots"] == []
         assert "没能核实" in data["answer"]
