@@ -7,7 +7,7 @@ from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.common.enums import ItemStatus, RecommendationEventType
+from app.common.enums import ItemStatus, RecommendationEventType, RecommendationGenerationSource
 from app.common.local_time import local_datetime
 from app.infrastructure.persistence.models.operation_log import OperationLog
 from app.infrastructure.persistence.models.recommendation import (
@@ -143,8 +143,10 @@ class SqlAlchemyRecommendationRepository:
     async def count_revisions_for_date(self, user_id: uuid.UUID, recommendation_date: date) -> int:
         """How many daily rows exist for this (user, date) regardless of
         is_current. Used by the refresh rate limit so 3 refreshes ⇒ 4 rows
-        (rev 1 from background gen + 3 from refresh)."""
-        from sqlalchemy import func
+        (rev 1 from background gen + 3 from refresh). System revisions written
+        because an item became unwearable (read_time, revision > 1) are not the
+        user's refreshes and don't count."""
+        from sqlalchemy import and_, func, not_
 
         return cast(
             int,
@@ -154,6 +156,13 @@ class SqlAlchemyRecommendationRepository:
                 .where(
                     DailyRecommendation.user_id == user_id,
                     DailyRecommendation.recommendation_date == recommendation_date,
+                    not_(
+                        and_(
+                            DailyRecommendation.revision > 1,
+                            DailyRecommendation.generation_source
+                            == RecommendationGenerationSource.READ_TIME.value,
+                        )
+                    ),
                 )
             )
             or 0,
@@ -407,6 +416,35 @@ class SqlAlchemyRecommendationRepository:
             .limit(1)
         )
         return favorite_outfit_id is not None
+
+    async def daily_has_wear(self, daily_recommendation_id: uuid.UUID) -> bool:
+        """Whether the user already wore one of this daily's outfits."""
+        worn = await self.session.scalar(
+            select(WearHistory.id)
+            .join(Outfit, Outfit.id == WearHistory.outfit_id)
+            .where(Outfit.daily_recommendation_id == daily_recommendation_id)
+            .limit(1)
+        )
+        return worn is not None
+
+    async def daily_uses_unwearable_item(self, daily_recommendation_id: uuid.UUID) -> bool:
+        """Whether any outfit of this daily includes an item that is deleted,
+        not wearable, or no longer fits — the inverse of `get_wearable_items`."""
+        found = await self.session.scalar(
+            select(OutfitItem.item_id)
+            .join(Outfit, Outfit.id == OutfitItem.outfit_id)
+            .join(WardrobeItem, WardrobeItem.id == OutfitItem.item_id)
+            .where(
+                Outfit.daily_recommendation_id == daily_recommendation_id,
+                or_(
+                    WardrobeItem.deleted_at.is_not(None),
+                    WardrobeItem.status != ItemStatus.WEARABLE.value,
+                    WardrobeItem.fit_status == "no_longer_fits",
+                ),
+            )
+            .limit(1)
+        )
+        return found is not None
 
     async def add_feedback(self, feedback: OutfitFeedback) -> OutfitFeedback:
         self.session.add(feedback)
