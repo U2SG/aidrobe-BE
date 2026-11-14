@@ -473,8 +473,8 @@ async def test_import_crop_first_outfit_pipeline(
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
 
-    from app.config.settings import Settings
     from app.application.import_tasks import prepare_derivatives
+    from app.config.settings import Settings
     from app.infrastructure.persistence.models.paid_generation import PaidGenerationReservation
     from app.infrastructure.persistence.models.wardrobe import WardrobeItemImage
     from app.infrastructure.persistence.session import get_db_session
