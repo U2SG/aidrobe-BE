@@ -40,7 +40,7 @@ logger = structlog.get_logger(__name__)
 _STALE_QUEUED_MINUTES = 15
 # v2: used slots are centred as a group (v1 left blank bands for missing roles).
 _OUTFIT_BOARD_LAYOUT_VERSION = "v2"
-_GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-reviewed-v2"
+_GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-reviewed-v3"
 _IMAGE_TYPE_PRIORITY = ("cutout", "thumbnail", "standard", "original")
 
 
@@ -302,7 +302,9 @@ async def get_outfit_visual_asset(
     # Generated assets from before the review was introduced remain available
     # as records, but clients cannot display their unreviewed images.
     if asset.visual_type == VisualType.OUTFIT_BOARD.value and (asset.input_snapshot or {}).get("generate") is True:
-        job = await db.scalar(select(AsyncJob).where(AsyncJob.target_id == asset.id, AsyncJob.job_type == "outfit_board"))
+        job = await db.scalar(
+            select(AsyncJob).where(AsyncJob.target_id == asset.id, AsyncJob.job_type == "outfit_board")
+        )
         if job is None or (job.payload or {}).get("layout_version") != _GENERATED_OUTFIT_LAYOUT_VERSION:
             generation_status = "rejected_by_quality_gate"
 
