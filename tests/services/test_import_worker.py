@@ -63,6 +63,10 @@ async def patched_session_factory(
         async def get_object(self, key: str) -> bytes:
             return objects[key]
 
+        def sign_render_url(self, key: str) -> str:
+            assert key in objects
+            return f"http://localhost:9000/local/files/{key}?signed=fixture"
+
     monkeypatch.setattr(import_worker, "AsyncSessionLocal", factory)
     monkeypatch.setattr(garment_crops, "AsyncSessionLocal", factory)
     monkeypatch.setattr(import_worker, "download_external_source_image", download)

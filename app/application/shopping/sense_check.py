@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import Float, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.vision import VisionPort, VisionResult
@@ -247,7 +247,7 @@ class SenseCheck:
         stmt = (
             select(
                 WardrobeItem,
-                ItemEmbedding.vector.op("<->")(anchor_vec).label("dist"),
+                ItemEmbedding.vector.op("<->", return_type=Float())(anchor_vec).label("dist"),
             )
             .join(ItemEmbedding, ItemEmbedding.item_id == WardrobeItem.id)
             .where(

@@ -119,13 +119,13 @@ class ConfirmImageImportTask:
             if not replay:
                 self._require_waiting(task)
 
-        seen: set[str] = set()
+        requested = {entry.temp_item_id for entry in items}
+        if len(requested) != len(items) or not requested <= by_id.keys():
+            raise FriendlyException(error_codes.VALIDATION_ERROR, "Invalid or duplicate candidate ID", 422)
+
         results: list[ConfirmedEntry] = []
         for entry in items:
             candidate_id = entry.temp_item_id
-            if candidate_id in seen or candidate_id not in by_id:
-                raise FriendlyException(error_codes.VALIDATION_ERROR, "Invalid or duplicate candidate ID", 422)
-            seen.add(candidate_id)
             if candidate_id in confirmed:
                 existing = await self._existing_item(confirmed[candidate_id], task.user_id)
                 if existing is None:

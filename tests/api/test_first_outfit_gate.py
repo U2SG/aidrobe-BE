@@ -376,7 +376,13 @@ async def test_state_derivation_n1_and_n2(count: int, db_session: AsyncSession) 
         )
         for order, item in enumerate(items):
             await repository.add_outfit_item(
-                OutfitItem(outfit_id=outfit.id, item_id=item.id, role=item.category, display_order=order, created_at=now)
+                OutfitItem(
+                    outfit_id=outfit.id,
+                    item_id=item.id,
+                    role=item.category,
+                    display_order=order,
+                    created_at=now,
+                )
             )
 
     result = await FirstOutfitGate(repository).execute(user_id, today)

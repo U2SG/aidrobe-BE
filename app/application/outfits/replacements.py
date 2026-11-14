@@ -20,7 +20,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import Float, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.enums import FitStatus, ItemStatus
@@ -149,7 +149,7 @@ async def _candidates_by_embedding(
     stmt = (
         select(
             WardrobeItem,
-            ItemEmbedding.vector.op("<->")(src_vector).label("dist"),
+            ItemEmbedding.vector.op("<->", return_type=Float())(src_vector).label("dist"),
         )
         .join(ItemEmbedding, ItemEmbedding.item_id == WardrobeItem.id)
         .where(
