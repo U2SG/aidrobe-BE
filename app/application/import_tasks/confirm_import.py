@@ -23,6 +23,7 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
 )
 from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
+from app.infrastructure.storage.object_key import is_legacy_garment_crop
 from app.infrastructure.storage.source_image import InvalidSourceImage
 
 
@@ -176,11 +177,14 @@ class ConfirmImageImportTask:
     ) -> WardrobeItem:
         original_url = candidate.get("original_image_url") or task.input_payload.get("image_url")
         crop_url = candidate.get("crop_image_url")
+        crop_key = candidate.get("crop_object_key")
+        if is_legacy_garment_crop(crop_key or crop_url, task.user_id):
+            crop_url, crop_key = None, None
         try:
             original_key = upload_key(
                 original_url, task.user_id, expected_key=task.input_payload.get("source_object_key"),
             )
-            crop_key = upload_key(crop_url, task.user_id, expected_key=candidate.get("crop_object_key"))
+            crop_key = upload_key(crop_url, task.user_id, expected_key=crop_key)
         except InvalidSourceImage:
             raise FriendlyException(error_codes.VALIDATION_ERROR, "Invalid import image", 422) from None
         generated_url = candidate.get("cutout_image_url")

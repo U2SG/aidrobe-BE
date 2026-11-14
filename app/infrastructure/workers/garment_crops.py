@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.import_tasks.candidates import confirmed_item_ids, normalize_candidates, store_candidates
 from app.application.import_tasks.confirm_import import apply_confirmed_crop
+from app.application.ports.vision import VisionResult
 from app.common.enums import ImportStatus
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
@@ -22,6 +23,7 @@ from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.repositories.import_task_repo import SqlAlchemyImportTaskRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import AsyncSessionLocal
+from app.infrastructure.storage.object_key import garment_crop_object_key
 from app.infrastructure.storage.source_image import load_source_bytes
 from app.infrastructure.vision.qwen_vision import garment_box
 from app.infrastructure.workers.job_runtime import (
@@ -104,7 +106,7 @@ def _crop_candidate(task: ImportTask | None, job: AsyncJob) -> tuple[list[dict[s
 
 
 async def _crop_one(session: AsyncSession, job: AsyncJob) -> None:
-    from app.bootstrap.container import object_storage
+    from app.bootstrap.container import object_storage, vision_service
 
     if job.target_id is None or job.user_id is None:
         raise ValueError("invalid crop identity")
@@ -131,9 +133,24 @@ async def _crop_one(session: AsyncSession, job: AsyncJob) -> None:
         await mark_succeeded(session, job.id, claimed_attempt=job.attempts, result={"outcome": "no_usable_crop"})
         await session.commit()
         return
+    garment = VisionResult(
+        title=candidate["title"],
+        category=candidate["category"],
+        color_main=candidate["color_main"],
+        confidence_score=candidate["confidence_score"],
+        canonical_name=candidate.get("canonical_name") or "",
+    )
+    approved = await vision_service().review_garment_crops([crop], [garment])
+    if len(approved) != 1:
+        raise ValueError("invalid crop review result")
+    if not approved[0]:
+        await mark_succeeded(session, job.id, claimed_attempt=job.attempts, result={"outcome": "crop_rejected"})
+        await session.commit()
+        return
+
     # A lease recovery can overlap the SDK's in-flight upload. Each attempt
     # writes a different object, and only the current claim can adopt it.
-    crop_key = f"users/{job.user_id}/wardrobe/crops/{job.target_id}/{job.id}/{job.attempts}.jpg"
+    crop_key = garment_crop_object_key(job.user_id, job.target_id, f"{job.id}/{job.attempts}")
     crop_url = await object_storage().put_object(crop_key, crop, "image/jpeg")
 
     task = await repository.get_for_user(job.target_id, job.user_id, for_update=True)

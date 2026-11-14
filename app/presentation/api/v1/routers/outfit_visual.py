@@ -27,6 +27,7 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
 from app.infrastructure.persistence.session import get_db_session as get_db
+from app.infrastructure.storage.object_key import is_legacy_garment_crop
 from app.infrastructure.workers.outfit_board_worker import enqueue_outfit_board
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url as _resolve_render_url
@@ -41,7 +42,7 @@ _STALE_QUEUED_MINUTES = 15
 # v2: used slots are centred as a group (v1 left blank bands for missing roles).
 _OUTFIT_BOARD_LAYOUT_VERSION = "v2"
 _GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-reviewed-v7"
-_IMAGE_TYPE_PRIORITY = ("cutout", "thumbnail", "standard", "original")
+_IMAGE_TYPE_PRIORITY = ("cutout", "thumbnail", "standard", "crop", "original")
 
 
 class OutfitVisualAssetResponse(BaseModel):
@@ -123,7 +124,12 @@ async def _outfit_board_item_list(
     for outfit_item, item, image in rows:
         items[item.id] = item
         roles[item.id] = outfit_item.role
-        if image is not None and image.image_type not in item_images.setdefault(item.id, {}):
+        if (
+            image is not None
+            and not is_legacy_garment_crop(image.object_key, user_id)
+            and not is_legacy_garment_crop(image.image_url, user_id)
+            and image.image_type not in item_images.setdefault(item.id, {})
+        ):
             item_images[item.id][image.image_type] = image
 
     review_sources = {}
@@ -145,6 +151,10 @@ async def _outfit_board_item_list(
             board_item.update(title=item.title, color=item.color_main)
             crop = images.get("crop")
             source = review_sources.get(item_id, {})
+            if is_legacy_garment_crop(source.get("source_key"), user_id) or is_legacy_garment_crop(
+                source.get("source_url"), user_id
+            ):
+                source = {}
             if crop is not None and crop.object_key:
                 board_item["review_object_key"] = crop.object_key
             elif crop is not None and crop.image_url:
@@ -166,7 +176,11 @@ async def _outfit_board_item_list(
                 board_item["cutout_object_key"] = cutout.object_key
             elif cutout.image_url:
                 board_item["cutout_image_url"] = cutout.image_url
-        elif item.cutout_status == "ready" and item.cover_image_url:
+        elif (
+            item.cutout_status == "ready"
+            and item.cover_image_url
+            and not is_legacy_garment_crop(item.cover_image_url, user_id)
+        ):
             # No durable object key exists for this legacy row; retain a URL-only
             # fallback rather than snapshotting a request-time signed URL.
             board_item["cutout_image_url"] = item.cover_image_url
@@ -185,8 +199,10 @@ async def _outfit_board_item_list(
             elif thumbnail.image_url:
                 board_item["thumbnail_url"] = thumbnail.image_url
         else:
-            thumbnail_url = item.cover_image_url or item.original_image_url
-            if thumbnail_url:
+            thumbnail_url = item.cover_image_url
+            if not thumbnail_url or is_legacy_garment_crop(thumbnail_url, user_id):
+                thumbnail_url = item.original_image_url
+            if thumbnail_url and not is_legacy_garment_crop(thumbnail_url, user_id):
                 board_item["thumbnail_url"] = thumbnail_url
 
         item_list.append(board_item)

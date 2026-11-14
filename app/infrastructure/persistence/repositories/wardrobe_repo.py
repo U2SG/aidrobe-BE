@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.enums import ImageType
 from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
-from app.infrastructure.storage.object_key import names_internal_storage, trusted_item_image_key
+from app.infrastructure.storage.object_key import is_legacy_garment_crop, names_internal_storage, trusted_item_image_key
 
 ImageSource = tuple[str | None, str | None]
 
@@ -30,6 +30,8 @@ def _image_source(
 
 def _checked_source(source: ImageSource, owner_id: uuid.UUID, settings: Settings) -> ImageSource:
     key, url = source
+    if is_legacy_garment_crop(key, owner_id) or is_legacy_garment_crop(url, owner_id):
+        return None, None
     if url and names_internal_storage(url, settings):
         verified_key = trusted_item_image_key(url, owner_id, settings)
         if verified_key is None or (key is not None and key != verified_key):

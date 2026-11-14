@@ -1,5 +1,6 @@
 import base64
 import json
+import math
 from dataclasses import replace
 from typing import Any, cast
 
@@ -87,8 +88,12 @@ def build_outfit_vision_prompt(locale: str) -> str:
         f"display_name MUST be a natural {language} name for the garment. "
         "confidence_score must be a number from 0 to 1. "
         + _ATTRIBUTE_PROMPT
-        + " Give these per garment, plus box — [x_min, y_min, x_max, y_max] around that "
-        "garment as fractions (0 to 1) of the image width and height. "
+        + " Give these per garment, plus box_2d — [left, top, right, bottom] as integers "
+        "on a 0-to-1000 grid (left/top are 0, right/bottom are 1000). "
+        "Use the tight rectangle around the visible fabric of that item, not the body or outfit. "
+        "For shorts the bottom edge is the shorts hem, never the knee, lower leg or foot. "
+        "For shoes include both visible shoes, stopping at the shoe opening. For layered garments "
+        "include only the specific layer. Use null if the item cannot be separately located. "
         "If no garment is visible, return {\"items\": []}."
     )
 
@@ -165,11 +170,37 @@ class QwenVision:
             [
                 replace(
                     self._vision_result(self._validate_vision_data(raw), resolved),
-                    bbox=garment_box(raw.get("box")),
+                    bbox=(
+                        garment_box(raw["box_2d"], scale=1000)
+                        if "box_2d" in raw else garment_box(raw.get("box"))
+                    ),
                 )
                 for raw in raw_items
             ]
         )
+
+    async def review_garment_crops(self, crops: list[bytes], garments: list[VisionResult]) -> list[bool]:
+        expected = [
+            {"item": garment.canonical_name or garment.title, "category": garment.category, "color": garment.color_main}
+            for garment in garments
+        ]
+        content = await self._request_content(
+            _image_data_uri(crops[0]),
+            "Independently inspect each crop for the respective numbered garment, in image order. "
+            f"Expected items in order: {json.dumps(expected, ensure_ascii=False)}. "
+            "The crop must clearly show the named piece as its main subject. Reject images dominated by "
+            "bare skin, background, a different garment, or showing only a neckline, hem, buttons or other detail. "
+            "For shorts the garment must be visible with its waist and hem distinguishable. For shoes, both "
+            "shoes need not be fully visible, but their shape and sole must be identifiable. "
+            "Judge only pixels in that crop. Mark uncertain cases false. Return JSON with an accepted array "
+            "of one boolean per image, in the same order.",
+            *(_image_data_uri(crop) for crop in crops[1:]),
+        )
+        result = json.loads(self._strip_json_fence(content))
+        marks = result.get("accepted") if isinstance(result, dict) else None
+        if not isinstance(marks, list) or len(marks) != len(crops) or not all(isinstance(mark, bool) for mark in marks):
+            raise ValueError("Invalid garment crop review response")
+        return cast(list[bool], marks)
 
     async def analyze_style(
         self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
@@ -485,7 +516,7 @@ def _image_mime(data: bytes) -> str:
     return "image/jpeg"
 
 
-def garment_box(raw: Any) -> tuple[float, float, float, float] | None:
+def garment_box(raw: Any, *, scale: int = 1) -> tuple[float, float, float, float] | None:
     """A model-reported garment box as clamped fractions, or None if unusable.
 
     Rejects malformed, inverted or tiny boxes (under 5% of a side) — a bad box
@@ -493,9 +524,11 @@ def garment_box(raw: Any) -> tuple[float, float, float, float] | None:
     """
     if not isinstance(raw, list) or len(raw) != 4:
         return None
-    if not all(isinstance(v, int | float) and not isinstance(v, bool) for v in raw):
+    if not all(isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v) for v in raw):
         return None
-    x1, y1, x2, y2 = (max(0.0, min(1.0, float(v))) for v in raw)
+    if scale == 1000 and not all(isinstance(v, int) and 0 <= v <= scale for v in raw):
+        return None
+    x1, y1, x2, y2 = (max(0.0, min(1.0, v / scale)) for v in raw)
     if x2 - x1 < _MIN_BOX_SIDE or y2 - y1 < _MIN_BOX_SIDE:
         return None
     return (x1, y1, x2, y2)

@@ -83,6 +83,9 @@ class FakeVision:
             replace(_result_for("bottom", locale), bbox=(0.25, 0.48, 0.75, 0.95)),
         ]
 
+    async def review_garment_crops(self, crops: list[bytes], garments: list[VisionResult]) -> list[bool]:
+        return [True] * len(crops)
+
     async def analyze_style(
         self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
     ) -> StyleAnalysis:

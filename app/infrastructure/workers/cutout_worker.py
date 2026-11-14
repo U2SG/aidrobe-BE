@@ -19,6 +19,7 @@ from app.config.settings import get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.session import AsyncSessionLocal
+from app.infrastructure.storage.object_key import is_legacy_garment_crop
 from app.infrastructure.storage.source_image import load_source_bytes as _load_source_bytes
 from app.infrastructure.workers.job_runtime import (
     JOB_STATUS_DEAD,
@@ -159,7 +160,8 @@ async def _process_one(job: AsyncJob) -> None:
 
         outcome = CutoutResult("not_called", provider_cost_cents=0)
         cutout_url = cutout_key = None
-        if usable:
+        legacy_crop = is_legacy_garment_crop(source_key, job.user_id) or is_legacy_garment_crop(source_url, job.user_id)
+        if usable and not legacy_crop:
             phase = "source"
             try:
                 raw = await _load_source_bytes(source_url, source_key, user_id=job.user_id)
@@ -184,6 +186,8 @@ async def _process_one(job: AsyncJob) -> None:
             if item is not None and _still_queued(item, payload):
                 if cutout_url is not None and cutout_key is not None:
                     await _apply_result(session, item, cutout_url=cutout_url, cutout_key=cutout_key)
+                elif outcome.outcome == "quality_rejected":
+                    item.cutout_status = CutoutStatus.REJECTED.value
                 else:
                     item.cutout_status = CutoutStatus.SKIPPED.value
             # Generated/rejected images carry the paid outcome even if the item

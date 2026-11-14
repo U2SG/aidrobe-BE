@@ -182,7 +182,7 @@ async def test_drain_applies_only_accepted_product_photos(
 
         item = await s.get(WardrobeItem, item_id)
         assert item is not None
-        assert item.cutout_status == (CutoutStatus.READY.value if accepted else CutoutStatus.SKIPPED.value)
+        assert item.cutout_status == (CutoutStatus.READY.value if accepted else CutoutStatus.REJECTED.value)
         key = f"users/{user_id}/items/{item_id}/cutout/{job_id}/1.png"
         expected_cover = f"https://fake-storage/{key}" if accepted else "https://x/original.jpg"
         assert item.cover_image_url == expected_cover
@@ -221,6 +221,37 @@ async def test_drain_skips_invalid_payload(
         assert final is not None
         assert final.status == JOB_STATUS_QUEUED
         assert final.last_error == "missing payload fields"
+
+
+async def test_legacy_unverified_crop_is_never_used_for_a_product_shot(
+    patched_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unexpected_fetch(*args: object, **kwargs: object) -> bytes:
+        pytest.fail("a legacy unverified crop must not reach storage or the product-shot provider")
+
+    monkeypatch.setattr(cutout_worker, "_load_source_bytes", unexpected_fetch)
+    user_id, item_id = await _seed_item(patched_session_factory)
+    async with patched_session_factory() as session:
+        key = f"users/{user_id}/wardrobe/crops/legacy.jpg"
+        job, _ = await enqueue_item_cutout(
+            session, item_id=item_id, user_id=user_id,
+            source_url=f"https://fake-storage/{key}", source_key=key, category="top",
+        )
+        await session.commit()
+        job_id = job.id
+
+    assert await drain_cutout_jobs(ctx=None) == 1
+
+    async with patched_session_factory() as session:
+        item = await session.get(WardrobeItem, item_id)
+        assert item is not None
+        assert item.cutout_status == CutoutStatus.SKIPPED.value
+        assert item.cover_image_url == "https://x/original.jpg"
+        final = await session.get(AsyncJob, job_id)
+        assert final is not None
+        assert final.result == {"outcome": "not_called", "provider_cost_cents": 0}
+        assert await usage_today(session, user_id, JOB_TYPE) == 0
 
 
 async def test_reconcile_dead_marks_item_failed(

@@ -37,7 +37,11 @@ from app.infrastructure.persistence.repositories.recommendation_repo import (
 from app.infrastructure.persistence.repositories.style_repo import SqlAlchemyStyleRepository
 from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemyWardrobeRepository
 from app.infrastructure.persistence.session import get_db_session
-from app.infrastructure.storage.object_key import names_internal_storage, trusted_item_image_key
+from app.infrastructure.storage.object_key import (
+    is_legacy_garment_crop,
+    names_internal_storage,
+    trusted_item_image_key,
+)
 from app.infrastructure.storage.source_image import InvalidSourceImage
 from app.infrastructure.workers.import_worker import enqueue_import_task, process_import_task
 from app.presentation.api.v1.deps import get_current_user
@@ -86,7 +90,11 @@ def to_response(task: ImportTask) -> ImportTaskResponse:
             candidate.original_image_url, task.user_id, task.input_payload.get("source_object_key"),
         )
         candidate.original_image_url = original or ""
-        candidate.crop_image_url = _image_for_review(candidate.crop_image_url, task.user_id, raw.get("crop_object_key"))
+        crop_key = raw.get("crop_object_key")
+        candidate.crop_image_url = (
+            None if is_legacy_garment_crop(crop_key or candidate.crop_image_url, task.user_id)
+            else _image_for_review(candidate.crop_image_url, task.user_id, crop_key)
+        )
         cutout_url = candidate.cutout_image_url
         settings = get_settings()
         if cutout_url and names_internal_storage(cutout_url, settings):

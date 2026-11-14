@@ -287,7 +287,7 @@ async def test_crop_retry_preserves_recognized_candidates(
         final = task.candidate_payload["candidate_items"]
         assert [c["temp_item_id"] for c in final] == [c["temp_item_id"] for c in initial]
         assert len({c["crop_object_key"] for c in final}) == 2
-        assert all(c["crop_object_key"].startswith(f"users/{user_id}/wardrobe/crops/{task_id}/") for c in final)
+        assert all(c["crop_object_key"].startswith(f"users/{user_id}/wardrobe/verified-crops/{task_id}/") for c in final)
         assert all(c["original_image_url"] == task.input_payload["image_url"] for c in final)
 
 
@@ -692,3 +692,34 @@ async def test_stale_crop_upload_cannot_replace_adopted_image(
         assert written[0].endswith("/2.jpg") and written[1].endswith("/1.jpg")
         job = await session.get(AsyncJob, old.id)
         assert job.status == JOB_STATUS_SUCCEEDED and job.attempts == 2
+
+
+
+async def test_rejected_crop_does_not_get_adopted_or_repeat_recognition(
+    patched_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.infrastructure.vision.fake_vision import FakeVision
+
+    async def review(self, crops, garments):
+        assert len(crops) == len(garments) == 1
+        return [garments[0].category == "top"]
+
+    monkeypatch.setattr(FakeVision, "review_garment_crops", review)
+    user_id, task_id = await _seed_task(patched_session_factory, input_type="outfit_image")
+    async with patched_session_factory() as session:
+        await enqueue_import_task(session, task_id=task_id, user_id=user_id)
+        await session.commit()
+    assert await drain_import_jobs(ctx=None) == 1
+    assert await garment_crops.drain_garment_crop_jobs(ctx=None) == 2
+    assert await drain_import_jobs(ctx=None) == 0
+
+    async with patched_session_factory() as session:
+        task = await session.get(ImportTask, task_id)
+        assert task.task_status == ImportStatus.WAITING_CONFIRM
+        top, bottom = task.candidate_payload["candidate_items"]
+        assert top["crop_object_key"].startswith(f"users/{user_id}/wardrobe/verified-crops/")
+        assert not bottom.get("crop_object_key")
+        results = await session.scalars(
+            select(AsyncJob.result).where(AsyncJob.target_id == task_id, AsyncJob.job_type == "garment_crop")
+        )
+        assert {result["outcome"] for result in results} == {"cropped", "crop_rejected"}
