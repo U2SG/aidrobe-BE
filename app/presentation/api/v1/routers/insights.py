@@ -3,12 +3,14 @@
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.insights import wardrobe_health, wardrobe_insights, wardrobe_report
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.session import get_db_session as get_db
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import wardrobe_image_urls
@@ -17,6 +19,8 @@ from app.presentation.api.v1.schemas.insights import (
     CostPerWearItem,
     IdleItemResponse,
     InsightsSummaryResponse,
+    ReportIdleItem,
+    ReportTopItem,
     StyleTrendResponse,
     TopItemResponse,
     WardrobeHealthResponse,
@@ -131,4 +135,20 @@ async def wardrobe_period_report(
             error_codes.FORBIDDEN, "Wardrobe report is not enabled", status_code=503
         )
     report = await wardrobe_report.build_report(current_user.id, db, period)
-    return WardrobeReportResponse.model_validate(report, from_attributes=True)
+    response = WardrobeReportResponse.model_validate(report, from_attributes=True)
+    cards: list[ReportTopItem | ReportIdleItem] = [*response.top_items]
+    if response.longest_idle_item is not None:
+        cards.append(response.longest_idle_item)
+    if cards:
+        items = await db.scalars(
+            select(WardrobeItem).where(
+                WardrobeItem.id.in_({card.item_id for card in cards}),
+                WardrobeItem.user_id == current_user.id,
+                WardrobeItem.deleted_at.is_(None),
+            )
+        )
+        images = await wardrobe_image_urls(db, items.all())
+        for card in cards:
+            if (urls := images.get(card.item_id)) is not None:
+                card.cover_image_url = urls.cover
+    return response

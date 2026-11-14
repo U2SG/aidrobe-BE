@@ -255,10 +255,9 @@ class IngestPurchaseCandidate:
     async def _analyze_image(self, image_url: str, *, source_key: str | None = None) -> VisionResult | None:
         try:
             reading = await self.vision.analyze_image(image_url, source_key=source_key)
-        except (ValueError, RuntimeError, httpx.HTTPError):
-            # Provider down, image unreadable or response malformed: the
-            # candidate degrades to parse_failed (contract §5.2), never a 500.
-            logger.info("v3.purchase_candidate.vision_failed", exc_info=True)
+        except (ValueError, RuntimeError, TimeoutError, httpx.HTTPError) as exc:
+            # Keep page hints when the provider or image fetch fails.
+            logger.info("v3.purchase_candidate.vision_failed", error_type=type(exc).__name__)
             return None
         return reading
 

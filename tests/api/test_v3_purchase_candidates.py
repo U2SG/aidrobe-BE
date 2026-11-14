@@ -27,7 +27,9 @@ from app.infrastructure.ocr.fake_ocr import FakeOcr
 from app.infrastructure.persistence.models.purchase_decision import PurchaseCandidate
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.session import get_db_session
+from app.infrastructure.storage import source_image
 from app.infrastructure.vision.fake_vision import FakeVision
+from app.infrastructure.vision.qwen_vision import QwenVision
 from app.presentation.api.v1.routers import purchase_candidates
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
 
@@ -450,12 +452,10 @@ async def test_object_key_outside_the_callers_prefix_is_not_found(
 # --- graceful degradation (acceptance 2) ----------------------------------
 
 
+@pytest.mark.parametrize("failure", ["invalid_image", "download_timeout"])
 async def test_unreadable_image_degrades_to_partial_not_an_error(
-    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
-    """FakeVision raises on a URL containing "fail". The candidate is still
-    created, marked `parse_failed`, and keeps the attributes the page text gave
-    — editable/partial information rather than a silent (or hard) failure."""
     user_id = uuid.uuid4()
     await _seed_user(db_session, user_id)
     _enable_flag(monkeypatch)
@@ -464,6 +464,15 @@ async def test_unreadable_image_degrades_to_partial_not_an_error(
         text="羊毛 coat for 通勤 ¥899",
     )
     app, _ = _build_app(db_session, links=_StubLinkParser(page=page))
+    if failure == "download_timeout":
+        async def download_timeout(url: str, settings: Settings) -> tuple[bytes, str]:
+            assert url == page.image_url
+            raise TimeoutError("External image download exceeded its deadline")
+
+        monkeypatch.setattr(source_image, "download_external_source_image", download_timeout)
+        app.dependency_overrides[purchase_candidates.get_vision_service] = lambda: QwenVision(
+            Settings(QWEN_API_KEY="test")
+        )
     async with _client(app) as client:
         resp = await client.post(
             "/v1/purchase-candidates",
@@ -479,6 +488,9 @@ async def test_unreadable_image_degrades_to_partial_not_an_error(
     assert body["parsed_item"]["material_hints"] == ["wool"]
     assert body["parsed_item"]["scene_tags"] == ["commute"]
     assert body["parsed_item"]["price"] == "¥899"
+    saved = await db_session.get(PurchaseCandidate, uuid.UUID(body["id"]))
+    assert saved is not None and saved.status == "parse_failed"
+    assert saved.parsed_item == body["parsed_item"]
 
 
 async def test_link_with_no_extractable_content_degrades(
