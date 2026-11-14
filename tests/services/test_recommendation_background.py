@@ -17,6 +17,7 @@ from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.operation_log import OperationLog
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
+    OutfitFeedback,
     WearHistory,
 )
 from app.infrastructure.persistence.models.user import User, UserSettings
@@ -408,3 +409,102 @@ async def test_recompute_skips_daily_with_wear_history(db_session: AsyncSession)
 
     assert await service.recompute_today(user.id, force=True) is False
     assert len(list(await db_session.scalars(select(WearHistory)))) == 1
+
+
+async def _seed_wardrobe_with_today(
+    db_session: AsyncSession,
+) -> tuple[User, SqlAlchemyRecommendationRepository, RecommendationBackgroundService, DailyRecommendation]:
+    user = User()
+    db_session.add(user)
+    await db_session.flush()
+    for title, category, color in [
+        ("White shirt", Category.TOP.value, "white"),
+        ("Blue shirt", Category.TOP.value, "blue"),
+        ("Black pants", Category.BOTTOM.value, "black"),
+        ("Grey pants", Category.BOTTOM.value, "grey"),
+    ]:
+        db_session.add(
+            WardrobeItem(
+                user_id=user.id, title=title, category=category, color_main=color, status=ItemStatus.WEARABLE.value
+            )
+        )
+    await db_session.flush()
+    repository = SqlAlchemyRecommendationRepository(db_session)
+    service = RecommendationBackgroundService(repository)
+    assert await service.recompute_today(user.id, force=True) is True
+    daily = await repository.get_daily(user.id, _default_local_today())
+    assert daily is not None and daily.outfits
+    return user, repository, service, daily
+
+
+async def _give_feedback(db_session: AsyncSession, user: User, outfit_id: object) -> None:
+    db_session.add(
+        OutfitFeedback(
+            user_id=user.id,
+            outfit_id=outfit_id,
+            feedback_type="dislike",
+            reason_tags=["too_formal"],
+            created_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+
+async def test_recompute_revises_engaged_daily_when_an_item_becomes_unwearable(
+    db_session: AsyncSession,
+) -> None:
+    # Feedback pins today's outfits, but once the user says an item can't be
+    # worn (here: unavailable), Today must stop suggesting it — via a new
+    # revision, so the feedback stays attached to the old outfits.
+    user, repository, service, daily = await _seed_wardrobe_with_today(db_session)
+    first = daily.outfits[0]
+    await _give_feedback(db_session, user, first.id)
+    blocked_id = first.items[0].item_id
+    blocked = await db_session.get(WardrobeItem, blocked_id)
+    assert blocked is not None
+    blocked.status = ItemStatus.UNAVAILABLE.value
+    await db_session.flush()
+
+    assert await service.recompute_today(user.id, force=True) is True
+
+    revised = await repository.get_daily(user.id, _default_local_today())
+    assert revised is not None
+    assert revised.id != daily.id
+    assert revised.revision == daily.revision + 1
+    assert all(item.item_id != blocked_id for outfit in revised.outfits for item in outfit.items)
+    feedback = list(await db_session.scalars(select(OutfitFeedback)))
+    assert [row.outfit_id for row in feedback] == [first.id]
+    # A system revision is not one of the user's refreshes.
+    assert await repository.count_revisions_for_date(user.id, _default_local_today()) == 1
+
+
+async def test_recompute_keeps_engaged_daily_when_items_are_still_wearable(db_session: AsyncSession) -> None:
+    user, repository, service, daily = await _seed_wardrobe_with_today(db_session)
+    await _give_feedback(db_session, user, daily.outfits[0].id)
+
+    assert await service.recompute_today(user.id, force=True) is False
+    current = await repository.get_daily(user.id, _default_local_today())
+    assert current is not None and current.id == daily.id
+
+
+async def test_recompute_keeps_a_worn_daily_even_if_an_item_becomes_unwearable(db_session: AsyncSession) -> None:
+    # Wore it, then it went in the wash: today is decided, don't swap it.
+    user, repository, service, daily = await _seed_wardrobe_with_today(db_session)
+    worn = daily.outfits[0]
+    db_session.add(
+        WearHistory(
+            user_id=user.id,
+            outfit_id=worn.id,
+            selected_at=datetime.now(UTC),
+            worn_date=_default_local_today(),
+            created_at=datetime.now(UTC),
+        )
+    )
+    item = await db_session.get(WardrobeItem, worn.items[0].item_id)
+    assert item is not None
+    item.status = ItemStatus.UNAVAILABLE.value
+    await db_session.flush()
+
+    assert await service.recompute_today(user.id, force=True) is False
+    current = await repository.get_daily(user.id, _default_local_today())
+    assert current is not None and current.id == daily.id

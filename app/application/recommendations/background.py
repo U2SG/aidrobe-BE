@@ -137,6 +137,33 @@ class RecommendationBackgroundService:
                 )
                 return False
         if existing and await self.repository.daily_has_engagement(existing.id):
+            # Engagement (feedback / favorite / wear) pins today's outfits: an
+            # in-place recompute would cascade-delete those records. But if an
+            # outfit now uses an item the user just made unwearable (deleted,
+            # in the wash, no longer fits) and nothing was worn yet, write a new
+            # revision instead — the old one keeps its records, and Today stops
+            # suggesting what the user said they can't wear.
+            if not await self.repository.daily_has_wear(
+                existing.id
+            ) and await self.repository.daily_uses_unwearable_item(existing.id):
+                await RecommendationGenerator(
+                    self.repository,
+                    self.style_repository,
+                    llm=llm_service(),
+                    weather_service=weather_service(),
+                ).generate_for_user(
+                    user_id,
+                    today,
+                    RecommendationGenerationSource.READ_TIME.value,
+                    refresh=True,
+                )
+                logger.info(
+                    "recommendation_revised_for_unwearable_item",
+                    user_id=str(user_id),
+                    previous_recommendation_id=str(existing.id),
+                    previous_revision=existing.revision,
+                )
+                return True
             logger.info(
                 "recommendation_recompute_skipped",
                 reason="daily_has_engagement",
