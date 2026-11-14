@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlsplit
 
 from app.config.settings import Settings
 
@@ -75,7 +75,11 @@ def garment_crop_object_key(user_id: uuid.UUID, task_id: uuid.UUID, temp_item_id
     and derived from (task, candidate) so a retried import job overwrites its
     own crop instead of leaving orphans.
     """
-    return f"users/{user_id}/wardrobe/crops/{task_id}/{temp_item_id}.jpg"
+    return f"users/{user_id}/wardrobe/verified-crops/{task_id}/{temp_item_id}.jpg"
+
+
+def is_legacy_garment_crop(url: str | None, user_id: uuid.UUID) -> bool:
+    return bool(url and f"/users/{user_id}/wardrobe/crops/" in urlsplit(url).path)
 
 
 def names_unresolvable_per_purpose_bucket(image_url: str | None, settings: Settings) -> bool:

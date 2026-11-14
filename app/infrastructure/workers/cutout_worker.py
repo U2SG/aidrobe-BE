@@ -169,7 +169,7 @@ async def _process_one(job: AsyncJob) -> None:
                 await session.execute(
                     update(WardrobeItem)
                     .where(WardrobeItem.id == item_id)
-                    .values(cutout_status=CutoutStatus.SKIPPED.value)
+                    .values(cutout_status=CutoutStatus.REJECTED.value)
                 )
             else:
                 await _apply_result(session, item_id, cutout_url=cutout_url, cutout_key=cutout_key)

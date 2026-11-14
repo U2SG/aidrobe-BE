@@ -159,13 +159,14 @@ class CutoutStatus(StrEnum):
 
     `skipped` is the default/rollback state (cutout feature off or no source) —
     the item just shows its original photo. `queued` → `ready`/`failed` is the
-    async-job arc; `failed` is set by the dead-letter reconcile so the client
-    stops polling.
+    async-job arc. `rejected` keeps the reference when the generated result
+    fails review. `failed` is set by dead-letter reconciliation.
     """
 
     SKIPPED = "skipped"
     QUEUED = "queued"
     READY = "ready"
+    REJECTED = "rejected"
     FAILED = "failed"
 
 

@@ -20,7 +20,7 @@ from typing import Any
 import structlog
 from PIL import Image, ImageOps
 
-from app.application.ports.vision import VisionResult
+from app.application.ports.vision import VisionPort, VisionResult
 from app.infrastructure.storage.object_key import garment_crop_object_key
 from app.infrastructure.storage.source_image import load_source_bytes
 
@@ -67,6 +67,7 @@ async def attach_garment_crops(
     image_url: str,
     user_id: uuid.UUID,
     task_id: uuid.UUID,
+    vision: VisionPort,
 ) -> None:
     """Add `bbox`, `crop_image_url` and `crop_object_key` to the candidates
     whose garment was boxed. Candidates and results are parallel lists."""
@@ -81,9 +82,19 @@ async def attach_garment_crops(
 
         source = await load_source_bytes(image_url, None)
         crops = await asyncio.to_thread(crop_regions, source, boxes)
+        framed = [
+            (candidate, crop, result)
+            for candidate, crop, result in zip(candidates, crops, results, strict=True)
+            if crop is not None
+        ]
+        if not framed:
+            return
+        accepted = await vision.review_garment_crops(
+            [crop for _, crop, _ in framed], [result for _, _, result in framed]
+        )
         storage = object_storage()
-        for candidate, crop in zip(candidates, crops, strict=True):
-            if crop is None:
+        for (candidate, crop, _), approved in zip(framed, accepted, strict=True):
+            if not approved:
                 continue
             key = garment_crop_object_key(user_id, task_id, str(candidate["temp_item_id"]))
             candidate["crop_image_url"] = await storage.put_object(key, crop, "image/jpeg")
