@@ -11,7 +11,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 from sqlalchemy import Select, func, nulls_last, or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.application.ask.design_types import PreferenceOverride, StylingConstraints
 from app.application.ask.tools import AskTool, ToolRegistry
@@ -197,6 +197,10 @@ class AskButler:
                 self.excluded_ids.add(uuid.UUID(item_id))
             except ValueError:
                 continue
+        if focused_item_id is not None and (
+            design_constraints is None or focused_item_id not in design_constraints.excluded_item_ids
+        ):
+            self.excluded_ids.discard(focused_item_id)
         raw_date = (context or {}).get("date")
         self.requested_date = _args_date(raw_date, today) if isinstance(raw_date, str) else None
         if self.requested_date is not None and self.requested_date < today:
@@ -316,6 +320,16 @@ class AskButler:
             candidate = StylingConstraints.model_validate(values)
         except ValidationError:
             return ToolResult({"error": "invalid design brief"}, "")
+        if self.preference_memory_enabled:
+            async with self._tool_read_session() as tool_session:
+                preferences = await read_preference_memory(
+                    SqlAlchemyPreferenceMemoryRepository(tool_session), self.user_id,
+                    scene=candidate.scene, target_date=candidate.target_date,
+                    overrides=[
+                        entry.model_dump(mode="json", exclude_none=True) for entry in candidate.preference_overrides
+                    ],
+                )
+            self.effective_preferences = preferences
         self.design_constraints = candidate
         self.preserved_ids = set() if args.redesign_all else self.current_outfit_ids.difference(
             self.item_ids[pos - 1] for pos in changes
@@ -325,18 +339,18 @@ class AskButler:
         self.requested_occasion = next((scene for scene in FitScene if scene.value == candidate.scene), None)
         self._checked.clear()
         self.brief_updated = True
-        if self.preference_memory_enabled:
-            self.effective_preferences = await read_preference_memory(
-                SqlAlchemyPreferenceMemoryRepository(self.session), self.user_id,
-                scene=candidate.scene, target_date=candidate.target_date,
-                overrides=[
-                    entry.model_dump(mode="json", exclude_none=True) for entry in candidate.preference_overrides
-                ],
-            )
         return ToolResult({"updated": True, "preferences": self.effective_preferences,
                            "retained_positions": [self._known_positions[ident] for ident in self.preserved_ids
                                                   if ident in self._known_positions]},
                           "Updated your design brief" if self.lang == "en" else "更新了本次穿搭目标")
+
+    def _tool_read_session(self) -> AsyncSession:
+        # A provider's total deadline may cancel a DB query. Use an independent
+        # connection so asyncpg cancellation cannot poison the request transaction
+        # needed by final verification, fallback and persistence.
+        bind = self.session.bind
+        assert bind is not None
+        return AsyncSession(bind=bind.engine if isinstance(bind, AsyncConnection) else bind, expire_on_commit=False)
 
     def _owned_items(self) -> Select[tuple[WardrobeItem]]:
         return select(WardrobeItem).where(
@@ -389,12 +403,13 @@ class AskButler:
         if args.style:
             query = query.where(WardrobeItem.style_tags.contains({"tags": [args.style]}))
         exploring = self.design_constraints is not None and self.design_constraints.exploration
-        rows = list(await self.session.scalars(
-            query.order_by(
-                WardrobeItem.wear_count.asc() if exploring else WardrobeItem.wear_count.desc(),
-                nulls_last(WardrobeItem.last_worn_at.desc()), WardrobeItem.id
-            ).limit(80 if self.design_constraints is not None else args.limit)
-        ))
+        async with self._tool_read_session() as tool_session:
+            rows = list(await tool_session.scalars(
+                query.order_by(
+                    WardrobeItem.wear_count.asc() if exploring else WardrobeItem.wear_count.desc(),
+                    nulls_last(WardrobeItem.last_worn_at.desc()), WardrobeItem.id
+                ).limit(80 if self.design_constraints is not None else args.limit)
+            ))
         if self.design_constraints is not None:
             attributes = {
                 "color": "color_main", "material": "material", "fit": "fit_status", "footwear": "sub_category"
@@ -479,9 +494,11 @@ class AskButler:
             f"{label} · {condition + ' ' if condition else ''}{round(info.temperature_c)}°C",
         )
 
-    async def _fetch_wearable(self, positions: list[int]) -> list[WardrobeItem] | None:
+    async def _fetch_wearable(
+        self, positions: list[int], *, session: AsyncSession | None = None,
+    ) -> list[WardrobeItem] | None:
         ids = [self.item_ids[pos - 1] for pos in positions]
-        rows = await self.session.scalars(
+        rows = await (session or self.session).scalars(
             self._owned_items()
             .where(
                 WardrobeItem.id.in_(ids),
@@ -516,7 +533,8 @@ class AskButler:
             return ToolResult({"valid": False, "error": "use the requested occasion"}, "")
         if not self._matches_weather(args, day):
             return ToolResult({"valid": False, "error": "use the date and place you looked up"}, "")
-        items = await self._fetch_wearable(positions)
+        async with self._tool_read_session() as tool_session:
+            items = await self._fetch_wearable(positions, session=tool_session)
         if items is None:
             return ToolResult({"valid": False, "error": "one or more pieces cannot be worn"}, "")
         if self.design_constraints is not None:

@@ -173,6 +173,41 @@ def _clamp_confidence(value: float, source: str) -> float:
     return round(confidence, 2)
 
 
+def _normalize_preference_key(preference_type: str, preference_value: str) -> tuple[str, str]:
+    value = sanitize_preference_value(preference_value)
+    if not value:
+        raise PreferenceMemoryError("empty preference value after sanitization")
+    pref_type = sanitize_preference_value(preference_type).lower()
+    if not pref_type:
+        raise PreferenceMemoryError("empty preference type")
+    if pref_type not in _VALID_PREFERENCE_TYPES:
+        raise PreferenceMemoryError(f"unknown preference type: {pref_type!r}")
+    return pref_type, value
+
+
+async def forget_preference(
+    repo: SqlAlchemyPreferenceMemoryRepository,
+    *,
+    user_id: uuid.UUID,
+    preference_type: str,
+    preference_value: str,
+    scope: Mapping[str, str] | None = None,
+    evidence_at: datetime | None = None,
+) -> int:
+    """A named correction has the same validated identity as a remembered fact."""
+    pref_type, value = _normalize_preference_key(preference_type, preference_value)
+    normalized_scope = normalize_scope(scope)
+    if evidence_at is not None:
+        if evidence_at.tzinfo is None or evidence_at.utcoffset() is None:
+            raise PreferenceMemoryError("preference dates require a timezone")
+        if evidence_at > datetime.now(UTC):
+            raise PreferenceMemoryError("preference evidence cannot be in the future")
+    return await repo.soft_delete_matching(
+        user_id, preference_type=pref_type, preference_value=value,
+        scope=normalized_scope, evidence_at=evidence_at,
+    )
+
+
 async def record_preference(
     repo: SqlAlchemyPreferenceMemoryRepository,
     *,
@@ -194,14 +229,7 @@ async def record_preference(
         raise PreferenceMemoryError(f"untrusted preference source: {source!r}")
     if polarity not in _VALID_POLARITIES:
         raise PreferenceMemoryError(f"invalid polarity: {polarity!r}")
-    value = sanitize_preference_value(preference_value)
-    if not value:
-        raise PreferenceMemoryError("empty preference value after sanitization")
-    pref_type = sanitize_preference_value(preference_type).lower()
-    if not pref_type:
-        raise PreferenceMemoryError("empty preference type")
-    if pref_type not in _VALID_PREFERENCE_TYPES:
-        raise PreferenceMemoryError(f"unknown preference type: {pref_type!r}")
+    pref_type, value = _normalize_preference_key(preference_type, preference_value)
     normalized_scope = normalize_scope(scope)
     now = datetime.now(UTC)
     for stamp in (expires_at, evidence_at):

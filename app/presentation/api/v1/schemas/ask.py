@@ -1,5 +1,7 @@
 """Ask Aidrobe schemas — M15."""
 
+from __future__ import annotations
+
 import uuid
 from datetime import date as DateValue
 from datetime import datetime
@@ -7,7 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.application.ask.design_types import StylingConstraints
+from app.application.ask.design_types import DesignBrief, StylingConstraints
 from app.presentation.api.v1.schemas.recommendations import OutfitResponse
 
 
@@ -77,12 +79,17 @@ class AskConversationMessage(BaseModel):
     content: str
     created_at: datetime
     styling: StylingResponse | None = None
+    design_brief: DesignBrief | None = None
+    item_refs: list[str] = Field(default_factory=list)
+    item_ref_snapshots: list[AskItemRefSnapshot] = Field(default_factory=list)
+    trip_intent: AskTripIntent | None = None
 
 
 class AskConversationResponse(BaseModel):
     conversation_id: uuid.UUID
     title: str | None = None
     styling: StylingResponse | None = None
+    design_brief: DesignBrief | None = None
     messages: list[AskConversationMessage] = Field(default_factory=list)
 
 
@@ -125,6 +132,7 @@ class AskToolUse(BaseModel):
 class AskResponse(BaseModel):
     ask_session_id: uuid.UUID
     styling: StylingResponse | None = None
+    design_brief: DesignBrief | None = None
     conversation_id: uuid.UUID | None = None
     answer: str  # LLM prose, generated in the effective locale (prompt-driven)
     item_refs: list[str]
@@ -150,6 +158,7 @@ class AskResponse(BaseModel):
 class AskHistoryItem(BaseModel):
     ask_session_id: uuid.UUID
     styling: StylingResponse | None = None
+    design_brief: DesignBrief | None = None
     # Conversation this turn belongs to (resolved via ask_messages) so the
     # client can resume it; None for legacy rows without message linking.
     conversation_id: uuid.UUID | None = None

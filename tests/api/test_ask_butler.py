@@ -8,12 +8,14 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.application.ports.llm import ToolAskAnswer, ToolExecutor, ToolSpec, ToolUse
 from app.application.ports.weather import WeatherInfo
 from app.bootstrap.container import llm_service
 from app.config.settings import Settings
+from app.infrastructure.persistence.models.ask_conversation import AskConversation, AskConversationState
 from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.session import get_db_session
@@ -140,6 +142,9 @@ async def test_ask_butler_releases_only_the_checked_outfit(
     monkeypatch.setattr(ask_router, "get_settings", lambda: settings)
     monkeypatch.setattr(ask_router.ask_uc, "get_settings", lambda: settings)
     weather = _Weather()
+    await db_session.commit()
+    assert isinstance(db_session.bind, AsyncConnection)
+    await db_session.bind.commit()
 
     app = FastAPI()
     app.dependency_overrides[get_db_session] = lambda: db_session
@@ -167,3 +172,57 @@ async def test_ask_butler_releases_only_the_checked_outfit(
     else:
         assert data["item_refs"] == data["item_ref_snapshots"] == []
         assert "没能核实" in data["answer"]
+
+
+async def test_refocusing_a_previously_rejected_piece_takes_effect_this_turn(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = User(id=uuid.uuid4())
+    db_session.add(owner)
+    await db_session.flush()
+    items = [WardrobeItem(user_id=owner.id, title=category, category=category, color_main="black")
+             for category in ("top", "bottom", "shoes")]
+    db_session.add_all(items)
+    conversation = AskConversation(user_id=owner.id)
+    db_session.add(conversation)
+    await db_session.flush()
+    item_id, conversation_id = items[0].id, conversation.id
+    db_session.add(AskConversationState(conversation_id=conversation_id, user_id=owner.id,
+                                        rejected_item_ids=[str(item_id)]))
+    await db_session.commit()
+    assert isinstance(db_session.bind, AsyncConnection)
+    await db_session.bind.commit()
+    settings = Settings(APP_ENV="dev", ENABLE_ASK_AIDROBE=True, ENABLE_ASK_TOOLS=True,
+                        ENABLE_ASK_STRUCTURED_OUTPUT=True, ENABLE_ASK_CONVERSATIONS=True)
+    monkeypatch.setattr(ask_router, "get_settings", lambda: settings)
+    monkeypatch.setattr(ask_router.ask_uc, "get_settings", lambda: settings)
+
+    class Refocused:
+        async def ask_with_tools(
+            self, system_prompt: str, question: str, tools: Sequence[ToolSpec], execute: ToolExecutor,
+            *, json_mode: bool, max_rounds: int,
+        ) -> ToolAskAnswer:
+            search = await execute("search_wardrobe", {"category": "top"})
+            assert len(search.content["items"]) == 1
+            assert search.content["items"][0]["position"] == 1
+            checked = await execute("validate_outfit", {"positions": [1, 2, 3]})
+            assert checked.content["valid"] is True
+            return ToolAskAnswer(json.dumps({
+                "answer": "这次围绕这件上衣搭配。", "reply_kind": "outfit", "referenced_items": [1, 2, 3],
+            }), 4)
+
+    app = FastAPI()
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    app.dependency_overrides[llm_service] = lambda: Refocused()
+    app.dependency_overrides[ask_router._ask_weather_service] = lambda: None
+    app.include_router(ask_router.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post("/v1/ask", headers={"X-User-Id": str(owner.id)}, json={
+            "question": "再试试这件上衣", "focused_item_id": str(item_id), "conversation_id": str(conversation_id),
+        })
+    assert response.status_code == 200, response.text
+    assert str(item_id) in response.json()["item_refs"]
+    state = await db_session.scalar(select(AskConversationState).where(
+        AskConversationState.conversation_id == conversation_id,
+    ))
+    assert state is not None and str(item_id) not in (state.rejected_item_ids or [])

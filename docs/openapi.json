@@ -8538,6 +8538,40 @@
                 "type": "null"
               }
             ]
+          },
+          "design_brief": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DesignBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "item_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Item Refs"
+          },
+          "item_ref_snapshots": {
+            "items": {
+              "$ref": "#/components/schemas/AskItemRefSnapshot"
+            },
+            "type": "array",
+            "title": "Item Ref Snapshots"
+          },
+          "trip_intent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskTripIntent"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -8577,6 +8611,16 @@
               }
             ]
           },
+          "design_brief": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DesignBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "messages": {
             "items": {
               "$ref": "#/components/schemas/AskConversationMessage"
@@ -8602,6 +8646,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/StylingResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "design_brief": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DesignBrief"
               },
               {
                 "type": "null"
@@ -8837,6 +8891,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/StylingResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "design_brief": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DesignBrief"
               },
               {
                 "type": "null"
@@ -10644,6 +10708,29 @@
           "deleted"
         ],
         "title": "DeleteWardrobeItemResponse"
+      },
+      "DesignBrief": {
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "constraints": {
+            "$ref": "#/components/schemas/StylingConstraints"
+          },
+          "needs_outfit_update": {
+            "type": "boolean",
+            "title": "Needs Outfit Update"
+          }
+        },
+        "type": "object",
+        "required": [
+          "revision",
+          "constraints",
+          "needs_outfit_update"
+        ],
+        "title": "DesignBrief",
+        "description": "Current accepted conditions, including turns without a complete outfit."
       },
       "FavoriteOutfitResponse": {
         "properties": {

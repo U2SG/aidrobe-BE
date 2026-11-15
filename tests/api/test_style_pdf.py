@@ -40,21 +40,30 @@ def build_style_app(session: AsyncSession, *, enable_pdf: bool) -> FastAPI:
 
 async def test_pdf_source_enqueues_job_when_enabled(db_session: AsyncSession) -> None:
     app = build_style_app(db_session, enable_pdf=True)
+    headers = {"X-User-Id": str(uuid.uuid4())}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         response = await client.post(
             "/v1/style/sources",
-            headers={"X-User-Id": str(uuid.uuid4())},
+            headers=headers,
             json={
                 "file_url": "https://oss.example.com/elle-2026.pdf",
                 "input_type": "pdf_magazine",
                 "title": "ELLE 2026",
             },
         )
-    assert response.status_code == 201
-    data = response.json()["data"]
-    assert data["status"] == "queued"
-    assert data["estimated_pages"] == 0
-    source_id = uuid.UUID(data["source_id"])
+        assert response.status_code == 201
+        data = response.json()["data"]
+        assert data["status"] == "queued"
+        assert data["estimated_pages"] == 0
+        source_id = uuid.UUID(data["source_id"])
+
+        inspirations = await client.get("/v1/style/inspirations", headers=headers)
+        assert inspirations.status_code == 200
+        (magazine,) = inspirations.json()["data"]["items"]
+        assert magazine["id"] == str(source_id)
+        assert magazine["source_type"] == "pdf_magazine"
+        assert magazine["learn_status"] == "queued"
+        assert magazine["image_url"] is None
 
     # Parent row persisted as pdf_magazine.
     parent = await db_session.get(UserStyleProfile, source_id)

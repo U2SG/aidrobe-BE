@@ -11,6 +11,7 @@ from app.application.preferences.memory import (
     SOURCE_EXPLICIT,
     SOURCE_FEEDBACK,
     PreferenceMemoryError,
+    forget_preference,
     live_negative_values_by_type,
     read_preference_memory,
     record_preference,
@@ -134,6 +135,127 @@ async def test_conversation_forget_is_scoped_and_cannot_erase_a_newer_statement(
         user.id, preference_type="color", preference_value="red", evidence_at=datetime.now(UTC)
     ) == 1
     assert row.deleted_at is not None
+
+
+async def test_forgetting_absent_scoped_memory_blocks_only_that_key(db_session: AsyncSession) -> None:
+    user, repo = await _setup(db_session)
+    other_user, _ = await _setup(db_session)
+    old_turn = datetime.now(UTC) - timedelta(minutes=2)
+    forgotten_at = datetime.now(UTC) - timedelta(minutes=1)
+    assert await forget_preference(
+        repo, user_id=user.id, preference_type=" COLOR ", preference_value="  Red\x00  ",
+        scope={"scene": " COMMUTE "}, evidence_at=forgotten_at,
+    ) == 0
+    assert user.memory_context_reset_at is not None
+    assert user.memory_cleared_at is None
+    assert await repo.list_live(user.id) == []
+    assert await repo.learning_cutoffs(user.id) == (None, {})  # scoped forget does not revoke global feedback
+    for source in (SOURCE_EXPLICIT, SOURCE_FEEDBACK):
+        with pytest.raises(PreferenceMemoryError, match="revoked"):
+            await record_preference(
+                repo, user_id=user.id, preference_type="color", preference_value="RED",
+                polarity="negative", confidence=0.9, source=source,
+                scope={"scene": "commute"}, evidence_at=old_turn,
+            )
+    for owner, value, scope in (
+        (user.id, "red", {}),
+        (user.id, "red", {"scene": "casual"}),
+        (user.id, "blue", {"scene": "commute"}),
+        (other_user.id, "red", {"scene": "commute"}),
+    ):
+        allowed = await record_preference(
+            repo, user_id=owner, preference_type="color", preference_value=value,
+            polarity="negative", confidence=0.9, source=SOURCE_EXPLICIT,
+            scope=scope, evidence_at=old_turn,
+        )
+        assert allowed.deleted_at is None
+
+
+@pytest.mark.parametrize("already_remembered", [False, True])
+async def test_named_forget_orders_evidence_by_user_turn_not_completion(
+    db_session: AsyncSession, already_remembered: bool,
+) -> None:
+    user, repo = await _setup(db_session)
+    forgotten_at = datetime.now(UTC) - timedelta(minutes=2)
+    if already_remembered:
+        await record_preference(
+            repo, user_id=user.id, preference_type="color", preference_value="red",
+            polarity="negative", confidence=0.9, source=SOURCE_EXPLICIT,
+            evidence_at=forgotten_at - timedelta(seconds=30),
+        )
+    assert await forget_preference(
+        repo, user_id=user.id, preference_type="color", preference_value="red", evidence_at=forgotten_at,
+    ) == int(already_remembered)
+    # This statement began after the forget, although both model turns finish
+    # later. Using the forget's completion time would incorrectly reject it.
+    fresh = await record_preference(
+        repo, user_id=user.id, preference_type="color", preference_value="red",
+        polarity="positive", confidence=0.9, source=SOURCE_EXPLICIT,
+        evidence_at=forgotten_at + timedelta(seconds=30),
+    )
+    for old_forget in (forgotten_at, forgotten_at - timedelta(minutes=1)):
+        assert await forget_preference(
+            repo, user_id=user.id, preference_type="color", preference_value="RED", evidence_at=old_forget,
+        ) == 0
+    assert fresh.deleted_at is None
+    assert await repo.learning_cutoffs(user.id) == (None, {("color", "red"): forgotten_at})
+    for source in (SOURCE_EXPLICIT, SOURCE_FEEDBACK):
+        with pytest.raises(PreferenceMemoryError, match="revoked"):
+            await record_preference(
+                repo, user_id=user.id, preference_type="color", preference_value="red",
+                polarity="negative", confidence=0.9, source=source, evidence_at=forgotten_at,
+            )
+    assert await repo.list_live(user.id) == [fresh]
+
+
+async def test_forget_commits_before_an_older_turn_first_writes_memory(postgres_url: str) -> None:
+    engine = create_async_engine(postgres_url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    user_id = uuid.uuid4()
+    turn_started = asyncio.Event()
+    finish_turn = asyncio.Event()
+    task: asyncio.Task[None] | None = None
+
+    async def delayed_memory_write() -> None:
+        evidence_at = datetime.now(UTC)
+        turn_started.set()
+        await finish_turn.wait()
+        async with factory.begin() as session:
+            with pytest.raises(PreferenceMemoryError, match="revoked"):
+                await record_preference(
+                    SqlAlchemyPreferenceMemoryRepository(session), user_id=user_id,
+                    preference_type="color", preference_value="red", polarity="negative",
+                    confidence=0.9, source=SOURCE_EXPLICIT, evidence_at=evidence_at,
+                )
+
+    try:
+        async with factory.begin() as session:
+            session.add(User(id=user_id))
+        task = asyncio.create_task(delayed_memory_write())
+        await asyncio.wait_for(turn_started.wait(), timeout=10)
+        async with factory.begin() as session:
+            repo = SqlAlchemyPreferenceMemoryRepository(session)
+            assert await repo.list_live(user_id) == []
+            assert await forget_preference(
+                repo, user_id=user_id, preference_type="color", preference_value="red",
+            ) == 0
+        finish_turn.set()
+        await asyncio.wait_for(task, timeout=10)
+        async with factory.begin() as session:
+            repo = SqlAlchemyPreferenceMemoryRepository(session)
+            assert await repo.list_live(user_id) == []
+            fresh = await record_preference(
+                repo, user_id=user_id, preference_type="color", preference_value="red",
+                polarity="positive", confidence=0.9, source=SOURCE_EXPLICIT,
+            )
+            assert await repo.list_live(user_id) == [fresh]
+    finally:
+        finish_turn.set()
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await engine.dispose()
 
 
 async def test_expired_weak_memory_does_not_reach_any_reader(db_session: AsyncSession) -> None:

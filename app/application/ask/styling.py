@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.ask.design_types import StylingConstraints
+from app.application.ask.design_types import DesignBrief, StylingConstraints
 from app.application.recommendations.feasibility import missing_first_outfit_slots
 from app.common import error_codes
 from app.common.enums import Category, RecommendationGenerationSource
@@ -66,6 +66,54 @@ class StylingService:
                 AskStylingRevision.user_id == self.user_id,
             ).order_by(AskStylingRevision.revision.desc()).limit(1)
         ))
+
+    @staticmethod
+    def brief(conversation: AskConversation, current: AskStylingRevision | None) -> DesignBrief | None:
+        raw = conversation.design_constraints
+        if raw is None:
+            if current is None:
+                return None
+            raw = current.constraints
+        constraints = StylingConstraints.model_validate(raw)
+        return DesignBrief(
+            revision=conversation.styling_revision,
+            constraints=constraints,
+            needs_outfit_update=(
+                current is None or constraints != StylingConstraints.model_validate(current.constraints)
+            ),
+        )
+
+    async def save_brief(
+        self, conversation: AskConversation, constraints: StylingConstraints,
+    ) -> None:
+        """Save accepted conditions even when a turn only asks a clarification."""
+        ids = set(constraints.locked_item_ids) | set(constraints.excluded_item_ids)
+        if ids:
+            items = list(await self.session.scalars(select(WardrobeItem).where(
+                WardrobeItem.user_id == self.user_id, WardrobeItem.id.in_(ids), WardrobeItem.deleted_at.is_(None),
+            ).with_for_update(read=True).execution_options(populate_existing=True)))
+            if {item.id for item in items} != ids:
+                raise FriendlyException(error_codes.NOT_FOUND, "One or more wardrobe items are unavailable", 404)
+            if any(item.id in constraints.locked_item_ids and (
+                item.status != "wearable" or item.fit_status == "no_longer_fits"
+            ) for item in items):
+                raise conflict("A locked piece is no longer wearable. Choose a replacement.")
+        raw = constraints.model_dump(mode="json")
+        if conversation.design_constraints != raw:
+            current = await self.current(conversation.id)
+            changed = (
+                conversation.design_constraints is not None or current is None
+                or constraints != StylingConstraints.model_validate(current.constraints)
+            )
+            conversation.design_constraints = raw
+            if changed:
+                conversation.styling_revision += 1
+            await self.session.flush()
+
+    def require_current_outfit(self, conversation: AskConversation, current: AskStylingRevision) -> None:
+        brief = self.brief(conversation, current)
+        if brief is not None and brief.needs_outfit_update:
+            raise conflict("Update the outfit for your saved design conditions before using it.")
 
     async def replay(self, request_id: uuid.UUID, request_fingerprint: str) -> AskStylingRevision | None:
         await lock_request(self.session, self.user_id, request_id)
@@ -152,6 +200,8 @@ class StylingService:
         request_id: uuid.UUID, request_fingerprint: str, daily: DailyRecommendation | None = None,
     ) -> AskStylingRevision:
         conversation.styling_revision += 1
+        conversation.design_constraints = constraints.model_dump(mode="json")
+        conversation.design_base_outfit_id = None
         row = AskStylingRevision(
             conversation_id=conversation.id, user_id=self.user_id, revision=conversation.styling_revision,
             outfit_id=outfit.id, constraints=constraints.model_dump(mode="json"),
@@ -214,6 +264,7 @@ class StylingService:
         current = await self.current(conversation_id)
         if current is None:
             raise conflict("Create a design before editing it")
+        self.require_current_outfit(conversation, current)
         raw = dict(current.constraints)
         if locked_item_ids is not None:
             raw["locked_item_ids"] = locked_item_ids
@@ -258,18 +309,14 @@ class StylingService:
         current = await self.current(conversation_id)
         if current is None:
             raise conflict("Create a design before adopting it")
+        self.require_current_outfit(conversation, current)
         constraints = StylingConstraints.model_validate(current.constraints)
         outfit = await self.owned_outfit(current.outfit_id)
         await self.validate_items([item.item_id for item in outfit.items], constraints)
-        # Default to the user's local day. A draft resumed after its planned day
-        # must not silently land in an old Today recommendation.
+        # A restored client may explicitly resend the draft's saved date. Advance
+        # both forms to the user's local day, while successful retries replay above.
         local_today = default_day or utc_now().date()
-        if day is not None and day < local_today:
-            raise FriendlyException(
-                error_codes.VALIDATION_ERROR, "Choose today or a future date to adopt this outfit", 422
-            )
-        saved_day = constraints.target_date
-        target = day or (saved_day if saved_day is not None and saved_day >= local_today else local_today)
+        target = max(day or constraints.target_date or local_today, local_today)
         if constraints.target_date != target:
             constraints = constraints.model_copy(update={
                 "target_date": target, "preference_overrides": [], "exploration": False,
@@ -291,12 +338,21 @@ class StylingService:
             AskStylingRevision.user_id == self.user_id, AskStylingRevision.outfit_id == outfit_id,
         ).order_by(AskStylingRevision.created_at.desc(), AskStylingRevision.revision.desc()).limit(1))
         current = await self.current(source.conversation_id) if source is not None else None
-        if base.daily_recommendation_id is None:
-            if current is None or current.outfit_id != outfit_id:
-                raise conflict("This draft is no longer current. Reload the conversation.")
-            conversation = await self.lock_conversation(current.conversation_id, current.revision)
-        elif current is not None and current.outfit_id == outfit_id:
-            conversation = await self.lock_conversation(current.conversation_id, current.revision)
+        if current is not None and current.outfit_id == outfit_id:
+            owned_conversation = await self.conversations.get_owned_conversation(self.user_id, current.conversation_id)
+            assert owned_conversation is not None
+            brief = self.brief(owned_conversation, current)
+            if base.daily_recommendation_id is not None and brief is not None and brief.needs_outfit_update:
+                # Today's already adopted result remains usable independently of
+                # a pending conversational redesign. Do not erase that brief.
+                conversation = await self.conversations.create_conversation(user_id=self.user_id, title=base.title)
+            else:
+                conversation = await self.lock_conversation(
+                    current.conversation_id, owned_conversation.styling_revision
+                )
+                self.require_current_outfit(conversation, current)
+        elif base.daily_recommendation_id is None:
+            raise conflict("This draft is no longer current. Reload the conversation.")
         else:
             conversation = await self.conversations.create_conversation(user_id=self.user_id, title=base.title)
         constraints = StylingConstraints.model_validate(current.constraints) if (

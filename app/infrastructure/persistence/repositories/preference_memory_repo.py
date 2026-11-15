@@ -205,25 +205,43 @@ class SqlAlchemyPreferenceMemoryRepository:
         scope: dict[str, str] | None = None,
         evidence_at: datetime | None = None,
     ) -> int:
-        """Forget a named preference; a stale model turn cannot delete newer evidence."""
+        """Revoke a named preference even before its first write has finished."""
         user = await self.lock_user(user_id)
-        conditions: list[ColumnElement[bool]] = [
+        pref_type = preference_type.strip().lower()
+        value = preference_value.strip().lower()
+        scope = scope or {}
+        key: list[ColumnElement[bool]] = [
             UserPreferenceMemory.user_id == user_id,
-            UserPreferenceMemory.preference_type == preference_type.strip().lower(),
-            func.lower(UserPreferenceMemory.preference_value) == preference_value.strip().lower(),
-            UserPreferenceMemory.scope == (scope or {}),
-            UserPreferenceMemory.deleted_at.is_(None),
+            UserPreferenceMemory.preference_type == pref_type,
+            func.lower(UserPreferenceMemory.preference_value) == value,
+            UserPreferenceMemory.scope == scope,
         ]
-        if evidence_at is not None:
-            conditions.append(or_(
-                UserPreferenceMemory.evidence_at.is_(None), UserPreferenceMemory.evidence_at <= evidence_at
-            ))
         now = datetime.now(UTC)
+        # The user's turn is the ordering boundary, not when its model response
+        # finishes. A slower forget must leave later evidence writable.
+        revoked_at = evidence_at or now
         ids = list(await self.session.scalars(
-            update(UserPreferenceMemory).where(*conditions).values(deleted_at=now)
+            update(UserPreferenceMemory).where(
+                *key,
+                UserPreferenceMemory.deleted_at.is_(None),
+                or_(UserPreferenceMemory.evidence_at.is_(None), UserPreferenceMemory.evidence_at <= revoked_at),
+            ).values(deleted_at=revoked_at)
             .returning(UserPreferenceMemory.id)
         ))
-        if ids:
+        new_fence = False
+        if not ids:
+            previous = await self.session.scalar(select(func.max(UserPreferenceMemory.deleted_at)).where(*key))
+            if previous is None or previous < revoked_at:
+                # A deleted neutral row carries only a revocation fence. It is
+                # invisible to memory readers, uses the existing user cascade,
+                # and is also consumed by the feedback learner's cutoffs.
+                self.session.add(UserPreferenceMemory(
+                    user_id=user_id, preference_type=pref_type, preference_value=value,
+                    polarity="neutral", confidence=0, source="explicit_user_statement",
+                    scope=scope, evidence_at=revoked_at, deleted_at=revoked_at,
+                ))
+                new_fence = True
+        if ids or new_fence:
             await self._reset_context(user, now)
             await self.session.flush()
         return len(ids)

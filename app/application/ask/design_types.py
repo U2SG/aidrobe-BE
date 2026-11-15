@@ -43,3 +43,11 @@ class StylingConstraints(BaseModel):
         self.locked_item_ids = list(dict.fromkeys(self.locked_item_ids))
         self.excluded_item_ids = list(dict.fromkeys(self.excluded_item_ids))
         return self
+
+
+class DesignBrief(BaseModel):
+    """Current accepted conditions, including turns without a complete outfit."""
+
+    revision: int
+    constraints: StylingConstraints
+    needs_outfit_update: bool

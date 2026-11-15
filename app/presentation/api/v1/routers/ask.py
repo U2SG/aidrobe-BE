@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ask import answer_question as ask_uc
 from app.application.ask.answer_question import ItemRefSnapshot, build_item_ref_snapshots
+from app.application.ask.design_types import DesignBrief
 from app.application.ask.styling import StylingService
 from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherPort
@@ -141,6 +142,7 @@ async def ask(
     return AskResponse(
         ask_session_id=result.ask_session_id,
         styling=await render_styling(session, current_user.id, result.styling),
+        design_brief=result.design_brief,
         conversation_id=result.conversation_id if expose_conversation else None,
         answer=result.answer,
         item_refs=result.item_refs,
@@ -234,6 +236,7 @@ async def ask_history(
                 created_at=row.created_at,
                 trip_intent=_trip_intent_from_context(row.context),
                 styling=await _styling_from_metadata(session, current_user.id, row.context),
+                design_brief=_brief_from_metadata(row.context),
             )
         )
     return out
@@ -255,6 +258,16 @@ async def _styling_from_metadata(
     return await render_styling(session, user_id, revision)
 
 
+def _brief_from_metadata(metadata: dict[str, object] | None) -> DesignBrief | None:
+    raw = (metadata or {}).get("design_brief")
+    if not get_settings().ENABLE_DESIGNER_SESSIONS or not isinstance(raw, dict):
+        return None
+    try:
+        return DesignBrief.model_validate(raw)
+    except ValueError:
+        return None
+
+
 def _design_gate() -> None:
     _gate()
     if not get_settings().ENABLE_DESIGNER_SESSIONS:
@@ -273,17 +286,40 @@ async def get_conversation(
     if conversation is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Conversation not found", 404)
     messages = await repository.list_messages(current_user.id, conversation_id)
-    current = await StylingService(session, current_user.id).current(conversation_id)
+    service = StylingService(session, current_user.id)
+    current = await service.current(conversation_id)
+    session_ids = {message.ask_session_id for message in messages if message.ask_session_id is not None}
+    turns = list(await session.scalars(select(AskSession).where(
+        AskSession.id.in_(session_ids), AskSession.user_id == current_user.id,
+    ))) if session_ids else []
+    by_session = {turn.id: turn for turn in turns}
+    settings_locale = await session.scalar(select(UserSettings.locale).where(UserSettings.user_id == current_user.id))
+    snapshots = await build_item_ref_snapshots(
+        session, current_user.id, [str(ref) for turn in turns for ref in (turn.item_refs or [])],
+        settings_locale=settings_locale,
+    )
+    by_item = {str(snap.item_id): snap for snap in snapshots}
+    restored: list[AskConversationMessage] = []
+    for message in messages:
+        turn = by_session.get(message.ask_session_id) if (
+            message.role == "assistant" and message.ask_session_id is not None
+        ) else None
+        refs = [str(ref) for ref in (turn.item_refs or [])] if turn is not None else []
+        restored.append(AskConversationMessage(
+            id=message.id, ask_session_id=message.ask_session_id, role=message.role,
+            content=message.content, created_at=message.created_at,
+            styling=await _styling_from_metadata(session, current_user.id, message.message_metadata),
+            design_brief=_brief_from_metadata(message.message_metadata),
+            item_refs=refs, item_ref_snapshots=_to_schema([by_item[ref] for ref in refs if ref in by_item]),
+            trip_intent=_trip_intent_from_context(turn.context) if turn is not None else None,
+        ))
     return AskConversationResponse(
         conversation_id=conversation.id, title=conversation.title,
         styling=(
             await render_styling(session, current_user.id, current) if get_settings().ENABLE_DESIGNER_SESSIONS else None
         ),
-        messages=[AskConversationMessage(
-            id=message.id, ask_session_id=message.ask_session_id, role=message.role,
-            content=message.content, created_at=message.created_at,
-            styling=await _styling_from_metadata(session, current_user.id, message.message_metadata),
-        ) for message in messages],
+        design_brief=service.brief(conversation, current) if get_settings().ENABLE_DESIGNER_SESSIONS else None,
+        messages=restored,
     )
 
 

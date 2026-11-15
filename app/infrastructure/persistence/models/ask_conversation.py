@@ -20,6 +20,10 @@ class AskConversation(UUIDPrimaryKeyMixin, Base):
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     styling_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    design_constraints: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    design_base_outfit_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("outfits.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

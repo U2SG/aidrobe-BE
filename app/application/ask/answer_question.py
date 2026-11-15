@@ -28,7 +28,7 @@ from sqlalchemy import func, nulls_last, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ask.butler import AskButler
-from app.application.ask.design_types import StylingConstraints
+from app.application.ask.design_types import DesignBrief, StylingConstraints
 from app.application.ask.styling import StylingService, conflict, fingerprint, lock_request
 from app.application.ask.wardrobe_context import (
     WardrobeContext,
@@ -48,6 +48,7 @@ from app.application.ports.weather import WeatherPort
 from app.application.preferences.memory import (
     SOURCE_EXPLICIT,
     PreferenceMemoryError,
+    forget_preference,
     normalize_scope,
     read_preference_memory,
     record_preference,
@@ -272,6 +273,7 @@ class AskResult:
     # Tools the model used this turn, in order (empty with ENABLE_ASK_TOOLS off).
     used: list[ToolUse] = field(default_factory=list)
     styling: AskStylingRevision | None = None
+    design_brief: DesignBrief | None = None
 
 
 @dataclass(frozen=True)
@@ -752,6 +754,7 @@ async def _replay_ask(service: StylingService, saved: AskSession) -> AskResult:
         trip_intent=_extract_trip_intent(context),
         used=[ToolUse(str(entry["tool"]), str(entry["summary"])) for entry in used if isinstance(entry, dict)],
         styling=revision,
+        design_brief=DesignBrief.model_validate(context["design_brief"]) if context.get("design_brief") else None,
     )
 
 
@@ -837,26 +840,27 @@ async def answer_question(
         )
     conversation_state = await conversation_repo.get_state(user_id, conversation.id)
     current_styling = await styling_service.current(conversation.id)
-    design_requested = design_requested or current_styling is not None
-    if current_styling is not None and not settings.ENABLE_DESIGNER_SESSIONS:
+    current_brief = styling_service.brief(conversation, current_styling)
+    design_requested = design_requested or current_brief is not None
+    if current_brief is not None and not settings.ENABLE_DESIGNER_SESSIONS:
         raise FriendlyException(error_codes.FORBIDDEN, "Designer sessions are not enabled", 503)
     designing = settings.ENABLE_DESIGNER_SESSIONS and design_requested
     if designing:
         if request_id is None:
             raise FriendlyException(error_codes.VALIDATION_ERROR, "request_id is required for design requests", 422)
-        if current_styling is not None and expected_revision is None:
+        if current_brief is not None and expected_revision is None:
             raise FriendlyException(
                 error_codes.VALIDATION_ERROR, "expected_revision is required to continue a design", 422
             )
         if (expected_revision or 0) != conversation.styling_revision:
             raise conflict()
-        if base_outfit_id is not None and current_styling is not None:
+        if base_outfit_id is not None and current_brief is not None:
             raise conflict("A base outfit can only start a new design")
         if not tooling:
             raise FriendlyException(error_codes.FORBIDDEN, "A tool-capable stylist is not enabled", 503)
         conversations_enabled = True
     design_constraints = constraints or (
-        StylingConstraints.model_validate(current_styling.constraints) if current_styling else StylingConstraints()
+        current_brief.constraints if current_brief is not None else StylingConstraints()
     )
     user_settings = await session.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
     settings_locale = user_settings.locale if user_settings is not None else None
@@ -864,9 +868,8 @@ async def answer_question(
     local_today = local_datetime(
         turn_started_at, user_settings.timezone if user_settings is not None else None, settings.DEFAULT_TIMEZONE
     ).date()
-    base_outfit = (
-        await styling_service.owned_outfit(base_outfit_id) if designing and base_outfit_id is not None else None
-    )
+    base_id = base_outfit_id or conversation.design_base_outfit_id
+    base_outfit = await styling_service.owned_outfit(base_id) if designing and base_id is not None else None
     if designing:
         context = {**({"scene": design_constraints.scene} if design_constraints.scene else {}), **(context or {})}
         raw_constraints = design_constraints.model_dump()
@@ -885,7 +888,7 @@ async def answer_question(
             except ValueError as exc:
                 raise FriendlyException(error_codes.VALIDATION_ERROR, "Invalid design date", 422) from exc
         raw_constraints["target_date"] = raw_constraints.get("target_date") or local_today
-        if constraints is None and current_styling is not None and (
+        if constraints is None and current_brief is not None and (
             raw_constraints["target_date"] != design_constraints.target_date
             or raw_constraints.get("scene") != design_constraints.scene
         ):
@@ -906,6 +909,10 @@ async def answer_question(
         conversation_state.rejected_item_ids if conversation_state else None
     )
     existing_rejected_ids = set(rejected_item_ids)
+    if focused_item_id is not None:
+        # A fresh explicit selection overrides earlier conversational rejection.
+        # Current design exclusions remain separate and are checked by the tools.
+        existing_rejected_ids.discard(str(focused_item_id))
 
     # Priority order: most-worn / most-recent first. NULLs-last keeps never-worn
     # items from sorting to the top under DESC. Reused for the per-category
@@ -1208,6 +1215,11 @@ async def answer_question(
                 request_id=request_id, request_fingerprint=request_hash,
                 title="Your styled outfit" if ctx.locale == "en" else "为你设计的搭配", reason=answer_text,
             )
+        else:
+            await styling_service.save_brief(conversation, design_constraints)
+            if base_outfit is not None:
+                conversation.design_base_outfit_id = base_outfit.id
+        current_brief = styling_service.brief(conversation, current_styling)
     if not designing:
         await session.refresh(conversation)
     conversation_state = await conversation_repo.get_state(user_id, conversation.id)
@@ -1236,6 +1248,8 @@ async def answer_question(
     }
     if current_styling is not None and designing:
         persisted_context["styling_revision_id"] = str(current_styling.id)
+    if current_brief is not None and designing:
+        persisted_context["design_brief"] = current_brief.model_dump(mode="json")
     if trip_intent is not None:
         # BE#120 — persist the trip signal so history can re-offer the
         # packing-list handoff; only affirmative intents are stored.
@@ -1275,6 +1289,7 @@ async def answer_question(
         role="user",
         content=question,
         ask_session_id=ask_row.id,
+        created_at=turn_started_at,
         message_metadata={
             "focused_item_id": str(focused_item_id) if focused_item_id is not None else None,
             "focused_item_rejected": focus_is_rejection,
@@ -1285,9 +1300,14 @@ async def answer_question(
         role="assistant",
         content=answer_text,
         ask_session_id=ask_row.id,
+        created_at=turn_started_at,
         message_metadata={
             "item_refs": item_refs,
             **({"styling_revision_id": str(current_styling.id)} if current_styling is not None and designing else {}),
+            **(
+                {"design_brief": current_brief.model_dump(mode="json")}
+                if current_brief is not None and designing else {}
+            ),
         },
     )
 
@@ -1364,9 +1384,9 @@ async def answer_question(
                 scope = normalize_scope(scope)
                 operation = pref.get("operation", "remember")
                 if operation == "forget":
-                    await pref_repo.soft_delete_matching(
-                        user_id, preference_type=pref["type"].strip().lower(),
-                        preference_value=pref_value.strip(), scope=scope, evidence_at=turn_started_at,
+                    await forget_preference(
+                        pref_repo, user_id=user_id, preference_type=pref["type"],
+                        preference_value=pref_value, scope=scope, evidence_at=turn_started_at,
                     )
                     continue
                 if operation != "remember":
@@ -1405,6 +1425,7 @@ async def answer_question(
         trip_intent=trip_intent,
         used=used_tools,
         styling=current_styling if designing else None,
+        design_brief=current_brief if designing else None,
     )
 
 

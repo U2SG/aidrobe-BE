@@ -11,7 +11,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.application.ports.llm import LlmAnswer, ToolAskAnswer, ToolExecutor, ToolSpec
 from app.application.preferences.memory import read_preference_memory, record_preference
@@ -55,6 +55,9 @@ class _Designer:
         self.change_shoes = False
         self.change_unrequested_top = False
         self.explore = False
+        self.clarify = False
+        self.lock_top = False
+        self.seen_briefs: list[dict[str, Any]] = []
         self.preferences_after_update: dict[str, Any] = {}
 
     async def polish_reason(self, prompt: str) -> str:
@@ -72,12 +75,16 @@ class _Designer:
         assert "update_design_brief" in {tool.name for tool in tools}
         payload = next(json.loads(line) for line in system_prompt.splitlines() if line.startswith('{"context":'))
         known = payload["items"]
+        brief_line = next(line for line in system_prompt.splitlines() if line.startswith("Design session: "))
+        self.seen_briefs.append(json.loads(brief_line.removeprefix("Design session: ")))
 
         def position(category: str, color: str) -> int:
             return next(index for index, item in enumerate(known, 1)
                         if item["category"] == category and item["color_main"] == color)
 
         brief: dict[str, Any] = {"evidence_text": question, "goal": question}
+        if self.lock_top:
+            brief["locked_positions"] = [position("top", "white")]
         if self.change_shoes:
             brief["change_positions"] = [position("shoes", "black")]
         if self.explore:
@@ -87,6 +94,10 @@ class _Designer:
         result = await execute("update_design_brief", brief)
         assert result.content["updated"] is True
         self.preferences_after_update = result.content["preferences"]
+        if self.clarify:
+            return ToolAskAnswer(json.dumps({
+                "answer": "条件已经记下，想要更正式还是更轻松一点？", "reply_kind": "general", "referenced_items": [],
+            }, ensure_ascii=False), 7)
         top = "red" if self.explore or self.change_unrequested_top else "white"
         shoes = "brown" if self.change_shoes else "black"
         selected = [position("top", top), position("bottom", "black"), position("shoes", shoes)]
@@ -113,10 +124,23 @@ async def _setup(
                                      ("shoes", "brown"), ("top", "red"))]
     session.add_all(items)
     await session.flush()
+    # Tools read on independent connections so cancelling them cannot invalidate
+    # the request transaction. Seed committed rows, as production requests see.
+    await session.commit()
+    assert isinstance(session.bind, AsyncConnection)
+    await session.bind.commit()
     model = _Designer()
     app = FastAPI()
     setup_exception_handlers(app)
-    app.dependency_overrides[get_db_session] = lambda: session
+    async def request_session() -> AsyncIterator[AsyncSession]:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+    app.dependency_overrides[get_db_session] = request_session
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_redis_client] = lambda: cache
     app.dependency_overrides[llm_service] = lambda: model
@@ -210,15 +234,17 @@ async def test_natural_language_partial_edit_cannot_change_unrequested_slots(
         })
         assert rejected.status_code == 200
         assert rejected.json()["styling"]["revision"] == 1
+        assert rejected.json()["design_brief"]["revision"] == 2
+        assert rejected.json()["design_brief"]["needs_outfit_update"] is True
         assert rejected.json()["item_refs"] == []
         model.change_unrequested_top = False
         accepted = await client.post("/v1/ask", json={
             "question": "只换鞋，其他保持", "design_mode": True, "request_id": str(uuid.uuid4()),
-            "conversation_id": first["conversation_id"], "expected_revision": 1,
+            "conversation_id": first["conversation_id"], "expected_revision": 2,
         })
         assert accepted.status_code == 200, accepted.text
         latest = accepted.json()["styling"]
-        assert latest["revision"] == 2
+        assert latest["revision"] == 3
         assert {entry["item_id"] for entry in latest["outfit"]["items"]} == {str(items[i].id) for i in (0, 1, 3)}
 
 
@@ -229,6 +255,7 @@ async def test_exploration_exception_applies_this_turn_without_rewriting_memory(
     repository = SqlAlchemyPreferenceMemoryRepository(db_session)
     await record_preference(repository, user_id=user_id, preference_type="color", preference_value="red",
                             polarity="negative", confidence=0.9, source="explicit_user_statement")
+    await db_session.commit()
     model.explore = True
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         response = await client.post("/v1/ask", headers={"X-User-Id": str(user_id)}, json={
@@ -322,3 +349,122 @@ async def test_memory_write_requires_current_evidence_and_forget_really_deletes(
         }]})
         assert (await client.post("/v1/ask", json={"question": "忘记我不喜欢红色"})).status_code == 200
         assert await repository.list_live(user_id) == []
+
+
+@pytest.mark.parametrize("has_outfit", [False, True])
+async def test_clarification_preserves_conditions_history_retry_and_revision(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, has_outfit: bool,
+) -> None:
+    app, user_id, items, model, _ = await _setup(db_session, monkeypatch)
+    top_id = str(items[0].id)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver",
+                           headers={"X-User-Id": str(user_id)}) as client:
+        first = None
+        if has_outfit:
+            first = (await client.post("/v1/ask", json={
+                "question": "先搭一套", "design_mode": True, "request_id": str(uuid.uuid4()),
+            })).json()
+        model.clarify = True
+        model.lock_top = True
+        request = {
+            "question": "保留白色上衣，先聊聊场景", "design_mode": True, "request_id": str(uuid.uuid4()),
+            **({"conversation_id": first["conversation_id"], "expected_revision": 1} if first else {}),
+        }
+        response = await client.post("/v1/ask", json=request)
+        assert response.status_code == 200, response.text
+        clarified = response.json()
+        brief = clarified["design_brief"]
+        expected = 2 if has_outfit else 1
+        assert brief["revision"] == expected and brief["needs_outfit_update"] is True
+        assert brief["constraints"]["locked_item_ids"] == [top_id]
+        assert clarified["styling"] == (first["styling"] if first else None)
+        conversation_id = clarified["conversation_id"]
+        restored = (await client.get(f"/v1/ask/conversations/{conversation_id}")).json()
+        assert restored["design_brief"] == brief
+        assert restored["messages"][-1]["design_brief"] == brief
+        assert restored["styling"] == clarified["styling"]
+        if has_outfit:
+            adoption = await client.post(f"/v1/ask/conversations/{conversation_id}/adopt", json={
+                "request_id": str(uuid.uuid4()), "expected_revision": expected,
+            })
+            assert adoption.status_code == 409
+            edit = await client.post(f"/v1/ask/conversations/{conversation_id}/outfit-revisions", json={
+                "request_id": str(uuid.uuid4()), "expected_revision": expected, "locked_item_ids": [],
+            })
+            assert edit.status_code == 409
+        model.clarify = False
+        model.lock_top = False
+        completed = await client.post("/v1/ask", json={
+            "question": "轻松一点，按刚才的条件搭", "request_id": str(uuid.uuid4()),
+            "conversation_id": conversation_id, "expected_revision": expected,
+        })
+        assert completed.status_code == 200, completed.text
+        result = completed.json()
+        assert result["styling"]["revision"] == expected + 1
+        assert result["styling"]["constraints"]["locked_item_ids"] == [top_id]
+        assert result["design_brief"]["needs_outfit_update"] is False
+        assert len(model.seen_briefs[-1]["locked_positions"]) == 1
+        retry = await client.post("/v1/ask", json=request)
+        assert retry.status_code == 200 and retry.json()["design_brief"] == brief
+        assert retry.json()["ask_session_id"] == clarified["ask_session_id"]
+        latest = (await client.get(f"/v1/ask/conversations/{conversation_id}")).json()
+        assert latest["design_brief"]["revision"] == expected + 1
+        assert latest["messages"][-3]["design_brief"] == brief
+
+
+async def test_first_clarification_keeps_the_today_base_for_follow_up(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, user_id, items, model, _ = await _setup(db_session, monkeypatch)
+    expected_items = {str(items[index].id) for index in (0, 1, 3)}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver",
+                           headers={"X-User-Id": str(user_id)}) as client:
+        first = (await client.post("/v1/ask", json={
+            "question": "今天穿这套", "design_mode": True, "request_id": str(uuid.uuid4()),
+        })).json()
+        base_id = first["styling"]["outfit"]["outfit_id"]
+        model.clarify = True
+        pending = (await client.post("/v1/ask", json={
+            "question": "这套我有点想调整，先聊聊", "design_mode": True,
+            "request_id": str(uuid.uuid4()), "base_outfit_id": base_id,
+        })).json()
+        assert pending["styling"] is None and pending["design_brief"]["revision"] == 1
+        model.clarify = False
+        model.change_shoes = True
+        completed = await client.post("/v1/ask", json={
+            "question": "只换鞋，其他保持", "request_id": str(uuid.uuid4()),
+            "conversation_id": pending["conversation_id"], "expected_revision": 1,
+        })
+        assert completed.status_code == 200, completed.text
+        assert len(model.seen_briefs[-1]["current_positions"]) == 3
+        assert {item["item_id"] for item in completed.json()["styling"]["outfit"]["items"]} == expected_items
+
+
+async def test_plain_conversation_restore_keeps_item_cards_and_trip_handoff(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, user_id, items, _, settings = await _setup(db_session, monkeypatch, enabled=False)
+    settings.ENABLE_ASK_CONVERSATIONS = True
+    item_id = str(items[0].id)
+
+    class Plain:
+        async def ask(self, system_prompt: str, question: str, *, json_mode: bool = False) -> LlmAnswer:
+            return LlmAnswer(json.dumps({
+                "answer": "带上这件白色上衣。", "referenced_items": [1],
+                "trip_intent": {"is_trip": True, "duration_days": 3},
+            }), 4)
+
+    app.dependency_overrides[llm_service] = lambda: Plain()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver",
+                           headers={"X-User-Id": str(user_id)}) as client:
+        reply = (await client.post("/v1/ask", json={
+            "question": "出门三天，这件怎么带？", "focused_item_id": item_id,
+        })).json()
+        restored = (await client.get(f"/v1/ask/conversations/{reply['conversation_id']}")).json()
+        message = restored["messages"][-1]
+        assert message["ask_session_id"] == reply["ask_session_id"]
+        assert message["item_refs"] == [item_id]
+        assert [item["item_id"] for item in message["item_ref_snapshots"]] == [item_id]
+        assert message["trip_intent"] == {"is_trip": True, "duration_days": 3}
+        assert message["styling"] is None and restored["design_brief"] is None
+        assert restored["messages"][0]["item_refs"] == []

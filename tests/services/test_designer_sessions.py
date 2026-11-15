@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.application.ask.design_types import StylingConstraints
+from app.application.ask.design_types import PreferenceOverride, StylingConstraints
 from app.application.ask.styling import StylingService, fingerprint
 from app.application.outfits.wear import WearOutfit
 from app.common.exceptions import FriendlyException
@@ -179,6 +179,88 @@ async def test_adopt_default_target_and_retry_do_not_move_at_midnight(db_session
     assert await service.recommendations.get_daily(user_id, date.today()) is None
 
 
+@pytest.mark.parametrize("explicit_date", [False, True])
+async def test_first_adoption_advances_expired_draft_but_replay_keeps_original_day(
+    db_session: AsyncSession, explicit_date: bool,
+) -> None:
+    user_id, conversation_id, items = await _seed(db_session)
+    service = StylingService(db_session, user_id)
+    today = date(2030, 1, 3)
+    yesterday = today - timedelta(days=1)
+    draft = await service.save_draft(
+        conversation_id=conversation_id, expected_revision=0, item_ids=[item.id for item in items[:3]],
+        constraints=StylingConstraints(target_date=yesterday, exploration=True,
+                                       preference_overrides=[PreferenceOverride(type="color", value="red")]),
+        request_id=uuid.uuid4(), request_fingerprint=fingerprint("expired"), title="Yesterday", reason="A draft.",
+    )
+    request_id = uuid.uuid4()
+    requested = yesterday if explicit_date else None
+    adopted = await service.adopt(
+        conversation_id=conversation_id, expected_revision=1, request_id=request_id, day=requested, default_day=today,
+    )
+    replay = await service.adopt(
+        conversation_id=conversation_id, expected_revision=1, request_id=request_id,
+        day=requested, default_day=today + timedelta(days=1),
+    )
+    assert replay.id == adopted.id and adopted.recommendation_date == today
+    assert adopted.constraints["target_date"] == today.isoformat()
+    assert adopted.constraints["preference_overrides"] == [] and adopted.constraints["exploration"] is False
+    assert draft.constraints["target_date"] == yesterday.isoformat()
+    assert await service.recommendations.get_daily(user_id, yesterday) is None
+    assert (await service.recommendations.get_daily(user_id, today)).id == adopted.recommendation_id
+
+
+async def test_pending_brief_versions_serialize_before_the_first_outfit(postgres_url: str) -> None:
+    engine = create_async_engine(postgres_url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory.begin() as session:
+            user_id, conversation_id, _ = await _seed(session)
+
+        async def change(goal: str) -> int:
+            try:
+                async with factory.begin() as session:
+                    service = StylingService(session, user_id)
+                    conversation = await service.lock_conversation(conversation_id, 0)
+                    await service.save_brief(conversation, StylingConstraints(goal=goal))
+                    return conversation.styling_revision
+            except FriendlyException as exc:
+                return exc.status_code
+
+        assert sorted(await asyncio.gather(change("Formal"), change("Casual"))) == [1, 409]
+        async with factory() as session:
+            service = StylingService(session, user_id)
+            conversation = await service.conversations.get_owned_conversation(user_id, conversation_id)
+            assert conversation is not None
+            brief = service.brief(conversation, await service.current(conversation_id))
+            assert brief is not None and brief.needs_outfit_update and brief.revision == 1
+            assert await session.scalar(select(func.count()).select_from(Outfit)) == 0
+    finally:
+        await engine.dispose()
+
+
+async def test_today_swap_keeps_pending_redesign_in_its_original_conversation(db_session: AsyncSession) -> None:
+    user_id, conversation_id, items = await _seed(db_session)
+    service = StylingService(db_session, user_id)
+    await _draft(db_session, user_id, conversation_id, items)
+    adopted = await service.adopt(
+        conversation_id=conversation_id, expected_revision=1, request_id=uuid.uuid4(), day=date.today(),
+    )
+    conversation = await service.lock_conversation(conversation_id, 2)
+    pending = StylingConstraints(goal="Try streetwear", locked_item_ids=[items[0].id])
+    await service.save_brief(conversation, pending)
+    replacement = await service.revise_outfit(
+        outfit_id=adopted.outfit_id, request_id=uuid.uuid4(), item_id=items[2].id, replacement_item_id=items[3].id,
+    )
+    assert replacement.status == "adopted" and replacement.conversation_id != conversation_id
+    assert replacement.outfit_id != adopted.outfit_id
+    brief = service.brief(conversation, await service.current(conversation_id))
+    assert brief is not None and brief.needs_outfit_update and brief.constraints == pending
+    assert brief.revision == 3
+    today = await service.recommendations.get_daily(user_id, date.today())
+    assert today is not None and today.id == replacement.recommendation_id
+
+
 async def test_expired_draft_defaults_to_current_local_day(db_session: AsyncSession) -> None:
     user_id, conversation_id, items = await _seed(db_session)
     service = StylingService(db_session, user_id)
@@ -208,15 +290,15 @@ async def test_expired_draft_defaults_to_current_local_day(db_session: AsyncSess
     assert replay.id == adopted.id
 
 
-async def test_explicit_past_adoption_requires_a_new_date(db_session: AsyncSession) -> None:
+async def test_explicit_past_adoption_uses_current_local_day(db_session: AsyncSession) -> None:
     user_id, conversation_id, items = await _seed(db_session)
     service = StylingService(db_session, user_id)
     await _draft(db_session, user_id, conversation_id, items)
     today = date.today()
-    with pytest.raises(FriendlyException) as exc_info:
-        await service.adopt(
-            conversation_id=conversation_id, expected_revision=1, request_id=uuid.uuid4(),
-            day=today - timedelta(days=1), default_day=today,
-        )
-    assert exc_info.value.status_code == 422
+    adopted = await service.adopt(
+        conversation_id=conversation_id, expected_revision=1, request_id=uuid.uuid4(),
+        day=today - timedelta(days=1), default_day=today,
+    )
+    assert adopted.recommendation_date == today
+    assert adopted.constraints["target_date"] == today.isoformat()
     assert await service.recommendations.get_daily(user_id, today - timedelta(days=1)) is None
