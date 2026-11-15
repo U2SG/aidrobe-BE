@@ -44,6 +44,7 @@ _STALE_QUEUED_MINUTES = 15
 # v2: used slots are centred as a group (v1 left blank bands for missing roles).
 _OUTFIT_BOARD_LAYOUT_VERSION = "v2"
 _GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-reviewed-v7"
+_OUTFIT_RETRYABLE = {"failed", "rejected_by_quality_gate"}
 _IMAGE_TYPE_PRIORITY = ("cutout", "thumbnail", "standard", "crop", "original")
 
 _REFERENCE_FIELDS = (
@@ -88,20 +89,19 @@ def _response_for_asset(asset: OutfitVisualAsset) -> OutfitVisualAssetResponse:
 async def _existing_outfit_board_asset(
     db: AsyncSession, *, user_id: uuid.UUID, outfit_id: uuid.UUID, layout_version: str
 ) -> OutfitVisualAsset | None:
-    job = await db.scalar(
-        select(AsyncJob).where(AsyncJob.idempotency_key == f"outfit_board:{outfit_id}:{layout_version}")
-    )
-    if job is None or job.target_id is None:
-        return None
+    key = f"outfit_board:{outfit_id}:{layout_version}"
     return cast(
         OutfitVisualAsset | None,
         await db.scalar(
-            select(OutfitVisualAsset).where(
-                OutfitVisualAsset.id == job.target_id,
+            select(OutfitVisualAsset).join(AsyncJob, AsyncJob.target_id == OutfitVisualAsset.id).where(
+                or_(AsyncJob.idempotency_key == key, AsyncJob.idempotency_key.startswith(f"{key}:retry:")),
                 OutfitVisualAsset.user_id == user_id,
                 OutfitVisualAsset.outfit_id == outfit_id,
                 OutfitVisualAsset.visual_type == VisualType.OUTFIT_BOARD.value,
-            )
+            ).order_by(
+                OutfitVisualAsset.input_snapshot["retry_count"].as_integer().desc().nulls_last(),
+                AsyncJob.created_at.desc(), AsyncJob.id.desc(),
+            ).limit(1)
         ),
     )
 
@@ -126,18 +126,17 @@ async def _outfit_board_item_list(
         )
     ).all()
     item_images: dict[uuid.UUID, dict[str, WardrobeItemImage]] = {}
+    has_legacy_crop: set[uuid.UUID] = set()
     items: dict[uuid.UUID, WardrobeItem] = {}
     roles: dict[uuid.UUID, str] = {}
     for outfit_item, item, image in rows:
         items[item.id] = item
         roles[item.id] = outfit_item.role
-        if (
-            image is not None
-            and not is_legacy_garment_crop(image.object_key, user_id)
-            and not is_legacy_garment_crop(image.image_url, user_id)
-            and image.image_type not in item_images.setdefault(item.id, {})
-        ):
-            item_images[item.id][image.image_type] = image
+        if image is not None:
+            if is_legacy_garment_crop(image.object_key, user_id) or is_legacy_garment_crop(image.image_url, user_id):
+                has_legacy_crop.add(item.id)
+            else:
+                item_images.setdefault(item.id, {}).setdefault(image.image_type, image)
 
     review_sources = {}
     if generate and items:
@@ -160,11 +159,13 @@ async def _outfit_board_item_list(
         if generate:
             board_item.update(title=item.title, color=item.color_main)
             crop = images.get("crop")
+            standard = images.get("standard")
+            if crop is None and standard and "/wardrobe/verified-crops/" in (standard.object_key or ""):
+                crop = standard
             source, job_status, result = review_sources.get(item_id, ({}, None, None))
             source_key, source_url = source.get("source_key"), source.get("source_url")
             if is_legacy_garment_crop(source_key, user_id) or is_legacy_garment_crop(source_url, user_id):
                 # The old worker wrote this standard image only after the product shot passed review.
-                standard = images.get("standard")
                 reviewed = (
                     job_status == JOB_STATUS_SUCCEEDED
                     and result is None
@@ -192,6 +193,8 @@ async def _outfit_board_item_list(
                     board_item["review_object_key"] = original.object_key
                 elif item.original_image_url:
                     board_item["review_image_url"] = item.original_image_url
+            elif item_id in has_legacy_crop:
+                board_item["missing_garment_reference"] = "true"
 
         cutout = images.get("cutout")
         if cutout is not None:
@@ -319,7 +322,7 @@ async def get_generated_outfit_image(
     asset = await _existing_outfit_board_asset(
         db, user_id=current_user.id, outfit_id=outfit_id, layout_version=_GENERATED_OUTFIT_LAYOUT_VERSION
     )
-    if asset is None or asset.generation_status in {"failed", "rejected_by_quality_gate"}:
+    if asset is None or asset.generation_status in _OUTFIT_RETRYABLE:
         outfit = await SqlAlchemyRecommendationRepository(db).get_outfit_for_user(outfit_id, current_user.id)
         if outfit is not None:
             items = await _outfit_board_item_list(db, outfit_id=outfit_id, user_id=current_user.id, generate=True)
@@ -352,7 +355,7 @@ async def create_outfit_share_asset(
     existing = await _existing_outfit_board_asset(
         db, user_id=current_user.id, outfit_id=outfit_id, layout_version=layout_version
     )
-    if existing is not None:
+    if existing is not None and (not generate or existing.generation_status not in _OUTFIT_RETRYABLE):
         if generate and existing.generation_status == "completed":
             return await get_outfit_visual_asset(existing.id, db, current_user)
         return _response_for_asset(existing)
@@ -368,6 +371,14 @@ async def create_outfit_share_asset(
         )
         if reusable is not None:
             return await get_outfit_visual_asset(reusable.id, db, current_user)
+        missing = [item["title"] for item in item_list if item.get("missing_garment_reference")]
+        if missing:
+            raise FriendlyException(
+                error_codes.VALIDATION_ERROR,
+                f"缺少清楚的单品参考图：{'、'.join(missing)}",
+                status_code=422,
+                data={"reason": "missing_garment_reference"},
+            )
         settings = get_settings()
         if (
             not settings.ENABLE_ITEM_CUTOUT
@@ -376,6 +387,7 @@ async def create_outfit_share_asset(
             or not settings.QWEN_API_KEY
         ):
             raise FriendlyException(error_codes.FORBIDDEN, "Outfit image generation is not enabled", status_code=503)
+    retry_count = int((existing.input_snapshot or {}).get("retry_count", 0)) + 1 if existing is not None else 0
     asset = OutfitVisualAsset(
         user_id=current_user.id,
         outfit_id=outfit_id,
@@ -384,6 +396,7 @@ async def create_outfit_share_asset(
         input_snapshot={
             "item_list": item_list,
             **({"generate": True, "garment_slots": _outfit_signature(outfit.items)} if generate else {}),
+            **({"retry_count": retry_count} if retry_count else {}),
         },
     )
     await SqlAlchemyOutfitVisualRepository(db).add(asset)
@@ -395,6 +408,7 @@ async def create_outfit_share_asset(
         layout_version=layout_version,
         user_id=current_user.id,
         correlation_id=correlation_id if isinstance(correlation_id, str) else None,
+        retry_after=existing.id if existing is not None else None,
     )
     if inserted:
         if generate:
