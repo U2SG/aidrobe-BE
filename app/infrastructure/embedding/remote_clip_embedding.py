@@ -1,6 +1,7 @@
 import httpx
 import structlog
 
+from app.config.embedding import REMOTE_CLIP_MODEL_VERSION
 from app.config.settings import Settings
 
 logger = structlog.get_logger(__name__)
@@ -15,7 +16,7 @@ class RemoteClipEmbedding:
     """
 
     DIM = 512
-    model_version = "remote_clip:512"
+    model_version = REMOTE_CLIP_MODEL_VERSION
 
     def __init__(self, settings: Settings) -> None:
         if not settings.CLIP_EMBEDDING_API_KEY:

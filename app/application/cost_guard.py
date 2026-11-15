@@ -59,6 +59,7 @@ def _limit_for(settings: Settings, job_type: str) -> int | None:
         "tryon": settings.TRYON_DAILY_CALL_LIMIT,
         "ootd_poster": settings.OOTD_POSTER_DAILY_CALL_LIMIT,
         "cutout": settings.ITEM_CUTOUT_DAILY_LIMIT,
+        "outfit_image": settings.OUTFIT_IMAGE_DAILY_LIMIT,
     }.get(job_type)
 
 
@@ -67,7 +68,7 @@ def _limit_for(settings: Settings, job_type: str) -> int | None:
 #: queued generation as paid usage; leaving `usage_today` on the old path would
 #: make `GET /v1/user/cost-summary` report a smaller number than admission
 #: enforces, which is a lie in the direction the user notices.
-RESERVATION_BACKED_JOB_TYPES: tuple[str, ...] = ("tryon",)
+RESERVATION_BACKED_JOB_TYPES: tuple[str, ...] = ("tryon", "cutout")
 
 
 def resolve_quota_limit(job_type: str) -> int | None:

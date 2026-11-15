@@ -33,6 +33,8 @@ class VisionResult:
     # (x_min, y_min, x_max, y_max). Only for multi-garment photos; None when
     # the model gave no usable box (the candidate then keeps the full photo).
     bbox: tuple[float, float, float, float] | None = None
+    # Outfit recognition can see a layer without enough evidence to name its style.
+    style_unverified: bool = False
 
 
 @dataclass(frozen=True)
@@ -53,8 +55,14 @@ class StyleAnalysis:
 
 
 class VisionPort(Protocol):
-    async def analyze_image(self, image_url: str, locale: str = DEFAULT_LOCALE) -> VisionResult: ...
+    async def analyze_image(
+        self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
+    ) -> VisionResult: ...
 
     async def analyze_outfit(self, image_url: str, locale: str = DEFAULT_LOCALE) -> list[VisionResult]: ...
 
-    async def analyze_style(self, image_url: str, locale: str = DEFAULT_LOCALE) -> StyleAnalysis: ...
+    async def review_garment_crops(self, crops: list[bytes], garments: list[VisionResult]) -> list[bool]: ...
+
+    async def analyze_style(
+        self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
+    ) -> StyleAnalysis: ...

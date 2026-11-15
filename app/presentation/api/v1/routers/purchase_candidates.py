@@ -176,7 +176,7 @@ async def _to_decision_response(
     """
     shown = shown_decision(decision)
     items = shown.closet_comparison.items
-    thumbnails = await load_item_thumbnails(session, [i.item_id for i in items])
+    thumbnails = await load_item_thumbnails(session, decision.user_id, [i.item_id for i in items])
     # Built as a mapping and validated rather than constructed field by field:
     # the snapshot is JSON, so its enum-shaped values are plain strings, and
     # letting Pydantic check them against the frozen literals turns a shrunken

@@ -399,12 +399,13 @@ async def test_an_ootd_upload_naming_another_users_object_queues_nothing(
     assert (await db_session.scalars(select(AvatarSourceAsset))).all() == []
 
 
-async def test_a_confirmed_import_naming_another_users_object_queues_nothing(
+async def test_confirm_rejects_a_legacy_task_naming_another_users_object(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Source B carries the same risk by a different route: `input_payload.image_url`
     came from the client when the import task was created."""
     from app.infrastructure.persistence.models.avatar import AvatarSourceAsset
+    from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
     _enable_avatar(monkeypatch, import_tasks_router)
     user_id = uuid.uuid4()
@@ -412,8 +413,9 @@ async def test_a_confirmed_import_naming_another_users_object_queues_nothing(
         db_session, user_id, input_type="outfit_image", image_url=_internal_url(FOREIGN_USER)
     )
 
-    assert await _confirm_items(build_import_tasks_app(db_session), task.id, user_id) == 200
+    assert await _confirm_items(build_import_tasks_app(db_session), task.id, user_id) == 422
     assert await _avatar_jobs(db_session) == []
+    assert await db_session.scalar(select(WardrobeItem.id).where(WardrobeItem.user_id == user_id)) is None
     assert (await db_session.scalars(select(AvatarSourceAsset))).all() == []
 
 

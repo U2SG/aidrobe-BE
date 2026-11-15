@@ -593,6 +593,112 @@
       }
     },
     "/v1/import-tasks": {
+      "get": {
+        "tags": [
+          "import-tasks"
+        ],
+        "summary": "List Pending Import Tasks",
+        "description": "List this account's imports. Defaults to tasks waiting for confirmation.",
+        "operationId": "list_pending_import_tasks_v1_import_tasks_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ImportStatus"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_list_ImportTaskResponse__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "import-tasks"
@@ -662,6 +768,81 @@
         },
         "responses": {
           "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_ImportTaskResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/import-tasks/{task_id}/retry": {
+      "post": {
+        "tags": [
+          "import-tasks"
+        ],
+        "summary": "Retry Import Task",
+        "operationId": "retry_import_task_v1_import_tasks__task_id__retry_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -1336,6 +1517,156 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResponseModel_DeleteWardrobeItemResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/wardrobe-items/{item_id}/recognize": {
+      "post": {
+        "tags": [
+          "wardrobe"
+        ],
+        "summary": "Recognize Wardrobe Item",
+        "operationId": "recognize_wardrobe_item_v1_wardrobe_items__item_id__recognize_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Item Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_WardrobeRecognitionResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/wardrobe-items/{item_id}/product-image": {
+      "post": {
+        "tags": [
+          "wardrobe"
+        ],
+        "summary": "Request Wardrobe Product Image",
+        "operationId": "request_wardrobe_product_image_v1_wardrobe_items__item_id__product_image_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Item Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_WardrobeItemResponse_"
                 }
               }
             }
@@ -4557,12 +4888,86 @@
       }
     },
     "/v1/outfits/{outfit_id}/share-asset": {
+      "get": {
+        "tags": [
+          "outfit-visual"
+        ],
+        "summary": "Get Generated Outfit Image",
+        "description": "Look up an existing generated image without creating any work.",
+        "operationId": "get_generated_outfit_image_v1_outfits__outfit_id__share_asset_get",
+        "parameters": [
+          {
+            "name": "outfit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Outfit Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutfitVisualAssetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "outfit-visual"
         ],
         "summary": "Create Outfit Share Asset",
-        "description": "Create or reuse the deterministic board for an owned outfit.",
+        "description": "Create or reuse an outfit board. The opt-in generation mode uses GPT image editing.",
         "operationId": "create_outfit_share_asset_v1_outfits__outfit_id__share_asset_post",
         "parameters": [
           {
@@ -4573,6 +4978,16 @@
               "type": "string",
               "format": "uuid",
               "title": "Outfit Id"
+            }
+          },
+          {
+            "name": "generate",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Generate"
             }
           },
           {
@@ -8755,6 +9170,13 @@
               }
             ],
             "title": "Confirmed Item Id"
+          },
+          "possible_duplicates": {
+            "items": {
+              "$ref": "#/components/schemas/ImportDuplicateHint"
+            },
+            "type": "array",
+            "title": "Possible Duplicates"
           }
         },
         "type": "object",
@@ -9056,7 +9478,6 @@
               "$ref": "#/components/schemas/ConfirmItemInput"
             },
             "type": "array",
-            "minItems": 1,
             "title": "Items"
           },
           "dismiss_remaining": {
@@ -10142,6 +10563,47 @@
         ],
         "title": "IdleItemResponse"
       },
+      "ImportDuplicateHint": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "title"
+        ],
+        "title": "ImportDuplicateHint"
+      },
+      "ImportStatus": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "processing",
+          "waiting_confirm",
+          "completed",
+          "failed"
+        ],
+        "title": "ImportStatus"
+      },
       "ImportTaskResponse": {
         "properties": {
           "task_id": {
@@ -10168,8 +10630,7 @@
               "$ref": "#/components/schemas/CandidateItem"
             },
             "type": "array",
-            "title": "Candidate Items",
-            "default": []
+            "title": "Candidate Items"
           },
           "error_code": {
             "anyOf": [
@@ -10192,6 +10653,17 @@
               }
             ],
             "title": "Error Message"
+          },
+          "retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retryable"
           }
         },
         "type": "object",
@@ -13262,6 +13734,32 @@
         "type": "object",
         "title": "ResponseModel[WardrobeListResponse]"
       },
+      "ResponseModel_WardrobeRecognitionResponse_": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WardrobeRecognitionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ResponseModel[WardrobeRecognitionResponse]"
+      },
       "ResponseModel_WearOutfitResponse_": {
         "properties": {
           "code": {
@@ -13287,6 +13785,36 @@
         },
         "type": "object",
         "title": "ResponseModel[WearOutfitResponse]"
+      },
+      "ResponseModel_list_ImportTaskResponse__": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ImportTaskResponse"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "title": "ResponseModel[list[ImportTaskResponse]]"
       },
       "ResurfaceInsightResponse": {
         "properties": {
@@ -15140,6 +15668,29 @@
           "total"
         ],
         "title": "WardrobeListResponse"
+      },
+      "WardrobeRecognitionResponse": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category"
+          },
+          "color_main": {
+            "type": "string",
+            "title": "Color Main"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "category",
+          "color_main"
+        ],
+        "title": "WardrobeRecognitionResponse"
       },
       "WardrobeReportResponse": {
         "properties": {

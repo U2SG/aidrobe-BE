@@ -27,6 +27,12 @@ class ConfirmImportResponse(BaseModel):
     item_id: UUID
 
 
+class WardrobeRecognitionResponse(BaseModel):
+    title: str
+    category: str
+    color_main: str
+
+
 def season_tag_list(raw: object) -> list[str] | None:
     """Stored `season_tags` is `{"tags": [...]}`; the API exposes the list."""
     tags = raw.get("tags") if isinstance(raw, dict) else None

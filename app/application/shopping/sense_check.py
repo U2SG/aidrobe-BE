@@ -17,29 +17,31 @@ call; the requirement is determinism under the fake vision provider.
 
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, select
+import httpx
+from sqlalchemy import Float, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.vision import VisionPort, VisionResult
 from app.application.preferences.memory import live_negative_values_by_type
 from app.common import error_codes
-from app.common.enums import Category, ImageType, ItemStatus
+from app.common.enums import Category, ItemStatus
 from app.common.exceptions import FriendlyException
 from app.common.i18n import I18nMessage, make_message
 from app.common.item_labels import localized_item_name
 from app.common.locale import resolve_locale
+from app.config.embedding import embedding_model_version
 from app.config.settings import get_settings
 from app.infrastructure.importers.link_parser import _is_safe_url
-from app.infrastructure.persistence.models.embedding import ItemEmbedding
+from app.infrastructure.persistence.models.embedding import ItemEmbedding, is_current_embedding, pgvector_enabled
 from app.infrastructure.persistence.models.shopping import ShoppingSenseCheck
 from app.infrastructure.persistence.models.user import UserSettings
-from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
-from app.infrastructure.storage.object_key import extract_internal_object_key
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.repositories.wardrobe_repo import load_wardrobe_image_sources
+from app.infrastructure.storage.source_image import InvalidSourceImage, resolve_import_source_key
 
 # Similarity scores assigned by the deterministic fallback path. Real cosine
 # scores (pgvector branch) override these when available.
@@ -69,10 +71,6 @@ _CORE_CATEGORIES = {
     Category.OUTERWEAR.value,
 }
 _MAX_OUTFIT_SAMPLES = 2
-
-
-def _pgvector_enabled() -> bool:
-    return os.getenv("PGVECTOR_ENABLED", "false").lower() in ("1", "true", "yes")
 
 
 @dataclass
@@ -126,8 +124,13 @@ class SenseCheck:
                 "image_url or source_url is required",
                 status_code=422,
             )
+        source_key = None
         if image_url is not None:
-            if not _is_safe_url(image_url):
+            try:
+                source_key = resolve_import_source_key(image_url, user_id, get_settings())
+            except InvalidSourceImage as exc:
+                raise FriendlyException(error_codes.VALIDATION_ERROR, "Unsafe URL", status_code=400) from exc
+            if source_key is None and not _is_safe_url(image_url):
                 raise FriendlyException(error_codes.VALIDATION_ERROR, "Unsafe URL", status_code=400)
             analyze_target: str = image_url
         else:
@@ -146,8 +149,8 @@ class SenseCheck:
                 )
             analyze_target = extracted
         try:
-            vision_result = await self.vision.analyze_image(analyze_target)
-        except (ValueError, RuntimeError) as exc:
+            vision_result = await self.vision.analyze_image(analyze_target, source_key=source_key)
+        except (ValueError, RuntimeError, httpx.HTTPError, TimeoutError) as exc:
             raise FriendlyException(
                 error_codes.VALIDATION_ERROR,
                 "Could not identify a clothing item from the input",
@@ -190,7 +193,7 @@ class SenseCheck:
             color_main=vision_result.color_main,
             evaluation=evaluation,
         )
-        record = await self._persist(user_id, image_url, source_url, result)
+        record = await self._persist(user_id, image_url if source_key is None else None, source_url, result, source_key)
         return result, record
 
     async def _find_similar(
@@ -202,7 +205,7 @@ class SenseCheck:
         the JSONB-stored vector can't be ORDER BY <-> ranked). Otherwise the
         category/color heuristic, which is the deterministic CI path."""
         k = 5
-        if _pgvector_enabled():
+        if pgvector_enabled():
             embedded = await self._by_embedding(user_id, candidate, k, locale)
             if embedded:
                 return embedded
@@ -216,37 +219,32 @@ class SenseCheck:
         unowned candidate, so we anchor on any wearable item of the same
         category+color and rank its neighbours — degrades to empty (→ fallback)
         when no anchor/embeddings exist."""
-        anchor_id = await self.session.scalar(
-            select(WardrobeItem.id)
-            .where(
-                WardrobeItem.user_id == user_id,
-                WardrobeItem.category == candidate.category,
-                WardrobeItem.status == ItemStatus.WEARABLE.value,
-                WardrobeItem.deleted_at.is_(None),
-            )
+
+        current_vector = is_current_embedding(embedding_model_version())
+        eligible = (
+            WardrobeItem.user_id == user_id,
+            WardrobeItem.category == candidate.category,
+            WardrobeItem.status == ItemStatus.WEARABLE.value,
+            WardrobeItem.deleted_at.is_(None),
+            current_vector,
+        )
+        anchor = (
+            select(WardrobeItem.id, ItemEmbedding.vector)
+            .join(ItemEmbedding, ItemEmbedding.item_id == WardrobeItem.id)
+            .where(*eligible)
+            .order_by((WardrobeItem.color_main == candidate.color_main).desc(), WardrobeItem.id)
             .limit(1)
-        )
-        if anchor_id is None:
-            return []
-        anchor_vec = await self.session.scalar(
-            select(ItemEmbedding.vector).where(ItemEmbedding.item_id == anchor_id).limit(1)
-        )
-        if anchor_vec is None:
-            return []
+        ).cte("sense_check_anchor")
         stmt = (
             select(
                 WardrobeItem,
-                ItemEmbedding.vector.op("<->")(anchor_vec).label("dist"),
+                ItemEmbedding.vector.op("<->", return_type=Float())(anchor.c.vector).label("dist"),
             )
+            .select_from(WardrobeItem)
             .join(ItemEmbedding, ItemEmbedding.item_id == WardrobeItem.id)
-            .where(
-                WardrobeItem.user_id == user_id,
-                WardrobeItem.category == candidate.category,
-                WardrobeItem.status == ItemStatus.WEARABLE.value,
-                WardrobeItem.deleted_at.is_(None),
-                WardrobeItem.id != anchor_id,
-            )
-            .order_by("dist")
+            .join(anchor, WardrobeItem.id != anchor.c.id)
+            .where(*eligible)
+            .order_by("dist", WardrobeItem.id)
             .limit(k)
         )
         rows = (await self.session.execute(stmt)).all()
@@ -290,10 +288,10 @@ class SenseCheck:
     ) -> list[SimilarItem]:
         if not scored:
             return []
-        sources = await self._thumbnail_sources([item.id for item, _ in scored])
+        sources = await load_wardrobe_image_sources(self.session, [item for item, _ in scored])
         out: list[SimilarItem] = []
         for item, similarity in scored:
-            object_key, fallback_url = sources.get(item.id, (None, item.cover_image_url))
+            object_key, fallback_url = sources[item.id][0]
             out.append(
                 SimilarItem(
                     item_id=item.id,
@@ -315,27 +313,6 @@ class SenseCheck:
                 )
             )
         return out
-
-    async def _thumbnail_sources(
-        self, item_ids: list[uuid.UUID]
-    ) -> dict[uuid.UUID, tuple[str | None, str | None]]:
-        images = list(
-            await self.session.scalars(
-                select(WardrobeItemImage).where(WardrobeItemImage.item_id.in_(item_ids))
-            )
-        )
-        preferred: dict[uuid.UUID, WardrobeItemImage] = {}
-        for image in images:
-            existing = preferred.get(image.item_id)
-            if existing is None or (
-                existing.image_type != ImageType.STANDARD.value
-                and image.image_type == ImageType.STANDARD.value
-            ):
-                preferred[image.item_id] = image
-        return {
-            item_id: (image.object_key, image.image_url)
-            for item_id, image in preferred.items()
-        }
 
     async def _wardrobe_gap(self, user_id: uuid.UUID) -> list[str]:
         """`Category` values for which the user owns zero wearable items."""
@@ -608,6 +585,7 @@ class SenseCheck:
         image_url: str | None,
         source_url: str | None,
         result: SenseCheckResult,
+        object_key: str | None,
     ) -> ShoppingSenseCheck:
         payload = {
             "verdict": result.verdict,
@@ -635,7 +613,7 @@ class SenseCheck:
         record = ShoppingSenseCheck(
             user_id=user_id,
             image_url=image_url,
-            object_key=extract_internal_object_key(image_url, get_settings()),
+            object_key=object_key,
             source_url=source_url,
             verdict=result.verdict,
             reason=result.reason,

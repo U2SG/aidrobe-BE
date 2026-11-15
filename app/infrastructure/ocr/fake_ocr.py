@@ -9,7 +9,7 @@ class FakeOcr:
     steer the outcome (mirrors how ``FakeVision`` keys off ``fail`` / ``pants``).
     """
 
-    async def extract_text(self, image_url: str) -> OcrResult:
+    async def extract_text(self, image_url: str, *, source_key: str | None = None) -> OcrResult:
         if "fail" in image_url:
             raise ValueError("fake ocr failure")
         if "pants" in image_url or "bottom" in image_url:

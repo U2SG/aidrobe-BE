@@ -135,6 +135,8 @@ back without losing already-persisted data (e.g. `context_json` keeps
 being written even when `ENABLE_TODAY_CONTEXT=false`; the flag only
 gates response exposure).
 
+See [import pipeline rollout](docs/import-pipeline-rollout.md) for the API and worker upgrade order.
+
 ## Handoff
 
 V3+ rolling handoff lives in:

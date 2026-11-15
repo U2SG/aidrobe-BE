@@ -3,10 +3,6 @@ import re
 from typing import Any
 from urllib.parse import urljoin
 
-import httpx
-
-from app.infrastructure.importers.link_parser import _is_safe_url
-
 META_TAG_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
 IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
 ATTR_RE = re.compile(r"""([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*["']([^"']*)["']""")
@@ -21,10 +17,7 @@ def _attrs(tag: str) -> dict[str, str]:
 
 
 def _safe_join(base_url: str, image_url: str) -> str | None:
-    resolved = urljoin(base_url, image_url)
-    if not _is_safe_url(resolved):
-        return None
-    return resolved
+    return urljoin(base_url, image_url)
 
 
 def _extract_og_image(html: str, base_url: str) -> str | None:
@@ -94,15 +87,5 @@ def _extract_booth_image(html: str, base_url: str) -> str | None:
 
 
 class TaobaoAdapter:
-    async def extract_image_url(self, url: str, client: httpx.AsyncClient) -> str | None:
-        if not _is_safe_url(url):
-            return None
-        response = await client.get(url)
-        response.raise_for_status()
-        html = response.text
-        base_url = str(response.url)
-        return (
-            _extract_og_image(html, base_url)
-            or _extract_json_ld_image(html, base_url)
-            or _extract_booth_image(html, base_url)
-        )
+    def image_from_html(self, html: str, url: str) -> str | None:
+        return _extract_og_image(html, url) or _extract_json_ld_image(html, url) or _extract_booth_image(html, url)

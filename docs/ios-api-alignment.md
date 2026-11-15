@@ -160,3 +160,13 @@ Common codes:
 2. **Outfit Board** (`/v1/outfit-visual-assets`) — generation is async (arq worker). iOS should poll `generation_status` until `"completed"` or `"failed"`.
 3. **`style_context.template_id`** drives UI theming. Current templates: `minimal_commute_v1`, `soft_feminine_v1`, `formal_office_v1`, `casual_street_v1`, `general_v1`.
 4. **Pagination unification** — `wardrobe` uses `limit/offset`, `outfit-history` uses `page/page_size`. Will be unified in a future pass.
+
+## 衣物导入任务
+
+`GET /v1/import-tasks` 省略 `status` 时只返回 `waiting_confirm`。重复传参可查询多个状态，例如 `?status=processing&status=failed`。分页继续使用 `limit` 和 `offset`，同一时间按任务 ID 稳定排序。
+
+`POST /v1/import-tasks/{task_id}/retry` 只处理当前账户的任务。可重试失败会以同一个任务 ID 返回 `queued`。进行中重复调用返回当前状态，已识别或永久失败返回 409。失败响应的可选 `retryable` 字段供客户端决定是否显示重试入口。
+
+`candidate_item` 对应固定首候选，与旧 `/confirm` 一致。重复确认同一候选返回原衣物 ID，分批确认保留其余候选。若要关闭未确认候选，可在 `/confirm-items` 传 `dismiss_remaining=true`。裁剪可能在确认之后到达，重新读取候选或衣物可获取最新图片。私有图片 URL 应在展示时读取更新。
+
+首套接口继续返回 HTTP 200 和 `no_outfit`、`single_outfit`、`ready` 三种业务状态。首套生成超时沿用错误响应。现有客户端可继续使用原流程，新增状态查询和重试入口由客户端另行接入。

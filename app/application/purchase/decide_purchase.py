@@ -54,7 +54,7 @@ from app.application.purchase.purchase_decision_rules import (
     decide,
     replay_decision,
 )
-from app.common.enums import ImageType, WardrobeDecisionType
+from app.common.enums import WardrobeDecisionType
 from app.common.locale import resolve_locale
 from app.infrastructure.persistence.models.purchase_decision import (
     DECISION_SNAPSHOT_VERSION,
@@ -62,10 +62,11 @@ from app.infrastructure.persistence.models.purchase_decision import (
     WardrobeDecision,
 )
 from app.infrastructure.persistence.models.user import UserSettings
-from app.infrastructure.persistence.models.wardrobe import WardrobeItemImage
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.purchase_decision_repo import (
     SqlAlchemyWardrobeDecisionRepository,
 )
+from app.infrastructure.persistence.repositories.wardrobe_repo import ImageSource, load_wardrobe_image_sources
 
 
 def parsed_item_from_snapshot(raw: Any) -> ParsedItem | None:
@@ -189,31 +190,17 @@ class DecidePurchase:
 
 
 async def load_item_thumbnails(
-    session: AsyncSession, item_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, tuple[str | None, str | None]]:
-    """`item_id → (object_key, fallback_url)` for the comparison thumbnails.
-
-    One `IN` query, `standard` preferred over `original` — the same shape as
-    `sense_check._thumbnail_sources`, kept as a separate function rather than
-    imported because that one is a private method of a live M17 use case (the
-    same call V3-005 made about `_COMPLEMENTS`).
-
-    Returns the durable pair; the presentation layer signs it at request time
-    through `resolve_render_url`, so nothing TTL-bound is ever persisted.
-    """
+    session: AsyncSession, user_id: uuid.UUID, item_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, ImageSource]:
     if not item_ids:
         return {}
-    images = list(
-        await session.scalars(select(WardrobeItemImage).where(WardrobeItemImage.item_id.in_(item_ids)))
-    )
-    preferred: dict[uuid.UUID, WardrobeItemImage] = {}
-    for image in images:
-        current = preferred.get(image.item_id)
-        if current is None or (
-            current.image_type != ImageType.STANDARD.value and image.image_type == ImageType.STANDARD.value
-        ):
-            preferred[image.item_id] = image
-    return {item_id: (image.object_key, image.image_url) for item_id, image in preferred.items()}
+    items = (
+        await session.scalars(
+            select(WardrobeItem).where(WardrobeItem.id.in_(item_ids), WardrobeItem.user_id == user_id)
+        )
+    ).all()
+    sources = await load_wardrobe_image_sources(session, items)
+    return {item_id: cover for item_id, (cover, _) in sources.items()}
 
 
 def shown_decision(decision: WardrobeDecision) -> PurchaseDecisionOutcome:

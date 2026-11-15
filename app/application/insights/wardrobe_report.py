@@ -105,7 +105,6 @@ class TopItem:
     item_id: uuid.UUID
     title: str
     category: str
-    cover_image_url: str | None
     wear_count: int
 
 
@@ -130,7 +129,6 @@ class IdleEntry:
     item_id: uuid.UUID
     title: str
     category: str
-    cover_image_url: str | None
     last_worn: date | None
     idle_days: int | None
 
@@ -189,7 +187,6 @@ async def _top_items(
             WardrobeItem.id,
             WardrobeItem.title,
             WardrobeItem.category,
-            WardrobeItem.cover_image_url,
             wear_count,
         )
         .select_from(WearHistory)
@@ -199,13 +196,13 @@ async def _top_items(
             WearHistory.user_id == user_id,
             WearHistory.worn_date >= w.start,
             WearHistory.worn_date <= w.end,
+            WardrobeItem.user_id == user_id,
             WardrobeItem.deleted_at.is_(None),
         )
         .group_by(
             WardrobeItem.id,
             WardrobeItem.title,
             WardrobeItem.category,
-            WardrobeItem.cover_image_url,
         )
         .order_by(wear_count.desc(), WardrobeItem.id)
         .limit(limit)
@@ -215,7 +212,6 @@ async def _top_items(
             item_id=r.id,
             title=r.title,
             category=r.category,
-            cover_image_url=r.cover_image_url,
             wear_count=int(r.wear_count),
         )
         for r in result.all()
@@ -375,7 +371,6 @@ async def _longest_idle_item(
             WardrobeItem.id,
             WardrobeItem.title,
             WardrobeItem.category,
-            WardrobeItem.cover_image_url,
             WardrobeItem.last_worn_at,
             idle_since_expr().label("idle_since"),
         )
@@ -394,7 +389,6 @@ async def _longest_idle_item(
         item_id=r.id,
         title=r.title,
         category=r.category,
-        cover_image_url=r.cover_image_url,
         last_worn=r.last_worn_at,
         idle_days=idle_days,
     )

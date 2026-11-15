@@ -1,13 +1,15 @@
-import ipaddress
 import re
-import socket
 from dataclasses import dataclass
 from typing import cast
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import httpx
 
 from app.config.settings import Settings
+from app.infrastructure.importers.external_http import BROWSER_HEADERS as BROWSER_HEADERS
+from app.infrastructure.importers.external_http import InvalidExternalSource, fetch_external
+from app.infrastructure.importers.external_http import is_safe_url as is_safe_url
+from app.infrastructure.storage.object_key import names_internal_storage
 
 META_IMAGE_RE = re.compile(
     r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\'][^>]+content=["\']([^"\']+)["\']',
@@ -40,44 +42,28 @@ class ProductPage:
     image_url: str | None = None
     text: str = ""
 
-# A default httpx user-agent gets 403'd or served a bot page by most sites
-# (Wikipedia, Taobao, etc.). Present as a normal browser; zh Accept-Language
-# helps the CN shopping sites return product markup.
-BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-}
-
-_ALLOWED_SCHEMES = {"http", "https"}
-
-
-def is_safe_url(url: str) -> bool:
-    parsed = urlparse(url)
-    if parsed.scheme not in _ALLOWED_SCHEMES:
-        return False
-    hostname = parsed.hostname
-    if not hostname:
-        return False
-    # Block localhost and common internal names
-    if hostname in {"localhost", "metadata.google.internal"}:
-        return False
-    try:
-        addr = ipaddress.ip_address(socket.gethostbyname(hostname))
-        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
-            return False
-    except (socket.gaierror, ValueError):
-        return False
-    return True
-
-
 _is_safe_url = is_safe_url
+_MAX_PRODUCT_PAGE_BYTES = 2 * 1024 * 1024
 
 
-def _image_from_html(html: str, base_url: str) -> str | None:
+async def fetch_product_html(source_url: str, settings: Settings) -> tuple[str, str]:
+    response, final_url = await fetch_external(
+        source_url,
+        settings,
+        timeout=settings.LINK_PARSE_TIMEOUT_SECONDS,
+        max_bytes=_MAX_PRODUCT_PAGE_BYTES,
+        accepts=lambda content_type: content_type in {"text/html", "application/xhtml+xml"},
+    )
+    return response.text, final_url
+
+
+def safe_product_image_url(image_url: str | None, settings: Settings) -> str | None:
+    if image_url and not names_internal_storage(image_url, settings):
+        return image_url
+    return None
+
+
+def image_from_html(html: str, base_url: str) -> str | None:
     for pattern in (META_IMAGE_RE, IMG_RE):
         match = pattern.search(html)
         if match:
@@ -85,7 +71,7 @@ def _image_from_html(html: str, base_url: str) -> str | None:
     return None
 
 
-def _text_from_html(html: str) -> str:
+def text_from_html(html: str) -> str:
     """Title + description/keywords meta values, joined. Still raw and untrusted."""
     parts: list[str] = []
     title = TITLE_RE.search(html)
@@ -109,25 +95,11 @@ class HtmlLinkParser:
         implementation and a single redirect-revalidation path — a second fetch
         for the text would double the SSRF surface for no gain.
         """
-        if not is_safe_url(source_url):
+        try:
+            html, final_url = await fetch_product_html(source_url, self.settings)
+        except (InvalidExternalSource, httpx.HTTPError, TimeoutError):
             return ProductPage()
-        async with httpx.AsyncClient(
-            timeout=self.settings.LINK_PARSE_TIMEOUT_SECONDS,
-            follow_redirects=False,
-            headers=BROWSER_HEADERS,
-        ) as client:
-            response = await client.get(source_url)
-            # Follow redirects manually so we can re-check each hop
-            hops = 0
-            while response.is_redirect and hops < 5:
-                redirect_url = response.headers.get("location", "")
-                if not is_safe_url(redirect_url):
-                    return ProductPage()
-                response = await client.get(redirect_url)
-                hops += 1
-            response.raise_for_status()
-        html = response.text
         return ProductPage(
-            image_url=_image_from_html(html, str(response.url)),
-            text=_text_from_html(html),
+            image_url=safe_product_image_url(image_from_html(html, final_url), self.settings),
+            text=text_from_html(html),
         )

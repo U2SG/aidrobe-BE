@@ -1,4 +1,3 @@
-import base64
 import json
 from typing import Any
 
@@ -6,6 +5,7 @@ import httpx
 
 from app.application.ports.ocr import OcrResult
 from app.config.settings import Settings
+from app.infrastructure.storage.source_image import image_data_uri, load_source_bytes
 
 OCR_PROMPT = (
     "You are reading a shopping receipt, order screenshot, or purchase-confirmation "
@@ -32,10 +32,10 @@ class QwenOcr:
             raise ValueError("QWEN_API_KEY is required when OCR_PROVIDER=qwen")
         self.settings = settings
 
-    async def extract_text(self, image_url: str) -> OcrResult:
+    async def extract_text(self, image_url: str, *, source_key: str | None = None) -> OcrResult:
         # Inline as base64 for the same reason as QwenVision: receipt screenshots
         # live in private storage a remote model cannot reach.
-        image_payload_url = await self._to_data_uri(image_url)
+        image_payload_url = await self._to_data_uri(image_url, source_key)
         payload = {
             "model": self.settings.QWEN_OCR_MODEL,
             "messages": [
@@ -73,25 +73,10 @@ class QwenOcr:
             confidence_score=max(0.0, min(1.0, float(data.get("confidence_score", 0.0)))),
         )
 
-    async def _to_data_uri(self, image_url: str) -> str:
+    async def _to_data_uri(self, image_url: str, source_key: str | None = None) -> str:
         if image_url.startswith("data:"):
             return image_url
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
-        }
-        async with httpx.AsyncClient(
-            timeout=self.settings.OCR_TIMEOUT_SECONDS, headers=headers
-        ) as client:
-            response = await client.get(image_url, follow_redirects=True)
-            response.raise_for_status()
-        content_type = response.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-        if not content_type.startswith("image/"):
-            content_type = "image/jpeg"
-        encoded = base64.b64encode(response.content).decode("ascii")
-        return f"data:{content_type};base64,{encoded}"
+        return image_data_uri(await load_source_bytes(image_url, source_key))
 
     def _parse_json_content(self, content: str) -> dict[str, Any]:
         text = content.strip()

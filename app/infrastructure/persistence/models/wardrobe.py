@@ -27,6 +27,7 @@ class WardrobeItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(32), default=ItemStatus.WEARABLE.value, nullable=False)
     cover_image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     original_image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    embedding_source_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # V4 item cutout — async gpt-image-2 product-shot. skipped (default/rollback)
     # → queued → ready/failed. When ready, cover_image_url points at the cutout.
     cutout_status: Mapped[str] = mapped_column(String(16), default="skipped", server_default="skipped", nullable=False)

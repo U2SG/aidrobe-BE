@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.models.user import User, UserSession, UserSettings
@@ -26,9 +27,9 @@ class SqlAlchemyUserRepository:
         if existing is not None:
             return existing
 
-        user = User(id=user_id)
-        self.session.add(user)
-        await self.session.flush()
+        await self.session.execute(insert(User).values(id=user_id).on_conflict_do_nothing(index_elements=[User.id]))
+        user = await self.get_by_id(user_id)
+        assert user is not None
         return user
 
     async def get_or_create_by_apple_subject(
@@ -100,9 +101,11 @@ class SqlAlchemyUserRepository:
         if existing is not None:
             return existing
 
-        settings = UserSettings(user_id=user_id)
-        self.session.add(settings)
-        await self.session.flush()
+        await self.session.execute(
+            insert(UserSettings).values(user_id=user_id).on_conflict_do_nothing(index_elements=[UserSettings.user_id])
+        )
+        settings = await self.session.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
+        assert settings is not None
         return settings
 
     async def flush(self) -> None:

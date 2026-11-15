@@ -64,13 +64,15 @@ def _patch_storage(monkeypatch: pytest.MonkeyPatch, storage: Any) -> None:
     monkeypatch.setattr("app.bootstrap.container.object_storage", lambda: storage)
 
 
-def _patch_renderer_to_skip_io(monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_renderer_to_skip_io(monkeypatch: pytest.MonkeyPatch, *, approved: bool = True) -> None:
     """Skip the heavy PIL render path — we don't need actual JPEG bytes to
     prove the worker's state-machine semantics."""
 
     async def _fake_render(
         snapshot: _visual_asset_runtime.VisualAssetSnapshot,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str] | None:
+        if not approved:
+            return None
         from app.bootstrap.container import object_storage
 
         storage = object_storage()
@@ -162,12 +164,14 @@ async def test_enqueue_falls_back_to_asset_key_when_no_outfit(
     assert job.idempotency_key == f"outfit_board:asset:{asset_id}"
 
 
-async def test_drain_renders_and_marks_succeeded(
+@pytest.mark.parametrize("approved", [True, False])
+async def test_drain_finalizes_reviewed_render(
     patched_session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
+    approved: bool,
 ) -> None:
     _patch_storage(monkeypatch, _FakeStorage())
-    _patch_renderer_to_skip_io(monkeypatch)
+    _patch_renderer_to_skip_io(monkeypatch, approved=approved)
 
     user_id, asset_id = await _seed_asset(patched_session_factory)
     async with patched_session_factory() as s:
@@ -192,9 +196,14 @@ async def test_drain_renders_and_marks_succeeded(
 
         asset = await s.get(OutfitVisualAsset, asset_id)
         assert asset is not None
-        assert asset.generation_status == "completed"
-        assert asset.image_url is not None
-        assert asset.image_url.endswith(f"{asset_id}.jpg")
+        if approved:
+            assert asset.generation_status == "completed"
+            assert asset.image_url is not None
+            assert asset.image_url.endswith(f"{asset_id}.jpg")
+        else:
+            assert asset.generation_status == "rejected_by_quality_gate"
+            assert asset.image_url is None
+            assert asset.object_key is None
 
 
 async def test_drain_marks_failed_and_keeps_asset_processing_until_dead(
@@ -384,7 +393,9 @@ async def test_render_prefers_object_key_without_http_fallback(monkeypatch: pyte
         },
     )
 
-    url, object_key = await outfit_board_worker._render_and_upload(snapshot)
+    result = await outfit_board_worker._render_and_upload(snapshot)
+    assert result is not None
+    url, object_key = result
 
     assert storage.get_calls == ["users/u/items/i/cutout.png"]
     assert storage.put_calls == [object_key]
@@ -421,16 +432,78 @@ async def test_render_keeps_legacy_url_only_snapshot_compatible(monkeypatch: pyt
     assert downloads == ["https://external.example/bottom.jpg"]
 
 
+async def test_generated_outfit_uses_original_shoe_reference_and_only_uploads_on_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _RenderStorage()
+    _patch_storage(monkeypatch, storage)
+    settings = outfit_board_worker.get_settings().model_copy(
+        update={"ENABLE_ITEM_CUTOUT": True, "IMAGE_CUTOUT_PROVIDER": "openai"}
+    )
+    monkeypatch.setattr(outfit_board_worker, "get_settings", lambda: settings)
+
+    async def generate(images: list[bytes], garments: list[str], *, emphasize_shoe_details: bool) -> bytes:
+        assert len(images) == 1
+        assert garments == ["shoes: White sneakers (white)"]
+        return _png_bytes()
+
+    async def check_outfit(sources: list[bytes], generated: bytes, *, garments: list[str]) -> bool:
+        expected = ["generated-shoes.png", "original-shoes.jpg"]
+        assert storage.get_calls == expected
+        assert len(sources) == 1
+        assert generated == _png_bytes()
+        return True
+
+    async def reject_footwear(source: bytes, generated: bytes) -> bool:
+        return False
+
+    class FakeProvider:
+        render_outfit = staticmethod(generate)
+        matches_outfit_photo = staticmethod(check_outfit)
+        matches_outfit_footwear = staticmethod(reject_footwear)
+
+    monkeypatch.setattr(outfit_board_worker, "OpenAIImageCutout", lambda _: FakeProvider())
+    monkeypatch.setattr(outfit_board_worker, "QwenVision", lambda _: FakeProvider())
+    snapshot = _visual_asset_runtime.VisualAssetSnapshot(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        input_snapshot={
+            "generate": True,
+            "item_list": [
+                {
+                    "role": "shoes",
+                    "title": "White sneakers",
+                    "color": "white",
+                    "cutout_object_key": "generated-shoes.png",
+                    "review_object_key": "original-shoes.jpg",
+                },
+            ],
+        },
+    )
+
+    assert await outfit_board_worker._render_and_upload(snapshot) is None
+    assert storage.put_calls == []
+
+
 async def test_download_image_rejects_unsafe_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.infrastructure.importers import external_http
+
     async_client = httpx.AsyncClient
     fetches: list[str] = []
 
+    async def resolve(host: str, port: int) -> str:
+        if host == "169.254.169.254":
+            raise external_http.InvalidExternalSource("External URL must resolve to public addresses")
+        return "203.0.114.2"
+
     async def handler(request: httpx.Request) -> httpx.Response:
-        fetches.append(str(request.url))
+        fetches.append(f"{request.url.scheme}://{request.headers['host']}{request.url.path}")
         return httpx.Response(302, request=request, headers={"location": "http://169.254.169.254/meta"})
 
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: async_client(transport=httpx.MockTransport(handler)))
-    monkeypatch.setattr(outfit_board_worker, "is_safe_url", lambda url: "169.254" not in url)
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kwargs: async_client(transport=httpx.MockTransport(handler), **kwargs)
+    )
+    monkeypatch.setattr(external_http, "_resolve_public_address", resolve)
 
     assert await outfit_board_worker._download_image("https://images.example/top.jpg") is None
     assert fetches == ["https://images.example/top.jpg"]
@@ -446,6 +519,7 @@ async def test_load_snapshot_image_raises_for_unreadable_object_without_fallback
             _FailingStorage(),
             object_key="users/u/items/i/cutout.png",
             fallback_url=None,
+            user_id=uuid.uuid4(),
         )
 
 
@@ -455,7 +529,12 @@ async def test_load_snapshot_image_reads_own_bucket_url_from_storage(monkeypatch
     # as placeholders. Our own bucket is read by key instead.
     from app.config.settings import Settings
 
-    monkeypatch.setattr(outfit_board_worker, "get_settings", lambda: Settings(S3_BUCKET="aidrobe"))
+    user_id = uuid.uuid4()
+    monkeypatch.setattr(
+        outfit_board_worker,
+        "get_settings",
+        lambda: Settings(STORAGE_PROVIDER="s3", S3_BUCKET="aidrobe", S3_ENDPOINT_URL="http://localhost:9000"),
+    )
     png = io.BytesIO()
     Image.new("RGBA", (4, 4), (255, 0, 0, 255)).save(png, format="PNG")
     reads: list[str] = []
@@ -470,11 +549,14 @@ async def test_load_snapshot_image_reads_own_bucket_url_from_storage(monkeypatch
 
     monkeypatch.setattr(outfit_board_worker, "_download_image", _no_download)
     image = await outfit_board_worker._load_snapshot_image(
-        _Storage(), object_key=None, fallback_url="http://localhost:9000/aidrobe/users/u/wardrobe/x/top.jpg"
+        _Storage(),
+        object_key=None,
+        fallback_url=f"http://localhost:9000/aidrobe/users/{user_id}/wardrobe/x/top.jpg",
+        user_id=user_id,
     )
 
     assert image is not None
-    assert reads == ["users/u/wardrobe/x/top.jpg"]
+    assert reads == [f"users/{user_id}/wardrobe/x/top.jpg"]
 
 
 def test_used_slots_are_centred_as_a_group() -> None:

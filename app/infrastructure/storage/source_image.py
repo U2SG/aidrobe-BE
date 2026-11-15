@@ -1,53 +1,108 @@
-"""Read an image the user imported, wherever it lives.
+"""Read imports only from verified storage references or bounded public HTTP."""
 
-Shared by the pipelines that post-process uploads (cutout, garment crops):
-our own storage is read by key (no HTTP, no SSRF surface); anything else is an
-external import link fetched over HTTP behind the SSRF guard.
-"""
+import base64
+import io
+import uuid
+import warnings
+from urllib.parse import urlsplit
 
-from __future__ import annotations
+from PIL import Image
 
-from urllib.parse import unquote, urlsplit
+from app.config.settings import Settings
+from app.infrastructure.importers.external_http import InvalidExternalSource, fetch_external
+from app.infrastructure.storage.object_key import active_object_key, is_owned_object_key, names_internal_storage
 
-import httpx
+_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+_IMAGE_TYPES = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp", "GIF": "image/gif"}
 
-from app.infrastructure.importers.link_parser import BROWSER_HEADERS, is_safe_url
+
+class InvalidSourceImage(ValueError):
+    """The source reference or image content cannot be used."""
 
 
-def key_from_url(url: str, bucket: str) -> str | None:
-    """Derive the storage object key from an internal file URL.
-
-    Internal URLs are `<base>/<bucket>/<key>` (S3/MinIO) regardless of which
-    host the base used, so splitting on `/<bucket>/` is host-agnostic. Returns
-    None for URLs that don't reference our bucket (external import links).
-    Signed URLs carry their signature in the query string, which is dropped."""
-    path = urlsplit(url).path
-    marker = f"/{bucket}/"
-    idx = path.find(marker)
-    if idx == -1:
+def resolve_import_source_key(
+    url: str | None, user_id: uuid.UUID, settings: Settings, *, expected_key: str | None = None
+) -> str | None:
+    """Validate an upload reference before it reaches backend credentials."""
+    if url is None:
+        if expected_key is not None:
+            raise InvalidSourceImage("Source image is unavailable")
         return None
-    return unquote(path[idx + len(marker) :])
+    try:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.port == 0
+            or "\\" in url
+            or any(ord(char) <= 32 or ord(char) == 127 for char in url)
+        ):
+            raise InvalidSourceImage("Invalid source image URL")
+    except ValueError as exc:
+        raise InvalidSourceImage("Invalid source image URL") from exc
+    key = active_object_key(url, settings)
+    if key is not None:
+        if is_owned_object_key(key, user_id) and (expected_key is None or expected_key == key):
+            return key
+        raise InvalidSourceImage("Source image is unavailable")
+    if expected_key is not None or names_internal_storage(url, settings):
+        raise InvalidSourceImage("Source image is unavailable")
+    return None
 
 
-async def load_source_bytes(source_url: str, source_key: str | None) -> bytes:
-    """Read the original image. Prefer reading from our own storage by key
-    (no HTTP, no SSRF guard); fall back to an HTTP fetch for external URLs."""
+def _image_type(data: bytes) -> str:
+    if not data or len(data) > _MAX_IMAGE_BYTES:
+        raise InvalidSourceImage("Invalid source image size")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(data)) as image:
+                media_type = _IMAGE_TYPES.get(image.format or "")
+                if media_type is None:
+                    raise InvalidSourceImage("Unsupported source image type")
+                image.verify()
+                return media_type
+    except (OSError, SyntaxError, Image.DecompressionBombWarning, Image.DecompressionBombError) as exc:
+        raise InvalidSourceImage("Invalid source image contents") from exc
+
+
+def image_data_uri(data: bytes) -> str:
+    media_type = _image_type(data)
+    return f"data:{media_type};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+async def download_external_source_image(url: str, settings: Settings) -> tuple[bytes, str]:
+    """Return checked image bytes and their actual media type, never the response URL."""
+    try:
+        response, _ = await fetch_external(
+            url,
+            settings,
+            timeout=15,
+            max_bytes=_MAX_IMAGE_BYTES,
+            accepts=lambda content_type: content_type in _IMAGE_TYPES.values() or content_type in {
+                "", "application/octet-stream",
+            },
+        )
+    except InvalidExternalSource as exc:
+        raise InvalidSourceImage(str(exc)) from exc
+    return response.content, _image_type(response.content)
+
+
+async def load_source_bytes(
+    source_url: str | None, source_key: str | None, *, user_id: uuid.UUID | None = None
+) -> bytes:
+    """Read a trusted saved key, an ownership-checked legacy upload, or an external image."""
     from app.bootstrap.container import object_storage
     from app.config.settings import get_settings
 
-    storage = object_storage()
-    key = source_key
-    if key is None:
-        bucket = get_settings().S3_BUCKET
-        if bucket:
-            key = key_from_url(source_url, bucket)
+    settings = get_settings()
+    key = source_key if user_id is None else resolve_import_source_key(
+        source_url, user_id, settings, expected_key=source_key
+    )
     if key is not None:
-        return await storage.get_object(key)
-
-    # External URL (user-pasted import link) — guard against SSRF.
-    if not is_safe_url(source_url):
-        raise ValueError(f"unsafe source url blocked: {source_url}")
-    async with httpx.AsyncClient(timeout=30, headers=BROWSER_HEADERS) as client:
-        resp = await client.get(source_url, follow_redirects=True)
-        resp.raise_for_status()
-        return resp.content
+        return await object_storage().get_object(key)
+    if source_url is None:
+        raise InvalidSourceImage("Source image is required")
+    data, _ = await download_external_source_image(source_url, settings)
+    return data

@@ -6,13 +6,9 @@ soft-deleted and non-wearable items), that `fit_feedback.scene` really joins to
 the right item, that the pgvector branch degrades instead of erroring, and that
 the query budget holds when the counting is over emitted SQL.
 
-On the pgvector branch: `PGVECTOR_ENABLED` is unset in CI, so
-`models.embedding._USE_VECTOR` is false and `ItemEmbedding.vector` is a JSONB
-column. Flipping the env var at runtime therefore selects the vector *branch*
-without giving it a vector *index* — which is the honest limit of what this
-environment can test, and is why the flag-on cases here assert degradation to
-the deterministic tier rather than a cosine ordering. A cosine-ordered result
-is covered as pure output handling in `tests/unit/test_v3_wardrobe_similarity`.
+The JSONB fixture exercises the deterministic tier. The pgvector CI job
+checks source/model fences and the no-anchor fallback against the extension
+in `tests/services/test_current_vector_consumers.py`.
 """
 
 from __future__ import annotations
@@ -151,21 +147,29 @@ async def test_only_the_callers_own_wearable_items_are_compared(
 
 
 @pytest.mark.parametrize(
-    ("title", "name_source", "canonical_name", "covers"),
+    ("title", "name_source", "canonical_name", "sub_category", "covers"),
     [
-        ("驼色羊毛大衣", "user", "White shirt", True),
-        ("驼色羊毛大衣", "ai", "White shirt", False),
-        ("秋日常穿", "user", "Camel wool coat", True),
-        ("秋日常穿", "user", "Camel blazer", False),
+        ("驼色羊毛大衣", "user", "White shirt", None, True),
+        ("驼色羊毛大衣", "ai", "White shirt", None, False),
+        ("秋日常穿", "user", "Camel wool coat", None, True),
+        ("秋日常穿", "user", "Camel blazer", None, False),
+        ("驼色羊毛大衣", "user", "White shirt", "shirt", True),
+        ("驼色羊毛大衣", "ai", "White shirt", "shirt", False),
     ],
 )
 async def test_user_named_coat_is_compared_by_its_corrected_type(
-    db_session: AsyncSession, title: str, name_source: str, canonical_name: str, covers: bool
+    db_session: AsyncSession,
+    title: str,
+    name_source: str,
+    canonical_name: str,
+    sub_category: str | None,
+    covers: bool,
 ) -> None:
     user_id = await _seed_user(db_session)
     coat = await _add_item(db_session, user_id, title=title, color="camel")
     coat.name_source = name_source
     coat.canonical_name = canonical_name
+    coat.sub_category = sub_category
     await db_session.flush()
 
     evidence = await compute_similarity_evidence(
@@ -281,13 +285,11 @@ async def test_structured_ranking_orders_by_shared_attributes(
     ]
 
 
-async def test_pgvector_enabled_without_embeddings_degrades_to_the_same_answer(
+async def test_enabling_pgvector_after_jsonb_start_keeps_the_same_answer(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A4 — flag on, nothing embedded: the vector tier finds no anchor and the
-    deterministic tier produces the identical evidence. No error, no empty
-    result, no dependence on the extension being installed."""
+    """The enabled query path must match the vector column type at startup."""
     user_id = await _seed_user(db_session)
     await _add_item(db_session, user_id, title="bare", color="navy")
     await _add_item(db_session, user_id, title="gray", color="gray")

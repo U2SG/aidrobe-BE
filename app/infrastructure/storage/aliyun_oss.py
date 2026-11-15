@@ -7,9 +7,6 @@ OSS is "S3-compatible" because:
 - STS / RAM role semantics differ enough that the credential-management
   surface area is different.
 
-NOT covered by automated tests in this repo — needs a real OSS bucket and
-network egress. Tested live during deployment.
-
 The `oss2` SDK is imported lazily so dev environments without it still load
 the module.
 """
@@ -25,8 +22,13 @@ import structlog
 
 from app.application.ports.storage import PresignResult
 from app.config.settings import Settings
+from app.infrastructure.storage.object_key import oss_endpoint_url
+from app.infrastructure.storage.sdk_io import CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS, run_sdk
 
 logger = structlog.get_logger(__name__)
+# OSS forwards this value to requests unchanged, which accepts separate
+# connect and read socket timeouts.
+_OSS_TIMEOUT = (CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS)
 
 
 class AliyunOssStorage:
@@ -53,8 +55,9 @@ class AliyunOssStorage:
         )
         return oss2.Bucket(
             auth,
-            self.settings.ALIYUN_OSS_ENDPOINT,
+            oss_endpoint_url(self.settings),
             self.settings.ALIYUN_OSS_BUCKET,
+            connect_timeout=_OSS_TIMEOUT,
         )
 
     async def create_presigned_upload(
@@ -76,7 +79,8 @@ class AliyunOssStorage:
         # `sign_url` returns a string URL; OSS signs the verb + headers in
         # the URL itself, so the client just PUTs the bytes to it.
         ttl = self.settings.S3_PRESIGN_EXPIRES_SECONDS  # reuse the existing knob
-        upload_url = self._bucket.sign_url(  # type: ignore[attr-defined]
+        upload_url = await run_sdk(
+            self._bucket.sign_url,  # type: ignore[attr-defined]
             "PUT",
             object_key,
             ttl,
@@ -91,6 +95,9 @@ class AliyunOssStorage:
         )
 
     async def delete_objects(self, keys: Sequence[str]) -> None:
+        await run_sdk(self._delete_objects, keys)
+
+    def _delete_objects(self, keys: Sequence[str]) -> None:
         if not keys:
             return
         for i in range(0, len(keys), 1000):
@@ -114,6 +121,9 @@ class AliyunOssStorage:
         land in per-purpose buckets whose URLs `extract_internal_object_key`
         deliberately refuses to resolve — the prefix sweep is the only
         deletion path that reaches them."""
+        return await run_sdk(self._delete_prefix, prefix)
+
+    def _delete_prefix(self, prefix: str) -> int:
         if not prefix.strip("/"):
             raise ValueError("delete_prefix requires a non-root prefix")
         import oss2
@@ -135,7 +145,7 @@ class AliyunOssStorage:
 
         deleted = 0
         for name in sorted(bucket_names):
-            bucket = oss2.Bucket(auth, self.settings.ALIYUN_OSS_ENDPOINT, name)
+            bucket = oss2.Bucket(auth, oss_endpoint_url(self.settings), name, connect_timeout=_OSS_TIMEOUT)
             keys = [obj.key for obj in oss2.ObjectIterator(bucket, prefix=prefix)]
             for i in range(0, len(keys), 1000):
                 batch = keys[i : i + 1000]
@@ -154,18 +164,21 @@ class AliyunOssStorage:
         return deleted
 
     async def put_object(self, key: str, data: bytes, content_type: str) -> str:
-        # `bucket.put_object` is sync; this method is async for port-parity
-        # with S3ObjectStorage. Wrap with `asyncio.to_thread` only when the
-        # SDK becomes the throughput bottleneck — for now the single-call
-        # latency is dominated by network, not the GIL.
-        self._bucket.put_object(  # type: ignore[attr-defined]
+        await run_sdk(
+            self._bucket.put_object,  # type: ignore[attr-defined]
             key, data, headers={"Content-Type": content_type}
         )
         return self._public_url(key)
 
     async def get_object(self, key: str) -> bytes:
-        # Sync SDK call; async for port-parity (see put_object note).
-        return self._bucket.get_object(key).read()  # type: ignore[attr-defined,no-any-return]
+        return await run_sdk(self._get_object, key)
+
+    def _get_object(self, key: str) -> bytes:
+        result = self._bucket.get_object(key)  # type: ignore[attr-defined]
+        try:
+            return result.read()  # type: ignore[no-any-return]
+        finally:
+            result.close()
 
     def _public_url(self, key: str) -> str:
         if self.settings.ALIYUN_OSS_PUBLIC_BASE_URL:
@@ -174,7 +187,7 @@ class AliyunOssStorage:
         # Fallback: synthesize from endpoint + bucket. NOTE this is the OSS
         # raw URL — for private buckets use `sign_get_url` instead (or
         # route through CDN via cdn_url.py once that is enabled).
-        return f"{self.settings.ALIYUN_OSS_ENDPOINT}/{self.settings.ALIYUN_OSS_BUCKET}/{key}"
+        return f"{oss_endpoint_url(self.settings).rstrip('/')}/{self.settings.ALIYUN_OSS_BUCKET}/{key}"
 
     def sign_render_url(
         self,

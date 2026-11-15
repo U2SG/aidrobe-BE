@@ -1,10 +1,6 @@
 import re
 from urllib.parse import urljoin
 
-import httpx
-
-from app.infrastructure.importers.link_parser import _is_safe_url
-
 META_TAG_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
 ATTR_RE = re.compile(r"""([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*["']([^"']*)["']""")
 
@@ -19,16 +15,10 @@ def _extract_og_image(html: str, base_url: str) -> str | None:
         if attrs.get("property", attrs.get("name", "")).lower() == "og:image":
             image_url = attrs.get("content")
             if image_url:
-                resolved = urljoin(base_url, image_url)
-                if _is_safe_url(resolved):
-                    return resolved
+                return urljoin(base_url, image_url)
     return None
 
 
 class XhsAdapter:
-    async def extract_image_url(self, url: str, client: httpx.AsyncClient) -> str | None:
-        if not _is_safe_url(url):
-            return None
-        response = await client.get(url)
-        response.raise_for_status()
-        return _extract_og_image(response.text, str(response.url))
+    def image_from_html(self, html: str, url: str) -> str | None:
+        return _extract_og_image(html, url)

@@ -17,7 +17,9 @@ from typing import Any
 
 import httpx
 
+from app.application.ports.image_cutout import CutoutResult
 from app.config.settings import Settings
+from app.infrastructure.vision.qwen_vision import QwenVision
 
 _EDITS_URL = "https://api.openai.com/v1/images/edits"
 
@@ -34,14 +36,21 @@ _NOUN: dict[str, str] = {
 _DEFAULT_NOUN = "clothing item"
 
 
-def _prompt(category: str) -> str:
+def _prompt(category: str, title: str | None = None, color: str | None = None) -> str:
     noun = _NOUN.get(category, _DEFAULT_NOUN)
+    target = f" Target garment: {title}." if title else ""
+    if color:
+        target += f" Target color: {color}."
     return (
         f"Isolate ONLY the {noun} from this photo and present it as a clean flat-lay "
-        "e-commerce product photo on a pure solid white (#ffffff) background. Remove any "
+        "e-commerce product photo on a pure solid white (#ffffff) background."
+        f"{target} Treat any other garments, including overlaid layers, as surrounding objects. Remove any "
         "person, hands, phone, mirror, hangers and the room/background. Preserve the exact "
-        "color, shape, material, sleeves/straps and all details — do not restyle, recolor, "
-        "or invent details."
+        "color, shape, material, sleeves/straps and construction in the visible areas. "
+        "Copy legible lettering and markings at their actual scale and position. Keep unclear markings "
+        "indistinct. Match visible shoe toes, panel seams, surface texture, laces and sole edges. "
+        "Show the complete item by finishing only the hidden parts with plain, matching construction. "
+        "Use a similar angle to make the visible areas directly comparable."
     )
 
 
@@ -51,12 +60,49 @@ class OpenAIImageCutout:
             raise ValueError("OPENAI_API_KEY is required for the openai image cutout provider")
         self.settings = settings
 
-    async def extract(self, image_bytes: bytes, category: str) -> bytes:
+    async def extract(
+        self, image_bytes: bytes, category: str, *, title: str | None = None, color: str | None = None
+    ) -> CutoutResult:
+        if not title or not color or not self.settings.QWEN_API_KEY:
+            return CutoutResult("not_called", provider_cost_cents=0)
+        generated = await self._edit([image_bytes], _prompt(category, title, color))
+        reviewer = QwenVision(self.settings)
+        if await reviewer.matches_product_photo(image_bytes, generated, category=category, title=title, color=color):
+            return CutoutResult("succeeded", generated)
+        return CutoutResult("quality_rejected")
+
+    async def render_outfit(
+        self, images: list[bytes], garments: list[str], *, emphasize_shoe_details: bool = False
+    ) -> bytes:
+        pieces = "; ".join(f"image {index}: {garment}" for index, garment in enumerate(garments, 1))
+        footwear = (
+            "Copy the visible toe panels, curved seams, and outsole edges from the shoe photo before "
+            "completing the rear. Keep the photographed toe proportions, stitch paths and surface pattern. "
+            "A smooth visible panel stays smooth. Keep any identifiable pair differences. "
+            if emphasize_shoe_details else ""
+        )
+        return await self._edit(
+            images,
+            "Create one cohesive fashion flat lay on a clean light neutral background. "
+            f"The numbered references show these garments: {pieces}. Show every listed garment and no extras. "
+            "Match the actual color, fabric, cut, seams, fasteners and markings visible in each reference. "
+            "Preserve which side each detail appears on. Do not mirror the garments. "
+            "Complete portions hidden by fabric, cropping or framing in a simple way consistent with "
+            "the visible design. For shoes keep every photographed feature like toe shape, panel seams, "
+            "perforations or lack of them, laces where visible, and sole edge. Use a plain coherent design "
+            "for the unshown heel and opening. Show complete pairs. "
+            "Treat the visible seam color and routing as construction details, even where the seam is thin. "
+            f"{footwear}Leave background margin around the garments. "
+            "Remove people, phones, hangers and surroundings. Use no text or labels.",
+        )
+
+    async def _edit(self, images: list[bytes], prompt: str) -> bytes:
         s = self.settings
-        files = {"image": ("source.jpg", image_bytes, "image/jpeg")}
+        field = "image" if len(images) == 1 else "image[]"
+        files = [(field, (f"source-{index}.jpg", image, "image/jpeg")) for index, image in enumerate(images)]
         data: dict[str, Any] = {
             "model": s.OPENAI_IMAGE_MODEL,
-            "prompt": _prompt(category),
+            "prompt": prompt,
             "quality": s.IMAGE_CUTOUT_QUALITY,
             "size": "auto",
             "n": "1",

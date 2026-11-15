@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,5 +26,7 @@ class ImportTask(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     input_payload: Mapped[JsonDict] = mapped_column(JSONB, nullable=False, default=dict)
     candidate_payload: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    run_generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
+    retryable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(512), nullable=True)

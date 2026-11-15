@@ -359,7 +359,8 @@ async def test_sense_check_persists_internal_object_key_and_history_signs(
     user_id = uuid.uuid4()
     await _seed_user(db_session, user_id)
     app = _build_app(db_session)
-    image_url = "http://localhost:9000/local/files/wardrobe/abc/shirt.jpg"
+    key = f"users/{user_id}/wardrobe/abc/shirt.jpg"
+    image_url = f"http://localhost:9000/local/files/{key}?Expires=1"
 
     async with _client(app) as client:
         post = await client.post(
@@ -377,15 +378,16 @@ async def test_sense_check_persists_internal_object_key_and_history_signs(
     items = hist.json()["items"]
     assert (
         items[0]["image_url"]
-        == "https://signed.local/wardrobe/abc/shirt.jpg?token=stub"
+        == f"https://signed.local/{key}?token=stub"
     )
-    assert signing_stub.calls == ["wardrobe/abc/shirt.jpg"]
+    assert signing_stub.calls == [key]
 
     row = await db_session.scalar(
         select(ShoppingSenseCheck).where(ShoppingSenseCheck.user_id == user_id)
     )
     assert row is not None
-    assert row.object_key == "wardrobe/abc/shirt.jpg"
+    assert row.object_key == key
+    assert row.image_url is None
 
 
 async def test_history_with_legacy_raw_image_url_does_not_sign(

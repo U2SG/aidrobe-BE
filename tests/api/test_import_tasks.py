@@ -12,10 +12,13 @@ from app.config.settings import Settings, get_settings
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.session import get_db_session
 from app.infrastructure.workers.import_worker import IMPORT_JOB_TYPE
 from app.presentation.api.v1.routers import import_tasks as import_tasks_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
+
+pytestmark = pytest.mark.usefixtures("import_api_environment")
 
 
 def build_import_tasks_app(session: AsyncSession) -> FastAPI:
@@ -246,7 +249,7 @@ async def test_failed_vision_response_stores_failed_task(db_session: AsyncSessio
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         data = await wait_for_task_status(client, task_id, user_id, "failed")
     assert data["status"] == "failed"
-    assert data["error_code"] == "vision_failed"
+    assert data["error_code"] == "provider_response_invalid"
 
 
 async def test_missing_or_other_user_task_returns_404(db_session: AsyncSession) -> None:
@@ -278,10 +281,11 @@ async def _seed_task(
     user_id: uuid.UUID,
     *,
     status: str,
-    candidate_payload: dict[str, object] | None,
+    candidate_payload: dict[str, object] | None = None,
 ) -> uuid.UUID:
-    session.add(User(id=user_id))
-    await session.flush()
+    if await session.get(User, user_id) is None:
+        session.add(User(id=user_id))
+        await session.flush()
     task = ImportTask(
         user_id=user_id,
         input_type="image",
@@ -320,13 +324,13 @@ async def test_legacy_single_payload_maps_to_one_candidate_item(db_session: Asyn
     data = response.json()["data"]
     assert len(data["candidate_items"]) == 1
     assert data["candidate_items"][0]["title"] == "Black trousers"
-    assert data["candidate_items"][0]["temp_item_id"] is None
+    assert data["candidate_items"][0]["temp_item_id"] == "__single__"
     assert data["candidate_item"]["title"] == "Black trousers"
 
 
 async def test_multi_candidate_payload_returns_both_fields(db_session: AsyncSession) -> None:
     # BE#24 — a multi-candidate payload returns the full list AND a compat
-    # candidate_item set to the first should_import=True candidate.
+    # candidate_item mirrors the first candidate, matching /confirm.
     user_id = uuid.uuid4()
     task_id = await _seed_task(
         db_session,
@@ -370,9 +374,9 @@ async def test_multi_candidate_payload_returns_both_fields(db_session: AsyncSess
     data = response.json()["data"]
     assert len(data["candidate_items"]) == 2
     assert {c["temp_item_id"] for c in data["candidate_items"]} == {"cand-a", "cand-b"}
-    # first recommended (should_import) candidate is the compat candidate_item.
-    assert data["candidate_item"]["temp_item_id"] == "cand-b"
-    assert data["candidate_item"]["title"] == "White shirt"
+    # /confirm targets the same first candidate that the compatibility field shows.
+    assert data["candidate_item"]["temp_item_id"] == "cand-a"
+    assert data["candidate_item"]["title"] == "Black trousers"
 
 
 async def test_processing_and_failed_return_empty_candidate_items(db_session: AsyncSession) -> None:
@@ -423,7 +427,23 @@ async def test_vision_worker_writes_length_one_candidate_items(db_session: Async
     assert data["candidate_item"]["title"] == candidate_items[0]["title"]
 
 
-async def test_outfit_vision_worker_writes_each_detected_garment(db_session: AsyncSession) -> None:
+async def test_outfit_vision_worker_omits_layers_without_enough_evidence(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    from app.application.ports.vision import VisionResult
+    from app.infrastructure.vision.fake_vision import FakeVision
+
+    analyze_outfit = FakeVision.analyze_outfit
+
+    async def identify(self: FakeVision, image_url: str, locale: str) -> list[VisionResult]:
+        top, bottom = await analyze_outfit(self, image_url, locale)
+        uncertain_layer = replace(top, title="White T-shirt", canonical_name="White T-shirt", style_unverified=True)
+        guessed_layer = replace(top, title="白色圆领T恤", canonical_name="White T-shirt", bbox=None)
+        return [uncertain_layer, guessed_layer, top, bottom]
+
+    monkeypatch.setattr(FakeVision, "analyze_outfit", identify)
     user_id = uuid.uuid4()
     app = build_import_tasks_app(db_session)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
@@ -441,9 +461,118 @@ async def test_outfit_vision_worker_writes_each_detected_garment(db_session: Asy
         data = await wait_for_task_status(client, task_id, user_id, "waiting_confirm")
 
     candidate_items = data["candidate_items"]
-    assert len(candidate_items) == 2
     assert [item["category"] for item in candidate_items] == ["top", "bottom"]
     assert all(item["temp_item_id"] for item in candidate_items)
     assert len({item["temp_item_id"] for item in candidate_items}) == 2
-    assert all(item["should_import"] is True for item in candidate_items)
+    assert all(item["should_import"] for item in candidate_items)
     assert data["candidate_item"]["title"] == candidate_items[0]["title"]
+
+
+async def test_pending_import_review_is_owned_and_can_skip_all(db_session: AsyncSession) -> None:
+    user_id, other_user = uuid.uuid4(), uuid.uuid4()
+    candidate = {
+        "title": "黄色针织毛衣",
+        "category": "top",
+        "color_main": "yellow",
+        "confidence_score": 0.9,
+        "original_image_url": "https://cdn/candidate.jpg",
+        "temp_item_id": "sweater",
+    }
+    jeans = {
+        **candidate,
+        "title": "浅蓝色阔腿牛仔裤",
+        "category": "bottom",
+        "color_main": "blue",
+        "temp_item_id": "jeans",
+    }
+    own_task = await _seed_task(
+        db_session, user_id, status="waiting_confirm", candidate_payload={"candidate_items": [candidate, jeans]}
+    )
+    await _seed_task(
+        db_session, other_user, status="waiting_confirm", candidate_payload={"candidate_items": [candidate]}
+    )
+    owned_sweater = WardrobeItem(user_id=user_id, title="黄色毛衣", category="top", color_main="yellow")
+    owned_jeans = WardrobeItem(user_id=user_id, title="浅蓝色牛仔裤", category="bottom", color_main="light_blue")
+    db_session.add_all([
+        owned_sweater,
+        owned_jeans,
+        WardrobeItem(user_id=user_id, title="黄色 T恤", category="top", color_main="yellow"),
+        WardrobeItem(user_id=user_id, title="浅蓝色西裤", category="bottom", color_main="light_blue"),
+        WardrobeItem(user_id=other_user, title="黄色毛衣", category="top", color_main="yellow"),
+    ])
+    await db_session.flush()
+
+    headers = {"X-User-Id": str(user_id)}
+    async with AsyncClient(
+        transport=ASGITransport(app=build_import_tasks_app(db_session)), base_url="http://testserver"
+    ) as client:
+        inbox = await client.get("/v1/import-tasks", headers=headers)
+        assert inbox.status_code == 200
+        assert [task["task_id"] for task in inbox.json()["data"]] == [str(own_task)]
+
+        path = f"/v1/import-tasks/{own_task}"
+        detail = await client.get(path, headers=headers)
+        candidates = detail.json()["data"]["candidate_items"]
+        assert [[match["item_id"] for match in candidate["possible_duplicates"]] for candidate in candidates] == [
+            [str(owned_sweater.id)],
+            [str(owned_jeans.id)],
+        ]
+
+        invalid = await client.post(f"{path}/confirm-items", headers=headers, json={"items": []})
+        assert invalid.status_code == 422
+        for _ in range(2):
+            skipped = await client.post(
+                f"{path}/confirm-items", headers=headers, json={"items": [], "dismiss_remaining": True}
+            )
+            assert skipped.status_code == 200
+            assert skipped.json()["data"] == {"created_items": [], "task_status": "completed"}
+        assert (await client.get("/v1/import-tasks", headers=headers)).json()["data"] == []
+
+
+async def test_explicit_status_filter_preserves_default_and_isolation(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    waiting = await _seed_task(db_session, user_id, status=ImportStatus.WAITING_CONFIRM.value)
+    queued = await _seed_task(db_session, user_id, status=ImportStatus.QUEUED.value)
+    failed = await _seed_task(db_session, user_id, status=ImportStatus.FAILED.value)
+    await _seed_task(db_session, uuid.uuid4(), status=ImportStatus.FAILED.value)
+
+    app = build_import_tasks_app(db_session)
+    headers = {"X-User-Id": str(user_id)}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        default = await client.get("/v1/import-tasks", headers=headers)
+        selected = await client.get("/v1/import-tasks?status=queued&status=failed", headers=headers)
+        page = await client.get("/v1/import-tasks?status=queued&status=failed&limit=1&offset=1", headers=headers)
+
+    assert [task["task_id"] for task in default.json()["data"]] == [str(waiting)]
+    ids = [task["task_id"] for task in selected.json()["data"]]
+    assert set(ids) == {str(queued), str(failed)}
+    assert [task["task_id"] for task in page.json()["data"]] == ids[1:]
+
+
+@pytest.mark.parametrize("owner", [True, False])
+async def test_private_upload_refs_are_owned_and_never_read_during_entry(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, owner: bool,
+) -> None:
+    user_id = uuid.uuid4()
+    upload_owner = user_id if owner else uuid.uuid4()
+    key = f"users/{upload_owner}/wardrobe/photo.jpg"
+    url = f"{get_settings().LOCAL_STORAGE_BASE_URL}/files/{key}?signature=ephemeral"
+    monkeypatch.setattr(
+        import_tasks_router, "get_settings", lambda: Settings(ENABLE_IMPORT_ASYNC_JOBS=True),
+    )
+    app = build_import_tasks_app(db_session)
+    headers = {"X-User-Id": str(user_id)}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        created = await client.post(
+            "/v1/import-tasks", headers=headers,
+            json={"input_type": "image", "source_type": "album", "image_url": url},
+        )
+
+    assert created.status_code == (202 if owner else 422)
+    task = await db_session.scalar(select(ImportTask).where(ImportTask.user_id == user_id))
+    if owner:
+        assert task.input_payload["source_object_key"] == key
+        assert "signature=" not in task.input_payload["image_url"]
+    else:
+        assert task is None
+        assert await db_session.scalar(select(AsyncJob).where(AsyncJob.user_id == user_id)) is None

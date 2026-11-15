@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from app.application.purchase import compute_similarity_evidence as similarity_module
 from app.application.purchase.candidate_normalizer import ParsedItem
 from app.application.purchase.compute_similarity_evidence import compute_similarity_evidence
 from app.common.enums import Category, ItemStatus
@@ -29,7 +30,7 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 # The budget this feature commits to. Independent of wardrobe size.
 EXPECTED_QUERIES_STRUCTURED = 2  # items, then wear scenes
-EXPECTED_QUERIES_VECTOR_ATTEMPTED = 3  # + the embedding anchor lookup
+EXPECTED_QUERIES_VECTOR_ATTEMPTED = 3  # + a single anchor and ranking query
 
 
 class _Result:
@@ -55,11 +56,11 @@ class RecordingSession:
         items: list[WardrobeItem],
         *,
         wear_scene_rows: list[tuple[uuid.UUID, str]] | None = None,
-        anchor_vector: Any = None,
+        ranked_ids: list[uuid.UUID] | None = None,
     ) -> None:
         self.items = items
         self.wear_scene_rows = wear_scene_rows or []
-        self.anchor_vector = anchor_vector
+        self.ranked_ids = ranked_ids or []
         self.calls: list[str] = []
 
     @property
@@ -68,19 +69,14 @@ class RecordingSession:
 
     async def scalars(self, _statement: Any) -> list[Any]:
         self.calls.append("scalars")
-        # First `scalars` is the item load; a later one is the vector ranking,
-        # which only runs when an anchor vector was found.
+        # First `scalars` loads items; a later one ranks current vectors.
         if self.calls.count("scalars") == 1:
             return list(self.items)
-        return [item.id for item in self.items]
+        return self.ranked_ids
 
     async def execute(self, _statement: Any) -> _Result:
         self.calls.append("execute")
         return _Result(list(self.wear_scene_rows))
-
-    async def scalar(self, _statement: Any) -> Any:
-        self.calls.append("scalar")
-        return self.anchor_vector
 
 
 def _item(*, category: str = Category.OUTERWEAR.value, color: str = "gray") -> WardrobeItem:
@@ -146,35 +142,17 @@ async def test_unusable_candidate_costs_no_queries_at_all() -> None:
     assert evidence.redundancy_level == "unknown"
 
 
-async def test_vector_tier_costs_one_extra_query_when_it_finds_no_anchor(
+@pytest.mark.parametrize("has_anchor", [False, True])
+async def test_vector_tier_costs_one_extra_query(
     monkeypatch: pytest.MonkeyPatch,
+    has_anchor: bool,
 ) -> None:
-    """pgvector on, nothing embedded: pay for the anchor probe, then fall back."""
-    monkeypatch.setenv("PGVECTOR_ENABLED", "true")
-    session = RecordingSession([_item()], anchor_vector=None)
+    """The anchor lookup and ranking use the same database snapshot."""
+    monkeypatch.setattr(similarity_module, "pgvector_enabled", lambda: True)
+    items = [_item(), _item()]
+    session = RecordingSession(items, ranked_ids=[items[1].id, items[0].id] if has_anchor else [])
 
     await compute_similarity_evidence(session, uuid.uuid4(), _candidate())
 
     assert session.query_count == EXPECTED_QUERIES_VECTOR_ATTEMPTED
-    assert session.calls == ["scalars", "execute", "scalar"]
-
-
-async def test_vector_tier_ranks_within_the_budget_when_an_anchor_exists(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """pgvector on with an anchor: anchor probe + one ranking query, no more.
-
-    This is the only place the vector branch runs to completion in a test — a
-    real `<->` ordering needs the extension, which CI does not have (see the
-    module docstring in `compute_similarity_evidence`). What is asserted here
-    is the branch's cost and that its ordering reaches the caller; the
-    ranked-output handling itself is `test_external_order_is_preserved_into_
-    the_payload` in `test_v3_wardrobe_similarity.py`.
-    """
-    monkeypatch.setenv("PGVECTOR_ENABLED", "true")
-    session = RecordingSession([_item(), _item()], anchor_vector=[0.1] * 512)
-
-    await compute_similarity_evidence(session, uuid.uuid4(), _candidate())
-
-    assert session.query_count == EXPECTED_QUERIES_VECTOR_ATTEMPTED + 1
-    assert session.calls == ["scalars", "execute", "scalar", "scalars"]
+    assert session.calls == ["scalars", "execute", "scalars"]

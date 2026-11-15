@@ -3,11 +3,15 @@ import uuid
 
 from sqlalchemy import select, text
 
+from app.application.import_tasks.source import upload_key
+from app.common import error_codes
 from app.common.enums import ImportStatus
+from app.common.exceptions import FriendlyException
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.repositories.import_task_repo import (
     SqlAlchemyImportTaskRepository,
 )
+from app.infrastructure.storage.source_image import InvalidSourceImage
 
 
 class CreateImageImportTask:
@@ -38,6 +42,16 @@ class CreateImageImportTask:
         # BE#30 — persist the request locale hint so the (background) worker
         # can name the candidate in it. None = fall back to user settings.
         input_payload: dict[str, object] = {"image_url": image_url, "source_url": source_url, "locale": locale}
+        try:
+            key = upload_key(image_url, user_id)
+            if image_url is None and upload_key(source_url, user_id):
+                raise InvalidSourceImage("Internal asset cannot be used as a product page")
+        except InvalidSourceImage:
+            raise FriendlyException(error_codes.VALIDATION_ERROR, "Invalid import image or link", 422) from None
+        if key is not None:
+            input_payload["source_object_key"] = key
+            # Preserve a stable URL for old readers only. The key owns reads.
+            input_payload["image_url"] = image_url.split("?", 1)[0].split("#", 1)[0] if image_url else None
         if idempotency_key:
             input_payload["idempotency_key"] = idempotency_key
 

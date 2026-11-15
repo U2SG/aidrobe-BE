@@ -1,5 +1,6 @@
 import base64
 import json
+import math
 from dataclasses import replace
 from typing import Any, cast
 
@@ -8,7 +9,7 @@ import httpx
 from app.application.ports.vision import StyleAnalysis, VisionResult
 from app.common.locale import DEFAULT_LOCALE, resolve_locale
 from app.config.settings import Settings
-from app.infrastructure.storage.source_image import load_source_bytes
+from app.infrastructure.storage.source_image import image_data_uri, load_source_bytes
 
 # Human-readable language names per locale for the prompt instruction. zh-CN
 # MUST yield natural Simplified Chinese; we never want an English display_name
@@ -65,6 +66,7 @@ def build_vision_prompt(locale: str) -> str:
         f"return English for display_name unless the item genuinely has no "
         f"{language} name. "
         "confidence_score must be a number from 0 to 1. "
+        "If no garment is visible, return {\"no_garment\": true}. "
         + _ATTRIBUTE_PROMPT
     )
 
@@ -86,8 +88,15 @@ def build_outfit_vision_prompt(locale: str) -> str:
         f"display_name MUST be a natural {language} name for the garment. "
         "confidence_score must be a number from 0 to 1. "
         + _ATTRIBUTE_PROMPT
-        + " Give these per garment, plus box — [x_min, y_min, x_max, y_max] around that "
-        "garment as fractions (0 to 1) of the image width and height. "
+        + " Give these per garment, plus box_2d — [left, top, right, bottom] as integers "
+        "on a 0-to-1000 grid (left/top are 0, right/bottom are 1000). "
+        "Use the tight rectangle around the visible fabric of that item, not the body or outfit. "
+        "For shorts the bottom edge is the shorts hem, never the knee, lower leg or foot. "
+        "For shoes include both visible shoes, stopping at the shoe opening. For layered garments "
+        "include only the specific layer. Use null if the item cannot be separately located. "
+        "Omit an inner layer when only a narrow strip at the hem or collar is visible. "
+        "A strip of fabric is insufficient to determine whether a separate garment exists, "
+        "or to call it a T-shirt, tank or blouse. If an uncertain layer is returned, set style_unverified=true. "
         "If no garment is visible, return {\"items\": []}."
     )
 
@@ -131,15 +140,21 @@ def _bound_tags(raw: Any, *, limit: int = _MAX_TAGS) -> list[str]:
     return seen
 
 
+class NoGarmentsDetected(ValueError):
+    pass
+
+
 class QwenVision:
     def __init__(self, settings: Settings) -> None:
         if not settings.QWEN_API_KEY:
             raise ValueError("QWEN_API_KEY is required when VISION_PROVIDER=qwen")
         self.settings = settings
 
-    async def analyze_image(self, image_url: str, locale: str = DEFAULT_LOCALE) -> VisionResult:
+    async def analyze_image(
+        self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
+    ) -> VisionResult:
         resolved = resolve_locale(locale)
-        content = await self._request_content(image_url, build_vision_prompt(resolved))
+        content = await self._request_content(image_url, build_vision_prompt(resolved), source_key=source_key)
         data = self._parse_json_content(content)
         return self._vision_result(data, resolved)
 
@@ -148,25 +163,56 @@ class QwenVision:
         content = await self._request_content(image_url, build_outfit_vision_prompt(resolved))
         payload = cast(dict[str, Any], json.loads(self._strip_json_fence(content)))
         raw_items = payload.get("items")
-        if not isinstance(raw_items, list) or not raw_items:
-            raise ValueError("Outfit response contains no garments")
+        if not isinstance(raw_items, list):
+            raise ValueError("Outfit response missing items")
+        if not raw_items:
+            return []
         if len(raw_items) > 12:
             raise ValueError("Outfit response contains too many garments")
         return merge_paired_garments(
             [
                 replace(
                     self._vision_result(self._validate_vision_data(raw), resolved),
-                    bbox=garment_box(raw.get("box")),
+                    bbox=(
+                        garment_box(raw["box_2d"], scale=1000)
+                        if "box_2d" in raw else garment_box(raw.get("box"))
+                    ),
+                    style_unverified=raw.get("style_unverified") is True,
                 )
                 for raw in raw_items
             ]
         )
 
-    async def analyze_style(self, image_url: str, locale: str = DEFAULT_LOCALE) -> StyleAnalysis:
+    async def review_garment_crops(self, crops: list[bytes], garments: list[VisionResult]) -> list[bool]:
+        expected = [
+            {"item": garment.canonical_name or garment.title, "category": garment.category, "color": garment.color_main}
+            for garment in garments
+        ]
+        content = await self._request_content(
+            _image_data_uri(crops[0]),
+            "Independently inspect each crop for the respective numbered garment, in image order. "
+            f"Expected items in order: {json.dumps(expected, ensure_ascii=False)}. "
+            "The crop must clearly show the named piece as its main subject. Reject images dominated by "
+            "bare skin, background, a different garment, or showing only a neckline, hem, buttons or other detail. "
+            "For shorts the garment must be visible with its waist and hem distinguishable. For shoes, both "
+            "shoes need not be fully visible, but their shape and sole must be identifiable. "
+            "Judge only pixels in that crop. Mark uncertain cases false. Return JSON with an accepted array "
+            "of one boolean per image, in the same order.",
+            *(_image_data_uri(crop) for crop in crops[1:]),
+        )
+        result = json.loads(self._strip_json_fence(content))
+        marks = result.get("accepted") if isinstance(result, dict) else None
+        if not isinstance(marks, list) or len(marks) != len(crops) or not all(isinstance(mark, bool) for mark in marks):
+            raise ValueError("Invalid garment crop review response")
+        return cast(list[bool], marks)
+
+    async def analyze_style(
+        self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
+    ) -> StyleAnalysis:
         # `locale` is accepted for interface parity but ignored: style tags must
         # be stable English so the recommendation template matcher can key on
         # them (same reason category/color stay English in analyze_image).
-        image_payload_url = await self._to_data_uri(image_url)
+        image_payload_url = await self._to_data_uri(image_url, source_key)
         payload = {
             "model": self.settings.QWEN_VISION_MODEL,
             "messages": [
@@ -208,10 +254,96 @@ class QwenVision:
             confidence=confidence,
         )
 
-    async def _request_content(self, image_url: str, prompt: str) -> str:
+    async def matches_product_photo(
+        self, source: bytes, generated: bytes, *, category: str, title: str, color: str
+    ) -> bool:
+        expected = json.dumps({"category": category, "title": title, "color": color}, ensure_ascii=False)
+        content = await self._request_content(
+            _image_data_uri(source),
+            "Check a generated clothing product photo against the real reference. The first image "
+            "is the reference and the second is the generated product. "
+            f"Expected item metadata: {expected}. "
+            "Accept only if the named item is clearly visible in the reference and the product shows "
+            "that same item, preserving its visible color, geometry, material, construction and markings. "
+            "Reject a different garment, extra clothing, or changed visible details. "
+            "Allow plain, consistent completion of parts genuinely hidden by another garment or the frame. "
+            "Allow reasonable changes in folds and lighting from wearing versus a product display. "
+            "Compare the position, scale, and general appearance of visible marks, including on waistbands. "
+            "Allow minor differences in letter shapes of small or blurred marks if their appearance is similar. "
+            "Check shoe toe panels, perforations, stitching "
+            "and sole shape. Score corresponding visible areas. A generic match in type and color is insufficient. "
+            "Return only JSON with a boolean field accepted.",
+            _image_data_uri(generated),
+        )
+        result = json.loads(self._strip_json_fence(content))
+        return isinstance(result, dict) and result.get("accepted") is True
+
+    async def matches_outfit_photo(
+        self, sources: list[bytes], generated: bytes, *, garments: list[str]
+    ) -> bool:
+        content = await self._request_content(
+            _image_data_uri(generated),
+            "Verify the outfit flat lay in image 1 using only the references that follow it. "
+            "The names help identify the target in a reference and do not prove any feature is visible. "
+            f"The reference garments in order are {json.dumps(garments, ensure_ascii=False)}. "
+            "Check each target garment separately. Match the visible color, neckline or collar, sleeves, "
+            "hem, leg width, fabric, pockets, seams, fasteners, and the side and position of marks. "
+            "Allow minor differences in letter shapes of small or blurred marks with similar appearance. "
+            "Reject mirrored or moved visible details, changed visible construction, or extra pieces. "
+            "Allow a new angle and completion of areas genuinely hidden in the references. "
+            "Check for material changes to any area visible in both images. Specifically compare shoe "
+            "toe shape, visible seams and surface markings. A smooth visible toe panel cannot gain holes "
+            "or a logo. The previously hidden heel or opening may now be visible. Detached shoe fragments fail. "
+            "Decide whether each item is present independently from whether its details match. "
+            "Mark uncertainty as false. "
+            'Return JSON with "composition_matches" (boolean for every piece present and no extras) and '
+            '"garment_matches" (array of one boolean per reference, in reference order, true only if '
+            "the photographed visible features match).",
+            *(_image_data_uri(source) for source in sources),
+        )
+        result = json.loads(self._strip_json_fence(content))
+        if not isinstance(result, dict):
+            raise ValueError("Invalid outfit quality review response")
+        marks = result.get("garment_matches")
+        if (
+            not isinstance(marks, list) or len(marks) != len(garments)
+            or not all(isinstance(mark, bool) for mark in marks)
+            or not isinstance(result.get("composition_matches"), bool)
+        ):
+            raise ValueError("Invalid outfit quality review response")
+        return result["composition_matches"] is True and all(marks)
+
+    async def matches_outfit_footwear(self, source: bytes, generated: bytes) -> bool:
+        content = await self._request_content(
+            _image_data_uri(source),
+            "Compare the actual shoe photo in image 1 with the shoes at the bottom of the outfit in image 2. "
+            "Ignore all other garments except where they occlude the shoes. Compare the two photos visually. "
+            "Allow reconstruction of the photographed shoe's hidden areas, including its heel, collar and "
+            "opening. Compare the same regions in both images, accounting for viewpoint. Check toe shape, "
+            "panel contours, edge seams, visible laces and sole. Compare whether the visible toe seam "
+            "is dark or light against the upper, and whether it traces the same path around the toe. "
+            "Reject changes to those features, including "
+            "perforations, logos or decoration on a surface visible without them in image 1. "
+            "A complete shoe may look different in the previously hidden areas; score only the visible evidence. "
+            "Detached shoe fragments fail. "
+            'Return JSON with boolean fields "visible_design_matches" and "no_changes_on_visible_regions".',
+            _image_data_uri(generated),
+        )
+        result = json.loads(self._strip_json_fence(content))
+        if not isinstance(result, dict):
+            raise ValueError("Invalid footwear quality review response")
+        visible_design = result.get("visible_design_matches")
+        details_preserved = result.get("no_changes_on_visible_regions")
+        if not isinstance(visible_design, bool) or not isinstance(details_preserved, bool):
+            raise ValueError("Invalid footwear quality review response")
+        return visible_design and details_preserved
+
+    async def _request_content(
+        self, image_url: str, prompt: str, *reference_urls: str, source_key: str | None = None
+    ) -> str:
         # Inline private wardrobe images instead of exposing signed URLs to the
         # third-party vision provider.
-        image_payload_url = await self._to_data_uri(image_url)
+        image_payload_url = await self._to_data_uri(image_url, source_key)
         payload = {
             "model": self.settings.QWEN_VISION_MODEL,
             "messages": [
@@ -220,6 +352,10 @@ class QwenVision:
                     "content": [
                         {"type": "text", "text": prompt},
                         {"type": "image_url", "image_url": {"url": image_payload_url}},
+                        *(
+                            {"type": "image_url", "image_url": {"url": url}}
+                            for url in reference_urls
+                        ),
                     ],
                 }
             ],
@@ -238,16 +374,14 @@ class QwenVision:
             response.raise_for_status()
         return str(response.json()["choices"][0]["message"]["content"])
 
-    async def _to_data_uri(self, image_url: str) -> str:
+    async def _to_data_uri(self, image_url: str, source_key: str | None = None) -> str:
         # Already inlined (e.g. a caller passed a data URI) — pass through.
         if image_url.startswith("data:"):
             return image_url
         # Our own uploads are read from storage by key: the public URL is for
         # devices and may not resolve from the worker (in the local stack it is
         # localhost:9000). External import links are fetched behind the SSRF guard.
-        data = await load_source_bytes(image_url, None)
-        encoded = base64.b64encode(data).decode("ascii")
-        return f"data:{_image_mime(data)};base64,{encoded}"
+        return image_data_uri(await load_source_bytes(image_url, source_key))
 
     @staticmethod
     def _strip_json_fence(content: str) -> str:
@@ -257,7 +391,10 @@ class QwenVision:
         return text
 
     def _parse_json_content(self, content: str) -> dict[str, Any]:
-        return self._validate_vision_data(json.loads(self._strip_json_fence(content)))
+        raw = json.loads(self._strip_json_fence(content))
+        if isinstance(raw, dict) and raw.get("no_garment") is True:
+            raise NoGarmentsDetected
+        return self._validate_vision_data(raw)
 
     @staticmethod
     def _validate_vision_data(raw: Any) -> dict[str, Any]:
@@ -375,6 +512,10 @@ def merge_paired_garments(results: list[VisionResult]) -> list[VisionResult]:
     return merged
 
 
+def _image_data_uri(data: bytes) -> str:
+    return f"data:{_image_mime(data)};base64,{base64.b64encode(data).decode('ascii')}"
+
+
 def _image_mime(data: bytes) -> str:
     if data.startswith(b"\x89PNG"):
         return "image/png"
@@ -383,7 +524,7 @@ def _image_mime(data: bytes) -> str:
     return "image/jpeg"
 
 
-def garment_box(raw: Any) -> tuple[float, float, float, float] | None:
+def garment_box(raw: Any, *, scale: int = 1) -> tuple[float, float, float, float] | None:
     """A model-reported garment box as clamped fractions, or None if unusable.
 
     Rejects malformed, inverted or tiny boxes (under 5% of a side) — a bad box
@@ -391,9 +532,11 @@ def garment_box(raw: Any) -> tuple[float, float, float, float] | None:
     """
     if not isinstance(raw, list) or len(raw) != 4:
         return None
-    if not all(isinstance(v, int | float) and not isinstance(v, bool) for v in raw):
+    if not all(isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v) for v in raw):
         return None
-    x1, y1, x2, y2 = (max(0.0, min(1.0, float(v))) for v in raw)
+    if scale == 1000 and not all(isinstance(v, int) and 0 <= v <= scale for v in raw):
+        return None
+    x1, y1, x2, y2 = (max(0.0, min(1.0, v / scale)) for v in raw)
     if x2 - x1 < _MIN_BOX_SIDE or y2 - y1 < _MIN_BOX_SIDE:
         return None
     return (x1, y1, x2, y2)
