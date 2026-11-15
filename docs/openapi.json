@@ -3742,6 +3742,248 @@
         }
       }
     },
+    "/v1/styling-experiences": {
+      "post": {
+        "tags": [
+          "styling-experiences"
+        ],
+        "summary": "Record Experience",
+        "operationId": "record_experience_v1_styling_experiences_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StylingExperienceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StylingExperienceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "styling-experiences"
+        ],
+        "summary": "List Experiences",
+        "operationId": "list_experiences_v1_styling_experiences_get",
+        "parameters": [
+          {
+            "name": "outfit_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Outfit Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 3,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StylingExperienceListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/styling-experiences/{experience_id}": {
+      "delete": {
+        "tags": [
+          "styling-experiences"
+        ],
+        "summary": "Withdraw Experience",
+        "operationId": "withdraw_experience_v1_styling_experiences__experience_id__delete",
+        "parameters": [
+          {
+            "name": "experience_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Experience Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StylingExperienceDeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/insights/summary": {
       "get": {
         "tags": [
@@ -8572,6 +8814,16 @@
                 "type": "null"
               }
             ]
+          },
+          "linked_result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LinkedDesignResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -10514,6 +10766,28 @@
               }
             ],
             "title": "Departure Date"
+          },
+          "design_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DesignContextRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
           }
         },
         "type": "object",
@@ -10690,6 +10964,16 @@
             "title": "Concern",
             "description": "What the user is unsure about. Only grades how prominently a visual preview is offered (`volume`/`color` are the two a static preview can answer); it never changes the decision itself.",
             "default": "none"
+          },
+          "design_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DesignContextRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -10731,6 +11015,64 @@
         ],
         "title": "DesignBrief",
         "description": "Current accepted conditions, including turns without a complete outfit."
+      },
+      "DesignContextRef": {
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Conversation Id"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Expected Revision"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "conversation_id",
+          "expected_revision"
+        ],
+        "title": "DesignContextRef"
+      },
+      "DesignContextSnapshot": {
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Conversation Id"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Revision"
+          },
+          "outfit_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outfit Id"
+          },
+          "constraints": {
+            "$ref": "#/components/schemas/StylingConstraints"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "conversation_id",
+          "revision",
+          "constraints"
+        ],
+        "title": "DesignContextSnapshot"
       },
       "FavoriteOutfitResponse": {
         "properties": {
@@ -11479,6 +11821,11 @@
             "title": "Learn Status",
             "default": "learned"
           },
+          "design_reference_available": {
+            "type": "boolean",
+            "title": "Design Reference Available",
+            "default": false
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -11549,6 +11896,43 @@
           "entries"
         ],
         "title": "ItemWearHistoryResponse"
+      },
+      "LinkedDesignResult": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "purchase_decision",
+              "packing_list"
+            ],
+            "title": "Kind"
+          },
+          "resource_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Resource Id"
+          },
+          "source_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Source Revision"
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Summary"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "resource_id",
+          "source_revision",
+          "summary"
+        ],
+        "title": "LinkedDesignResult"
       },
       "MarkItemWornRequest": {
         "properties": {
@@ -12522,6 +12906,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/PackingPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "design_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DesignContextSnapshot"
               },
               {
                 "type": "null"
@@ -15141,6 +15535,18 @@
             ],
             "title": "Target Style"
           },
+          "reference_inspiration_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Inspiration Id"
+          },
           "exploration": {
             "type": "boolean",
             "title": "Exploration",
@@ -15188,6 +15594,312 @@
         "additionalProperties": false,
         "type": "object",
         "title": "StylingConstraints"
+      },
+      "StylingExperienceDeleteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "StylingExperienceDeleteResponse"
+      },
+      "StylingExperienceListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StylingExperienceResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "latest_worn_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Worn Date"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "latest_worn_date"
+        ],
+        "title": "StylingExperienceListResponse"
+      },
+      "StylingExperienceRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Request Id"
+          },
+          "outfit_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Outfit Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "appreciated",
+              "want_to_try",
+              "wear_feedback"
+            ],
+            "title": "Kind"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "worn_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worn Date"
+          },
+          "feedback": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "like",
+                  "neutral",
+                  "dislike"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "occasion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "commute",
+                  "formal",
+                  "casual",
+                  "date",
+                  "travel"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occasion"
+          },
+          "supersedes_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "outfit_id",
+          "kind"
+        ],
+        "title": "StylingExperienceRequest"
+      },
+      "StylingExperienceResponse": {
+        "properties": {
+          "experience_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Experience Id"
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Request Id"
+          },
+          "outfit_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Outfit Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "appreciated",
+              "want_to_try",
+              "wear_feedback"
+            ],
+            "title": "Kind"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "worn_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worn Date"
+          },
+          "feedback": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "like",
+                  "neutral",
+                  "dislike"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "occasion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "commute",
+                  "formal",
+                  "casual",
+                  "date",
+                  "travel"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occasion"
+          },
+          "supersedes_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "experience_id",
+          "request_id",
+          "outfit_id",
+          "kind",
+          "conversation_id",
+          "revision",
+          "worn_date",
+          "feedback",
+          "note",
+          "occasion",
+          "supersedes_id",
+          "created_at"
+        ],
+        "title": "StylingExperienceResponse"
       },
       "StylingResponse": {
         "properties": {
@@ -16183,6 +16895,16 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "design_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DesignContextSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",

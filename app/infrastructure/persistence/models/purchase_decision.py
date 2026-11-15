@@ -49,7 +49,8 @@ from app.infrastructure.persistence.models.base import (
 # Current shape version of context_snapshot / evidence_snapshot. Bump when the
 # snapshot payload changes so a replay can tell which reader to use, instead of
 # migrating (and thereby rewriting) historical snapshots.
-DECISION_SNAPSHOT_VERSION = 1
+# Version 2 adds the optional originating design context; version 1 remains readable.
+DECISION_SNAPSHOT_VERSION = 2
 
 
 def _in_sql(enum_cls: type[StrEnum]) -> str:

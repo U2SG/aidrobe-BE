@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ask import answer_question as ask_uc
 from app.application.ask.answer_question import ItemRefSnapshot, build_item_ref_snapshots
+from app.application.ask.continuity import linked_result_from_metadata, visible_conversation_messages
 from app.application.ask.design_types import DesignBrief
 from app.application.ask.styling import StylingService
 from app.application.ports.llm import LlmPort
@@ -285,7 +286,9 @@ async def get_conversation(
     conversation = await repository.get_owned_conversation(current_user.id, conversation_id)
     if conversation is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Conversation not found", 404)
-    messages = await repository.list_messages(current_user.id, conversation_id)
+    messages = await visible_conversation_messages(
+        session, current_user.id, await repository.list_messages(current_user.id, conversation_id),
+    )
     service = StylingService(session, current_user.id)
     current = await service.current(conversation_id)
     session_ids = {message.ask_session_id for message in messages if message.ask_session_id is not None}
@@ -312,6 +315,7 @@ async def get_conversation(
             design_brief=_brief_from_metadata(message.message_metadata),
             item_refs=refs, item_ref_snapshots=_to_schema([by_item[ref] for ref in refs if ref in by_item]),
             trip_intent=_trip_intent_from_context(turn.context) if turn is not None else None,
+            linked_result=linked_result_from_metadata(message.message_metadata),
         ))
     return AskConversationResponse(
         conversation_id=conversation.id, title=conversation.title,

@@ -39,6 +39,7 @@ from app.infrastructure.persistence.models.recommendation import (
 )
 from app.infrastructure.persistence.models.shopping import ShoppingSenseCheck
 from app.infrastructure.persistence.models.style import UserStyleProfile
+from app.infrastructure.persistence.models.styling_experience import StylingExperience
 from app.infrastructure.persistence.models.user import User, UserSession, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.models.wardrobe_relationship import WardrobeItemRelationship
@@ -73,6 +74,7 @@ __all__ = [
     "RecommendationTrace",
     "ShoppingSenseCheck",
     "StaticPreviewFeedback",
+    "StylingExperience",
     "User",
     "UserPreferenceMemory",
     "UserSession",

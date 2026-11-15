@@ -13,8 +13,10 @@ missing-item — are unit-testable without a database. The use case
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import date, timedelta
 from typing import Any
 
+from app.application.ask.continuity_types import DesignContextSnapshot
 from app.application.packing.generate import _categories_for_scene
 from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.engine import (
@@ -23,7 +25,9 @@ from app.application.recommendations.engine import (
     RecommendationEngine,
     RelationshipEdge,
 )
+from app.common import error_codes
 from app.common.enums import Category
+from app.common.exceptions import FriendlyException
 from app.common.season import season_tags_of
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
@@ -253,6 +257,10 @@ async def build_trip_plan(
     destination: str | None = None,
     daily_weather: list[WeatherInfo | None] | None = None,
     locale: str = "en-US",
+    required_item_ids: set[str] | None = None,
+    daily_disliked_colors: list[set[str]] | None = None,
+    design_context: DesignContextSnapshot | None = None,
+    departure_date: date | None = None,
 ) -> TripPlan:
     """Build a per-day outfit plan + packing list + missing-item warnings.
 
@@ -297,18 +305,29 @@ async def build_trip_plan(
         result = await engine.generate(
             engine_items,
             weather=weather_for(day),
-            disliked_colors=disliked_colors or set(),
+            disliked_colors=(daily_disliked_colors[day - 1] if daily_disliked_colors is not None
+                             else disliked_colors or set()),
             relationship_edges=relationship_edges or [],
             style_profile=style_profile or {},
             fit_profile=fit_profile or {},
             recent_worn_outfit_item_ids=[set(sig) for sig in prior_signatures],
             avoid_exact_repeats=True,
+            target_date=(departure_date + timedelta(days=day - 1)
+                         if design_context is not None and departure_date is not None else None),
+            context_constraints=(["formal"] if design_context is not None
+                                 and occasion in {"formal", "business"} else None),
         )
         if result.status != "ready" or not result.outfits:
             # The wardrobe cannot dress the trip — stop here; missing_items + the
             # (possibly empty) plan tell the user what to add.
             break
-        top = result.outfits[0]
+        compatible = [outfit for outfit in result.outfits if (required_item_ids or set()).issubset(outfit.item_ids)]
+        if not compatible:
+            raise FriendlyException(
+                error_codes.STATE_CONFLICT,
+                "The travel plan cannot keep every locked piece. Adjust the design first.", status_code=409,
+            )
+        top = compatible[0]
         reuses = any(item_id in seen_items for item_id in top.item_ids)
         daily_outfits.append(
             DailyOutfit(

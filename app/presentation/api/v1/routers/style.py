@@ -9,6 +9,7 @@ from app.application.style.add_inspiration import AddStyleInspiration
 from app.application.style.add_inspiration_batch import AddStyleInspirationBatch
 from app.application.style.add_pdf_source import AddPdfStyleSource
 from app.application.style.delete_inspiration import DeleteStyleInspiration
+from app.application.style.design_reference import reference_from_profile
 from app.application.style.list_inspirations import ListStyleInspirations
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
@@ -44,6 +45,7 @@ def _inspiration_response(profile: UserStyleProfile) -> InspirationResponse:
         source_url=profile.source_url,
         source_type=profile.source_type,
         learn_status=profile.learn_status,
+        design_reference_available=reference_from_profile(profile, get_settings()) is not None,
         created_at=profile.created_at,
     )
 

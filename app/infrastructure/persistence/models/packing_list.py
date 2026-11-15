@@ -1,7 +1,7 @@
 import uuid
 from datetime import date
 
-from sqlalchemy import Date, ForeignKey, SmallInteger, String
+from sqlalchemy import Date, ForeignKey, SmallInteger, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,6 +24,7 @@ class PackingList(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """
 
     __tablename__ = "packing_lists"
+    __table_args__ = (UniqueConstraint("user_id", "design_request_id", name="uq_packing_design_request"),)
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
@@ -37,6 +38,9 @@ class PackingList(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # BE#68 — rich planner snapshot {summary, weather_summary, packing_items,
     # daily_outfits, missing_items}. NULL for legacy / planner-off lists.
     plan_json: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    design_context: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    design_request_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    design_request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="draft", server_default="draft"
     )

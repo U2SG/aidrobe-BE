@@ -21,6 +21,7 @@ import structlog
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ask.continuity import visible_design_context
 from app.application.ports.ocr import OcrPort
 from app.application.ports.vision import VisionPort
 from app.application.purchase.decide_purchase import (
@@ -205,6 +206,7 @@ async def _to_decision_response(
             "boundary_note": shown.boundary_note,
             "next_actions": list(shown.next_actions),
             "created_at": decision.created_at,
+            "design_context": visible_design_context(decision.context_snapshot.get("design_context")),
         }
     )
 
@@ -286,6 +288,7 @@ async def decide_purchase_candidate(
         current_user.id,
         candidate,
         concern=(payload or DecisionRequest()).concern,
+        design_context=(payload or DecisionRequest()).design_context,
     )
     _emit_decision_completed(current_user.id, candidate, decision)
     return await _to_decision_response(session, decision)

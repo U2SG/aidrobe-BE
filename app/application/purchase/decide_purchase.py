@@ -45,6 +45,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ask.continuity import (
+    load_design_context,
+    parse_design_context,
+    record_linked_result,
+    require_same_context,
+)
+from app.application.ask.continuity_types import DesignContextRef, LinkedDesignResult
 from app.application.purchase.candidate_normalizer import ParsedItem
 from app.application.purchase.compose_outfit_evidence import compose_outfit_evidence
 from app.application.purchase.compute_similarity_evidence import compute_similarity_evidence
@@ -54,7 +61,9 @@ from app.application.purchase.purchase_decision_rules import (
     decide,
     replay_decision,
 )
+from app.common import error_codes
 from app.common.enums import WardrobeDecisionType
+from app.common.exceptions import FriendlyException
 from app.common.locale import resolve_locale
 from app.infrastructure.persistence.models.purchase_decision import (
     DECISION_SNAPSHOT_VERSION,
@@ -115,16 +124,21 @@ class DecidePurchase:
         candidate: PurchaseCandidate,
         *,
         concern: str = CONCERN_NONE,
+        design_context: DesignContextRef | None = None,
     ) -> WardrobeDecision:
         """The existing decision for this candidate, or a newly frozen one."""
+        if candidate.user_id != user_id:
+            raise FriendlyException(error_codes.NOT_FOUND, "Purchase candidate not found", status_code=404)
         existing = await self.decisions.get_for_candidate(candidate.id, user_id)
         if existing is not None:
+            require_same_context(parse_design_context(existing.context_snapshot.get("design_context")), design_context)
             return existing
 
+        context = await load_design_context(self.session, user_id, design_context) if design_context else None
         parsed = parsed_item_from_snapshot(candidate.parsed_item)
         locale = await self._locale(user_id)
         closet = await compute_similarity_evidence(self.session, user_id, parsed)
-        outfit = await compose_outfit_evidence(self.session, user_id, parsed, closet)
+        outfit = await compose_outfit_evidence(self.session, user_id, parsed, closet, design_context=context)
         outcome = decide(parsed, closet, outfit, concern=concern, locale=locale)
 
         decision = WardrobeDecision(
@@ -138,6 +152,7 @@ class DecidePurchase:
                 "candidate_status": candidate.status,
                 "source_type": candidate.source_type,
                 "locale": locale,
+                **({"design_context": context.model_dump(mode="json")} if context is not None else {}),
             },
             evidence_snapshot={
                 "closet_evidence": closet.as_payload(),
@@ -148,7 +163,15 @@ class DecidePurchase:
             uncertainty=outcome.uncertainty,
             visual_need=outcome.visual_need,
         )
-        return await self._add_or_replay(decision, candidate.id, user_id)
+        saved = await self._add_or_replay(decision, candidate.id, user_id)
+        require_same_context(parse_design_context(saved.context_snapshot.get("design_context")), design_context)
+        if context is not None:
+            shown = shown_decision(saved)
+            summary = " ".join([shown.decision_text, *(reason.text for reason in shown.reasons)])[:1000]
+            await record_linked_result(self.session, user_id, context, LinkedDesignResult(
+                kind="purchase_decision", resource_id=saved.id, source_revision=context.revision, summary=summary,
+            ))
+        return saved
 
     async def _add_or_replay(
         self,

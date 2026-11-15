@@ -34,6 +34,7 @@ from app.presentation.api.v1.routers import (
     settings,
     shopping,
     style,
+    styling_experiences,
     uploads,
     visual_feedback,
     visual_preview,
@@ -106,6 +107,7 @@ def create_app() -> FastAPI:
     app.include_router(fit.router)
     app.include_router(recommendations.router)
     app.include_router(style.router)
+    app.include_router(styling_experiences.router)
     app.include_router(insights.router)
     app.include_router(outfit_history.router)
     app.include_router(outfit_plan.router)

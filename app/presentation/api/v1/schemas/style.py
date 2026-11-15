@@ -22,6 +22,7 @@ class InspirationResponse(BaseModel):
     source_url: str | None = None
     source_type: str
     learn_status: str = "learned"
+    design_reference_available: bool = False
     created_at: datetime
 
 

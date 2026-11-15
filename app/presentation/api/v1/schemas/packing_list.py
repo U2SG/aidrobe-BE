@@ -2,9 +2,11 @@
 
 import uuid
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.application.ask.continuity_types import DesignContextRef, DesignContextSnapshot
 
 
 class PackingItem(BaseModel):
@@ -21,6 +23,14 @@ class CreatePackingListRequest(BaseModel):
     scenes: list[str]
     weather_hint: str | None = None
     departure_date: date | None = None
+    design_context: DesignContextRef | None = None
+    request_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def design_request(self) -> Self:
+        if (self.design_context is None) != (self.request_id is None):
+            raise ValueError("design_context and request_id must be provided together")
+        return self
 
 
 class UpdatePackingListRequest(BaseModel):
@@ -66,3 +76,4 @@ class PackingListResponse(BaseModel):
     status: str
     # BE#68 — additive; None for legacy / planner-off lists (FE ignores it).
     plan: PackingPlan | None = None
+    design_context: DesignContextSnapshot | None = None

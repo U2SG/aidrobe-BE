@@ -9,6 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.application.ask.continuity_types import LinkedDesignResult
 from app.application.ask.design_types import DesignBrief, StylingConstraints
 from app.presentation.api.v1.schemas.recommendations import OutfitResponse
 
@@ -83,6 +84,7 @@ class AskConversationMessage(BaseModel):
     item_refs: list[str] = Field(default_factory=list)
     item_ref_snapshots: list[AskItemRefSnapshot] = Field(default_factory=list)
     trip_intent: AskTripIntent | None = None
+    linked_result: LinkedDesignResult | None = None
 
 
 class AskConversationResponse(BaseModel):

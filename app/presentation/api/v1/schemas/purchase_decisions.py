@@ -20,6 +20,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.application.ask.continuity_types import DesignContextRef, DesignContextSnapshot
+
 Decision = Literal[
     "worth_adding",
     "consider_alternate",
@@ -52,6 +54,7 @@ class DecisionRequest(BaseModel):
             "answer); it never changes the decision itself."
         ),
     )
+    design_context: DesignContextRef | None = None
 
 
 class DecisionReasonModel(BaseModel):
@@ -113,3 +116,4 @@ class WardrobeDecisionResponse(BaseModel):
     )
     next_actions: list[NextAction]
     created_at: datetime
+    design_context: DesignContextSnapshot | None = None

@@ -11,6 +11,7 @@ from typing import Annotated, cast
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ask.continuity import visible_design_context
 from app.application.packing.generate import (
     GeneratePackingList,
     GetPackingList,
@@ -67,6 +68,7 @@ def _to_response(packing_list: PackingList) -> PackingListResponse:
         items=[PackingItem.model_validate(item) for item in raw_items],
         status=packing_list.status,
         plan=plan,
+        design_context=visible_design_context(packing_list.design_context),
     )
 
 
@@ -86,6 +88,8 @@ async def create_packing_list(
         payload.weather_hint,
         payload.departure_date,
         await resolve_user_locale(session, current_user.id),
+        design_context=payload.design_context,
+        request_id=payload.request_id,
     )
     return _to_response(packing_list)
 

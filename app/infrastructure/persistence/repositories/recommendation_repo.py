@@ -21,6 +21,7 @@ from app.infrastructure.persistence.models.recommendation import (
     RecommendationTrace,
     WearHistory,
 )
+from app.infrastructure.persistence.models.styling_experience import StylingExperience
 from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
@@ -481,7 +482,19 @@ class SqlAlchemyRecommendationRepository:
             .where(Outfit.daily_recommendation_id == daily_recommendation_id)
             .limit(1)
         )
-        return favorite_outfit_id is not None
+        if favorite_outfit_id is not None:
+            return True
+        # A live experience keeps its exact outfit version available even when
+        # a newer daily recommendation is generated in the background.
+        experience_id = await self.session.scalar(
+            select(StylingExperience.id)
+            .join(Outfit, Outfit.id == StylingExperience.outfit_id)
+            .where(
+                Outfit.daily_recommendation_id == daily_recommendation_id,
+                StylingExperience.deleted_at.is_(None),
+            ).limit(1)
+        )
+        return experience_id is not None
 
     async def daily_has_wear(self, daily_recommendation_id: uuid.UUID) -> bool:
         """Whether the user already wore one of this daily's outfits."""

@@ -28,6 +28,7 @@ from sqlalchemy import func, nulls_last, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ask.butler import AskButler
+from app.application.ask.continuity import linked_result_from_metadata, visible_conversation_messages
 from app.application.ask.design_types import DesignBrief, StylingConstraints
 from app.application.ask.styling import StylingService, conflict, fingerprint, lock_request
 from app.application.ask.wardrobe_context import (
@@ -43,6 +44,7 @@ from app.application.llm_prompts.preference_memory import render_preferences
 from app.application.llm_prompts.reasoning_policy import reasoning_policy
 from app.application.llm_prompts.response_contracts import ask_butler_contract, ask_structured_contract
 from app.application.llm_prompts.self_critique import negative_preference_violations
+from app.application.outfits.experiences import recent_experience_context
 from app.application.ports.llm import LlmAnswer, LlmPort, ToolCallingLlm, ToolUse
 from app.application.ports.weather import WeatherPort
 from app.application.preferences.memory import (
@@ -54,6 +56,7 @@ from app.application.preferences.memory import (
     record_preference,
 )
 from app.application.safety.copy_guard import find_forbidden_terms, sanitize_generated_copy
+from app.application.style.design_reference import load_design_reference
 from app.common import error_codes
 from app.common.enums import FitStatus, ItemStatus
 from app.common.exceptions import FriendlyException
@@ -729,11 +732,44 @@ def _summarize_old_messages(
         if cleaned_previous:
             parts.append(cleaned_previous)
     for message in messages:
+        metadata = message.message_metadata or {}
+        if "linked_result" in metadata or metadata.get("transient_design_context"):
+            # These observations are re-read from their current, revocable source.
+            continue
         content = sanitize_llm_text(message.content, max_len=90)
         if content:
             parts.append(f"{message.role}:{content}")
     summary = " | ".join(parts)
     return summary[:_MAX_CONVERSATION_SUMMARY_LEN] or None
+
+
+async def _linked_design_context(
+    session: AsyncSession, user_id: uuid.UUID, conversation_id: uuid.UUID,
+) -> str | None:
+    cutoff = await session.scalar(select(User.memory_context_reset_at).where(User.id == user_id))
+    query = select(AskMessage).where(
+        AskMessage.user_id == user_id, AskMessage.conversation_id == conversation_id,
+        AskMessage.message_metadata["linked_result"].is_not(None),
+    )
+    if cutoff is not None:
+        query = query.where(AskMessage.created_at > cutoff)
+    messages = list(reversed(list(await session.scalars(
+        query.order_by(AskMessage.created_at.desc(), AskMessage.id.desc()).limit(30)
+    ))))
+    visible = await visible_conversation_messages(session, user_id, messages)
+    results = []
+    for message in visible:
+        linked = linked_result_from_metadata(message.message_metadata)
+        if linked is not None:
+            results.append({"kind": linked.kind, "source_revision": linked.source_revision,
+                            "summary": sanitize_llm_text(linked.summary, max_len=700)})
+    if not results:
+        return None
+    return (
+        "\nRelated results from this design: " + json.dumps(results[-4:], ensure_ascii=False)
+        + "\nThese describe earlier user-initiated actions at source_revision, not newly completed actions. "
+        "Do not claim to have purchased anything or packed a bag. Reconcile them with the current design."
+    )
 
 
 async def _replay_ask(service: StylingService, saved: AskSession) -> AskResult:
@@ -777,8 +813,10 @@ async def answer_question(
 ) -> AskResult:
     turn_started_at = datetime.now(UTC)
     settings = get_settings()
-    design_requested = design_mode or expected_revision is not None or base_outfit_id is not None
-    if not settings.ENABLE_DESIGNER_SESSIONS and expected_revision is not None:
+    explicit_reference = constraints.reference_inspiration_id if constraints is not None else None
+    design_requested = (design_mode or expected_revision is not None or base_outfit_id is not None
+                        or explicit_reference is not None)
+    if not settings.ENABLE_DESIGNER_SESSIONS and (expected_revision is not None or explicit_reference is not None):
         raise FriendlyException(error_codes.FORBIDDEN, "Designer sessions are not enabled", 503)
     styling_service = StylingService(session, user_id)
     request_hash = fingerprint(
@@ -900,6 +938,12 @@ async def answer_question(
         if design_constraints.target_date is not None and design_constraints.target_date < local_today:
             raise FriendlyException(error_codes.VALIDATION_ERROR, "Design date must be today or in the future", 422)
         context["date"] = (design_constraints.target_date or local_today).isoformat()
+    reference = None
+    if designing and design_constraints.reference_inspiration_id is not None:
+        reference = await load_design_reference(
+            session, user_id, design_constraints.reference_inspiration_id,
+            settings=settings, strict=explicit_reference is not None,
+        )
     # Rejection is derived from the STRUCTURED model output post-call, never from
     # substring-sniffing free text (that misfired on phrases like "不要太正式").
     # The DURABLE rejected_item_ids (persisted from a prior turn's structured
@@ -1043,6 +1087,7 @@ async def answer_question(
             current_outfit_ids=current_outfit_ids,
             question=question,
             preference_memory_enabled=settings.ENABLE_PREFERENCE_MEMORY,
+            reference=reference,
         )
     system_prompt = _build_system_prompt(
         user_id,
@@ -1053,6 +1098,10 @@ async def answer_question(
         recent_ref_positions=recent_positions,
         butler=butler is not None,
     )
+    linked_context = await _linked_design_context(session, user_id, conversation.id) if designing else None
+    experience_context = await recent_experience_context(session, user_id) if designing else None
+    transient_context = bool(linked_context or experience_context or reference)
+    system_prompt += (linked_context or "") + (experience_context or "")
     prompt_question = sanitized_question or question
     used_tools: list[ToolUse] = []
     loop_tokens = 0
@@ -1202,7 +1251,10 @@ async def answer_question(
     # Do not hold a conversation row lock during a provider call. Revalidate
     # the revision only now, under the same User -> conversation lock order as memory deletion.
     pref_repo = SqlAlchemyPreferenceMemoryRepository(session)
-    await pref_repo.lock_user(user_id)
+    locked_memory_user = await pref_repo.lock_user(user_id)
+    if (transient_context and locked_memory_user.memory_context_reset_at is not None
+            and locked_memory_user.memory_context_reset_at > turn_started_at):
+        raise conflict("A reference or experience changed while preparing this design. Please try again.")
     if designing:
         conversation = await styling_service.lock_conversation(conversation.id, expected_revision or 0)
         if butler is not None and butler.design_constraints is not None:
@@ -1228,6 +1280,7 @@ async def answer_question(
     rejected_item_ids = _json_str_list(conversation_state.rejected_item_ids if conversation_state else None)
     memory_user = await session.scalar(select(User).where(User.id == user_id).execution_options(populate_existing=True))
     memory_reset_at = memory_user.memory_context_reset_at if memory_user is not None else None
+    context_revoked = memory_reset_at is not None and memory_reset_at > turn_started_at
 
     # Persist the context snapshot alongside the client-supplied context
     # (date/scene/time_left) so the answer stays traceable to the wardrobe
@@ -1303,6 +1356,7 @@ async def answer_question(
         created_at=turn_started_at,
         message_metadata={
             "item_refs": item_refs,
+            **({"transient_design_context": True} if transient_context else {}),
             **({"styling_revision_id": str(current_styling.id)} if current_styling is not None and designing else {}),
             **(
                 {"design_brief": current_brief.model_dump(mode="json")}
@@ -1316,7 +1370,7 @@ async def answer_question(
     )
     active_constraints = _merge_unique(
         existing_constraints,
-        response_deltas.applied_constraints,
+        heuristic_constraints if transient_context else response_deltas.applied_constraints,
         limit=_MAX_CONSTRAINTS,
     )
     preferred_item_ids = _json_str_list(conversation_state.preferred_item_ids if conversation_state else None)
@@ -1337,24 +1391,25 @@ async def answer_question(
             summary,
             messages[:-_RECENT_MESSAGES_TO_KEEP],
         )
-    await conversation_repo.upsert_state(
-        conversation=conversation,
-        state=conversation_state,
-        last_outfit={
-            "item_refs": item_refs,
-            "answer": sanitize_llm_text(answer_text, max_len=240),
-        } if current_styling is None else {
-            "item_refs": [
-                str(item.item_id) for item in (await styling_service.owned_outfit(current_styling.outfit_id)).items
-            ],
-            "outfit_id": str(current_styling.outfit_id), "revision": current_styling.revision,
-            "answer": sanitize_llm_text(answer_text, max_len=240),
-        },
-        active_constraints=active_constraints,
-        rejected_item_ids=rejected_item_ids,
-        preferred_item_ids=preferred_item_ids,
-        summary=summary,
-    )
+    if not context_revoked:
+        await conversation_repo.upsert_state(
+            conversation=conversation,
+            state=conversation_state,
+            last_outfit={
+                "item_refs": item_refs,
+                "answer": "" if transient_context else sanitize_llm_text(answer_text, max_len=240),
+            } if current_styling is None else {
+                "item_refs": [
+                    str(item.item_id) for item in (await styling_service.owned_outfit(current_styling.outfit_id)).items
+                ],
+                "outfit_id": str(current_styling.outfit_id), "revision": current_styling.revision,
+                "answer": "" if transient_context else sanitize_llm_text(answer_text, max_len=240),
+            },
+            active_constraints=active_constraints,
+            rejected_item_ids=rejected_item_ids,
+            preferred_item_ids=preferred_item_ids,
+            summary=summary,
+        )
 
     # BE#46 — trusted write path: persist preferences the user EXPLICITLY stated
     # this turn. Written unconditionally (the ENABLE_PREFERENCE_MEMORY flag gates
@@ -1362,7 +1417,7 @@ async def answer_question(
     # back stays a clean rollback. Fail-soft per row: a bad type/value (the write
     # service re-validates against its allowlist) is dropped, never fails the
     # answer the user actually asked for. `ask_row.id` is the provenance link.
-    if stated_preferences:
+    if stated_preferences and not context_revoked:
         for pref in stated_preferences:
             evidence = pref.get("evidence_text")
             if not isinstance(evidence, str) or not evidence.strip() or evidence not in question:

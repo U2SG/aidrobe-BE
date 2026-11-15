@@ -20,6 +20,7 @@ from app.application.ports.weather import WeatherInfo, WeatherPort
 from app.application.preferences.memory import read_preference_memory
 from app.application.recommendations.engine import BUSINESS_FORMALITY, CASUAL_FORMALITY, COLD_FEELS_LIKE_C
 from app.application.recommendations.feasibility import has_first_outfit_core, missing_first_outfit_slots
+from app.application.style.design_reference import DesignReference
 from app.common.enums import Category, FitScene, FitStatus, WardrobeItemStatus
 from app.common.season import SeasonName, current_season, in_season, season_tags_of
 from app.infrastructure.llm.sanitizer import sanitize_for_llm, sanitize_llm_text
@@ -176,6 +177,7 @@ class AskButler:
         current_outfit_ids: list[uuid.UUID] | None = None,
         question: str = "",
         preference_memory_enabled: bool = False,
+        reference: DesignReference | None = None,
     ) -> None:
         self.session = session
         self.user_id = user_id
@@ -189,6 +191,7 @@ class AskButler:
         self.preserved_ids = set(self.current_outfit_ids)
         self.question = question
         self.preference_memory_enabled = preference_memory_enabled
+        self.reference = reference
         self.effective_preferences: dict[str, list[dict[str, Any]]] = {}
         self.brief_updated = False
         self.excluded_ids: set[uuid.UUID] = set()
@@ -262,7 +265,7 @@ class AskButler:
             details += f" Requested occasion: {self.requested_occasion.value}."
         if self.design_constraints is not None:
             brief = self.design_constraints.model_dump(mode="json", exclude={
-                "locked_item_ids", "excluded_item_ids", "preference_overrides"
+                "locked_item_ids", "excluded_item_ids", "preference_overrides", "reference_inspiration_id"
             })
             brief["goal"] = sanitize_llm_text(self.design_constraints.goal or "", max_len=600)
             brief["target_style"] = sanitize_llm_text(self.design_constraints.target_style or "", max_len=120)
@@ -280,6 +283,11 @@ class AskButler:
                         "must shape the actual garment attributes and selection. If the wardrobe cannot achieve "
                         "it, explain the concrete gap. New complete results are drafts; do not claim adoption, "
                         "wear, favorite or image generation. Users adopt with the visible Use this outfit action.")
+            if self.reference is not None:
+                details += self.reference.prompt_context()
+            elif self.design_constraints.reference_inspiration_id is not None:
+                details += ("\nThe previously selected image analysis is unavailable. Continue from the user's "
+                            "explicit conditions; do not claim to have inspected that reference.")
         return details
 
     async def update_design_brief(self, raw: dict[str, Any]) -> ToolResult:
@@ -417,12 +425,16 @@ class AskButler:
             negatives = self.effective_preferences.get("negative", [])
             desired_style = (self.design_constraints.target_style or "").casefold()
 
-            def rank(item: WardrobeItem) -> tuple[int, int]:
+            reference_styles = {tag.casefold() for tag in self.reference.styles} if self.reference else set()
+            reference_palette = {color.casefold() for color in self.reference.palette} if self.reference else set()
+
+            def rank(item: WardrobeItem) -> tuple[int, int, int]:
                 penalty = sum(1 for pref in negatives if attributes.get(str(pref.get("type")))
                               and str(getattr(item, attributes[str(pref["type"])], "")).casefold()
                               == str(pref.get("value", "")).casefold())
                 tags = [str(tag).casefold() for tag in (item.style_tags or {}).get("tags", [])]
-                return penalty, -int(bool(desired_style) and desired_style in tags)
+                style_match = desired_style in tags if desired_style else bool(reference_styles.intersection(tags))
+                return penalty, -int(style_match), -int(item.color_main.casefold() in reference_palette)
 
             rows.sort(key=rank)
             rows = rows[:args.limit]

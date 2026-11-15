@@ -29,6 +29,7 @@ class StylingConstraints(BaseModel):
     goal: str | None = Field(default=None, max_length=600)
     notes: list[str] = Field(default_factory=list, max_length=8)
     target_style: str | None = Field(default=None, max_length=120)
+    reference_inspiration_id: uuid.UUID | None = None
     exploration: bool = False
     preference_overrides: list[PreferenceOverride] = Field(default_factory=list, max_length=8)
     scene: Literal["commute", "formal", "casual", "date", "travel"] | None = None

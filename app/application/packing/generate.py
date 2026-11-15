@@ -13,8 +13,19 @@ from datetime import date, timedelta
 from typing import cast
 
 import structlog
+from sqlalchemy import select
 
+from app.application.ask.continuity import (
+    load_design_context,
+    preferred_item_ids,
+    record_linked_result,
+    require_design_context_enabled,
+    restrict_design_items,
+)
+from app.application.ask.continuity_types import DesignContextRef, DesignContextSnapshot, LinkedDesignResult
+from app.application.ask.styling import conflict, fingerprint, lock_request
 from app.application.ports.weather import WeatherInfo, WeatherPort
+from app.application.preferences.memory import resolve_effective_preferences
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
 from app.common.locale import DEFAULT_LOCALE
@@ -24,6 +35,7 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.packing_list_repo import (
     SqlAlchemyPackingListRepository,
 )
+from app.infrastructure.persistence.repositories.preference_memory_repo import SqlAlchemyPreferenceMemoryRepository
 
 logger = structlog.get_logger(__name__)
 
@@ -79,6 +91,9 @@ class GeneratePackingList:
         weather_hint: str | None,
         departure_date: date | None,
         locale: str = DEFAULT_LOCALE,
+        *,
+        design_context: DesignContextRef | None = None,
+        request_id: uuid.UUID | None = None,
     ) -> PackingList:
         if days < 1:
             raise FriendlyException(
@@ -91,6 +106,28 @@ class GeneratePackingList:
                 status_code=422,
             )
 
+        if (design_context is None) != (request_id is None):
+            raise FriendlyException(error_codes.VALIDATION_ERROR,
+                                    "design_context and request_id must be provided together", status_code=422)
+        context: DesignContextSnapshot | None = None
+        request_fingerprint: str | None = None
+        if design_context is not None and request_id is not None:
+            require_design_context_enabled()
+            request_fingerprint = fingerprint(
+                "packing_design", destination=destination, days=days, scenes=scenes,
+                weather_hint=weather_hint, departure_date=departure_date,
+                design_context=design_context.model_dump(mode="json"),
+            )
+            await lock_request(self.repository.session, user_id, request_id)
+            existing = await self.repository.session.scalar(select(PackingList).where(
+                PackingList.user_id == user_id, PackingList.design_request_id == request_id,
+            ))
+            if existing is not None:
+                if existing.design_request_fingerprint != request_fingerprint:
+                    raise conflict("request_id was already used for a different travel plan")
+                return existing
+            context = await load_design_context(self.repository.session, user_id, design_context)
+
         candidates = await self.repository.list_candidate_items(user_id)
 
         # Skip items worn in the 7 days before departure — anchored to the trip,
@@ -100,15 +137,21 @@ class GeneratePackingList:
         anchor = departure_date if departure_date is not None else date.today()
         since = anchor - timedelta(days=RECENT_WEAR_DAYS)
         recently_worn = await self.repository.recent_worn_item_ids(user_id, since, until=anchor)
-        candidates = [item for item in candidates if item.id not in recently_worn]
+        locked = set(context.constraints.locked_item_ids) if context else set()
+        candidates = [item for item in candidates if item.id not in recently_worn or item.id in locked]
+        if context is not None:
+            candidates = restrict_design_items(
+                candidates, context, preferred=await preferred_item_ids(self.repository.session, context),
+            )
 
         # BE#68 — when the planner is on, build the rich per-day plan (engine +
         # preferences + graph), persist it, and derive the flat checklist from it
         # so both views stay consistent. Flag off → the legacy round-robin below.
         if get_settings().ENABLE_PACKING_PLANNER:
-            return await self._generate_with_planner(
-                user_id, destination, days, scenes, weather_hint, departure_date, candidates, locale
+            result = await self._generate_with_planner(
+                user_id, destination, days, scenes, weather_hint, departure_date, candidates, locale, context,
             )
+            return await self._save_context(result, context, request_id, request_fingerprint, locale)
 
         by_category: dict[str, list[WardrobeItem]] = {}
         for item in candidates:
@@ -120,7 +163,11 @@ class GeneratePackingList:
         selected: list[dict[str, object]] = []
         for day in range(1, days + 1):
             for scene in scenes:
-                for category in _categories_for_scene(scene):
+                categories = list(_categories_for_scene(scene))
+                if context is not None:
+                    categories = list(dict.fromkeys([*categories, *(item.category.lower() for item in candidates
+                                                                  if item.id in locked)]))
+                for category in categories:
                     pool = by_category.get(category)
                     if not pool:
                         continue
@@ -147,7 +194,30 @@ class GeneratePackingList:
             items=selected,
             status="draft",
         )
-        return await self.repository.add(packing_list)
+        result = await self.repository.add(packing_list)
+        return await self._save_context(result, context, request_id, request_fingerprint, locale)
+
+    async def _save_context(
+        self, packing_list: PackingList, context: DesignContextSnapshot | None,
+        request_id: uuid.UUID | None, request_fingerprint: str | None, locale: str,
+    ) -> PackingList:
+        if context is None:
+            return packing_list
+        packing_list.design_context = context.model_dump(mode="json")
+        packing_list.design_request_id = request_id
+        packing_list.design_request_fingerprint = request_fingerprint
+        await self.repository.session.flush()
+        items = cast(list[dict[str, object]], packing_list.items or [])
+        count = len({str(item["item_id"]) for item in items})
+        destination = packing_list.destination or ("your trip" if locale.startswith("en") else "这次旅行")
+        summary = (
+            f"Prepared a {packing_list.days}-day packing list for {destination}, using {count} wardrobe items."
+            if locale.startswith("en") else f"已为{destination}准备 {packing_list.days} 天旅行清单，共选用 {count} 件衣物。"
+        )
+        await record_linked_result(self.repository.session, packing_list.user_id, context, LinkedDesignResult(
+            kind="packing_list", resource_id=packing_list.id, source_revision=context.revision, summary=summary[:1000],
+        ))
+        return packing_list
 
     async def _destination_forecast(
         self,
@@ -186,6 +256,7 @@ class GeneratePackingList:
         departure_date: date | None,
         candidates: list[WardrobeItem],
         locale: str,
+        context: DesignContextSnapshot | None = None,
     ) -> PackingList:
         # Lazy import breaks the planner<->generate import cycle (planner imports
         # SCENE_CATEGORIES from this module at load time).
@@ -210,6 +281,22 @@ class GeneratePackingList:
             engine=RecommendationEngine(),
         )
         disliked_colors = await gen._load_disliked_colors(user_id, settings)
+        daily_disliked_colors: list[set[str]] | None = None
+        if context is not None and settings.ENABLE_PREFERENCE_MEMORY:
+            rows = await SqlAlchemyPreferenceMemoryRepository(session).list_live(user_id)
+            daily_disliked_colors = []
+            for day in range(days):
+                target = departure_date + timedelta(days=day) if departure_date is not None else None
+                scene = scenes[day % len(scenes)]
+                overrides = context.constraints.preference_overrides if (
+                    target == context.constraints.target_date and scene == context.constraints.scene
+                ) else []
+                preferences = resolve_effective_preferences(
+                    rows, scene=scene, target_date=target,
+                    overrides=[override.model_dump(mode="json", exclude_none=True) for override in overrides],
+                )
+                daily_disliked_colors.append({row.preference_value.lower() for row in preferences
+                                              if row.polarity == "negative" and row.preference_type == "color"})
         relationship_edges = await gen._load_relationship_edges(
             user_id, SqlAlchemyWardrobeRelationshipRepository(session), candidates, settings
         )
@@ -229,6 +316,10 @@ class GeneratePackingList:
             fit_profile=fit_profile,
             destination=destination,
             locale=locale,
+            required_item_ids={str(item_id) for item_id in context.constraints.locked_item_ids} if context else None,
+            daily_disliked_colors=daily_disliked_colors,
+            design_context=context,
+            departure_date=departure_date,
         )
         # Flatten the per-day plan into the legacy checklist so `items` and the
         # rich `plan_json` describe the same selection.

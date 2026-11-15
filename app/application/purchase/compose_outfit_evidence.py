@@ -44,11 +44,15 @@ which `test_v3_outfit_composition.py` asserts over the import graph.
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 
 from sqlalchemy import Select, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.application.ask.continuity import preferred_item_ids, restrict_design_items
+from app.application.ask.continuity_types import DesignContextSnapshot
+from app.application.ask.styling import conflict
 from app.application.purchase.candidate_normalizer import ParsedItem
 from app.application.purchase.compute_similarity_evidence import load_wear_scenes
 from app.application.purchase.outfit_composition import (
@@ -83,6 +87,8 @@ async def compose_outfit_evidence(
     user_id: uuid.UUID,
     parsed: ParsedItem | None,
     closet_evidence: ClosetEvidence | None = None,
+    *,
+    design_context: DesignContextSnapshot | None = None,
 ) -> OutfitEvidence:
     """Grounded outfit evidence for one purchase candidate.
 
@@ -107,7 +113,21 @@ async def compose_outfit_evidence(
     similar_item_ids = _covering_item_ids(closet_evidence)
     categories = relevant_categories(category)
 
-    items = await _load_available_items(session, user_id, categories, similar_item_ids)
+    preferred = await preferred_item_ids(session, design_context) if design_context else set()
+    locked = set(design_context.constraints.locked_item_ids) if design_context else set()
+    pinned = tuple(dict.fromkeys((*similar_item_ids, *sorted(locked | preferred))))
+    items = await _load_available_items(session, user_id, categories, pinned)
+    scan_truncated = any(sum(item.category == category for item in items) >= MAX_ITEMS_PER_CATEGORY
+                         for category in categories)
+    if design_context is not None:
+        items = restrict_design_items(items, design_context, preferred=preferred)
+        candidate_slots = set(CATEGORY_SLOTS[category])
+        if any(item.id in locked and (
+            item.category not in CATEGORY_SLOTS or candidate_slots.intersection(CATEGORY_SLOTS[item.category])
+        ) for item in items):
+            raise conflict("This purchase would replace a locked piece. Unlock it before comparing.")
+        if design_context.constraints.scene is not None:
+            parsed = replace(parsed, scene_tags=[design_context.constraints.scene])
     if not items:
         return build_outfit_evidence(parsed, [], similar_item_ids=similar_item_ids)
 
@@ -124,12 +144,15 @@ async def compose_outfit_evidence(
         for item in items
     ]
 
-    return build_outfit_evidence(
+    evidence = build_outfit_evidence(
         parsed,
         facts,
         similar_item_ids=similar_item_ids,
-        scan_truncated=_window_saturated(facts, categories),
+        scan_truncated=scan_truncated if design_context is not None else _window_saturated(facts, categories),
     )
+    if locked and any(not locked.issubset(outfit.item_ids) for outfit in (*evidence.outfits, *evidence.alternatives)):
+        raise conflict("The comparison cannot keep every locked piece. Adjust the design first.")
+    return evidence
 
 
 def _covering_item_ids(closet_evidence: ClosetEvidence | None) -> tuple[uuid.UUID, ...]:
