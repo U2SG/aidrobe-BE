@@ -36,7 +36,7 @@ class SqlAlchemyStyleRepository:
             select(UserStyleProfile)
             .where(
                 UserStyleProfile.user_id == user_id,
-                UserStyleProfile.source_type == "inspiration_image",
+                UserStyleProfile.source_type.in_(("inspiration_image", "pdf_magazine")),
             )
             .order_by(UserStyleProfile.created_at.desc())
             .limit(limit)
