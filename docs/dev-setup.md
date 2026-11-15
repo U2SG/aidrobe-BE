@@ -31,7 +31,7 @@ OPENAI_IMAGE_MODEL=gpt-image-2
 
 Newly confirmed items receive generated covers. In Today, the user can request
 one complete outfit image on demand. This uses OpenAI Images Edits and counts
-towards the separate `OUTFIT_IMAGE_DAILY_LIMIT` (default 3).
+towards the separate `OUTFIT_IMAGE_DAILY_LIMIT` (default 10 per account per day).
 
 The sections below describe the older host-run (Windows / PowerShell) setup.
 
