@@ -27,6 +27,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.persistence.models.base import Base, UUIDPrimaryKeyMixin
@@ -52,6 +53,11 @@ class UserPreferenceMemory(UUIDPrimaryKeyMixin, Base):
     # explicit_user_statement | feedback_signal | inferred_from_history
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     source_message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    scope: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    evidence_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -86,6 +92,7 @@ class UserPreferenceMemory(UUIDPrimaryKeyMixin, Base):
             "user_id",
             "preference_type",
             "preference_value",
+            "scope",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),

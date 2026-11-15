@@ -1,10 +1,12 @@
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.local_time import utc_now
 from app.infrastructure.persistence.models.ask_conversation import (
     AskConversation,
     AskConversationState,
@@ -58,6 +60,7 @@ class SqlAlchemyAskConversationRepository:
         content: str,
         ask_session_id: uuid.UUID | None = None,
         message_metadata: dict[str, Any] | None = None,
+        created_at: datetime | None = None,
     ) -> AskMessage:
         row = AskMessage(
             conversation_id=conversation.id,
@@ -66,6 +69,7 @@ class SqlAlchemyAskConversationRepository:
             role=role,
             content=content,
             message_metadata=message_metadata,
+            created_at=created_at or utc_now(),
         )
         # Bumping message_count dirties the conversation row, so its
         # `onupdate=func.now()` fires — no manual updated_at needed. No per-row
@@ -80,6 +84,7 @@ class SqlAlchemyAskConversationRepository:
         conversation_id: uuid.UUID,
         *,
         limit: int | None = None,
+        after: datetime | None = None,
     ) -> list[AskMessage]:
         stmt = (
             select(AskMessage)
@@ -87,8 +92,13 @@ class SqlAlchemyAskConversationRepository:
                 AskMessage.user_id == user_id,
                 AskMessage.conversation_id == conversation_id,
             )
-            .order_by(AskMessage.created_at.asc(), AskMessage.id.asc())
+            .order_by(
+                AskMessage.created_at.asc(), AskMessage.ask_session_id.asc(),
+                case((AskMessage.role == "user", 0), else_=1), AskMessage.id.asc(),
+            )
         )
+        if after is not None:
+            stmt = stmt.where(AskMessage.created_at > after)
         if limit is not None:
             stmt = stmt.limit(limit)
         result = await self.session.scalars(stmt)

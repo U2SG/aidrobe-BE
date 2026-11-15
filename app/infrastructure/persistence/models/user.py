@@ -25,6 +25,10 @@ class User(UUIDPrimaryKeyMixin, Base):
     # so dangling foreign-key references (audit_log.user_id) stay readable.
     deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Old evidence cannot repopulate memory after a reset. Conversation history
+    # remains viewable, but derived summaries restart after a correction.
+    memory_cleared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    memory_context_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     settings: Mapped["UserSettings | None"] = relationship(back_populates="user", cascade="all, delete-orphan")
     sessions: Mapped[list["UserSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 

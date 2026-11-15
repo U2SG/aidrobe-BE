@@ -68,15 +68,15 @@ def test_render_preferences_prioritizes_negatives_first() -> None:
         "en",
     )
     assert rendered is not None
-    # MUST AVOID block appears before the PREFER block (priority ordering).
-    assert rendered.index("MUST AVOID") < rendered.index("PREFER")
+    assert rendered.index("AVOID BY DEFAULT") < rendered.index("PREFER")
+    assert "current explicit exception for that value" in rendered
     assert "oversized" in rendered
     assert "navy" in rendered
 
 
 def test_render_preferences_weak_negative_is_soft_not_hard() -> None:
     # BE#69 review: a low-confidence (feedback-derived) negative must NOT be
-    # rendered as a hard "MUST AVOID" rule; a high-confidence one must.
+    # rendered as an explicit default; a high-confidence one must.
     rendered = render_preferences(
         {
             "negative": [
@@ -87,9 +87,8 @@ def test_render_preferences_weak_negative_is_soft_not_hard() -> None:
         "en",
     )
     assert rendered is not None
-    assert "MUST AVOID" in rendered and "LEAN AWAY" in rendered
-    # The strong one sits under MUST AVOID, the weak one under LEAN AWAY.
-    assert rendered.index("MUST AVOID") < rendered.index("red")
+    assert "AVOID BY DEFAULT" in rendered and "LEAN AWAY" in rendered
+    assert rendered.index("AVOID BY DEFAULT") < rendered.index("red")
     assert rendered.index("LEAN AWAY") < rendered.index("oversized")
     assert rendered.index("red") < rendered.index("LEAN AWAY")
 

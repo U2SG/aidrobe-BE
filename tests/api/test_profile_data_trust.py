@@ -1,7 +1,9 @@
 """BE#83 — profile data-trust: memory review/correct/clear + clear-all-data."""
 
 import uuid
-from datetime import date
+from collections.abc import AsyncIterator
+from datetime import UTC, date, datetime, timedelta
+from fnmatch import fnmatch
 
 import pytest
 from fastapi import FastAPI
@@ -11,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.enums import Category, ItemStatus
 from app.config.settings import Settings, get_settings
+from app.infrastructure.cache.client import get_redis_client
+from app.infrastructure.cache.keys import build_daily_recommendation_cache_key
 from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.audit_log import AuditLog
 from app.infrastructure.persistence.models.preference_memory import UserPreferenceMemory
@@ -28,6 +32,20 @@ from app.presentation.api.v1.routers import profile
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
 
 
+class MemoryRedis:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    async def scan_iter(self, *, match: str) -> AsyncIterator[str]:
+        for key in list(self.values):
+            if fnmatch(key, match):
+                yield key
+
+    async def delete(self, *keys: str) -> None:
+        for key in keys:
+            self.values.pop(key, None)
+
+
 def build_profile_app(session: AsyncSession) -> FastAPI:
     app = FastAPI()
     setup_exception_handlers(app)
@@ -37,6 +55,9 @@ def build_profile_app(session: AsyncSession) -> FastAPI:
 
     app.dependency_overrides[get_db_session] = override_db_session
     app.dependency_overrides[get_settings] = lambda: Settings(APP_ENV="dev")
+    cache = MemoryRedis()
+    app.state.memory_cache = cache
+    app.dependency_overrides[get_redis_client] = lambda: cache
     app.include_router(profile.router)
     return app
 
@@ -187,6 +208,31 @@ async def test_clear_memory_only(db_session: AsyncSession, data_trust_on: None) 
         listed = await client.get("/v1/profile/memory", headers={"X-User-Id": str(user_id)})
     assert resp.json()["data"]["deleted"] == 2
     assert listed.json()["data"]["preferences"] == []
+
+
+async def test_memory_scope_and_expiry_are_readable_and_delete_invalidates_today(
+    db_session: AsyncSession, data_trust_on: None,
+) -> None:
+    user_id = await _seed_user(db_session)
+    expires = datetime.now(UTC) + timedelta(days=7)
+    row = await SqlAlchemyPreferenceMemoryRepository(db_session).upsert(
+        user_id=user_id, preference_type="color", preference_value="red", polarity="neutral",
+        confidence=0.9, source="explicit_user_statement", scope={"day_type": "weekend"}, expires_at=expires,
+    )
+    app = build_profile_app(db_session)
+    cache: MemoryRedis = app.state.memory_cache
+    key = build_daily_recommendation_cache_key(user_id, date.today())
+    cache.values[key] = "old remembered preference"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        listed = await client.get("/v1/profile/memory", headers={"X-User-Id": str(user_id)})
+        item = listed.json()["data"]["preferences"][0]
+        assert item["scope"] == {"day_type": "weekend"}
+        assert item["scope_text"] == "周末"
+        assert item["polarity"] == "neutral" and item["expires_at"] is not None
+        deleted = await client.delete(f"/v1/profile/memory/{row.id}", headers={"X-User-Id": str(user_id)})
+    assert deleted.status_code == 200 and key not in cache.values
+    user = await db_session.get(User, user_id)
+    assert user is not None and user.memory_context_reset_at is not None
 
 
 async def test_clear_all_data_keeps_account_and_audit(

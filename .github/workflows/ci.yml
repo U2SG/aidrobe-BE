@@ -141,7 +141,8 @@ jobs:
       - name: Upgrade, downgrade, and re-upgrade
         run: |
           uv run alembic upgrade head
-          uv run alembic downgrade -1
+          # Exercise both designer sessions and scoped-memory migrations.
+          uv run alembic downgrade 0053_harden_import_pipeline
           uv run alembic upgrade head
 
   openapi:

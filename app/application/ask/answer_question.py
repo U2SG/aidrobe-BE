@@ -23,10 +23,13 @@ from datetime import UTC, date, datetime
 from typing import Any, cast
 
 import structlog
+from pydantic import ValidationError
 from sqlalchemy import func, nulls_last, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.ask.tools import build_registry
+from app.application.ask.butler import AskButler
+from app.application.ask.design_types import DesignBrief, StylingConstraints
+from app.application.ask.styling import StylingService, conflict, fingerprint, lock_request
 from app.application.ask.wardrobe_context import (
     WardrobeContext,
     build_wardrobe_context,
@@ -38,29 +41,36 @@ from app.application.llm_prompts.assemble import assemble_system_prompt
 from app.application.llm_prompts.persona import stylist_persona
 from app.application.llm_prompts.preference_memory import render_preferences
 from app.application.llm_prompts.reasoning_policy import reasoning_policy
-from app.application.llm_prompts.response_contracts import ask_structured_contract
+from app.application.llm_prompts.response_contracts import ask_butler_contract, ask_structured_contract
 from app.application.llm_prompts.self_critique import negative_preference_violations
 from app.application.ports.llm import LlmAnswer, LlmPort, ToolCallingLlm, ToolUse
+from app.application.ports.weather import WeatherPort
 from app.application.preferences.memory import (
     SOURCE_EXPLICIT,
     PreferenceMemoryError,
+    forget_preference,
+    normalize_scope,
     read_preference_memory,
     record_preference,
 )
 from app.application.safety.copy_guard import find_forbidden_terms, sanitize_generated_copy
 from app.common import error_codes
-from app.common.enums import ItemStatus
+from app.common.enums import FitStatus, ItemStatus
 from app.common.exceptions import FriendlyException
 from app.common.item_labels import localized_item_name
+from app.common.local_time import local_datetime
 from app.common.locale import lang_subtag, resolve_locale
 from app.config.settings import get_settings
 from app.infrastructure.llm.sanitizer import hash_user_token, sanitize_for_llm, sanitize_llm_text
 from app.infrastructure.persistence.models.ask_conversation import (
     AskConversationState,
     AskMessage,
+    AskStylingRevision,
 )
+from app.infrastructure.persistence.models.ask_session import AskSession
 from app.infrastructure.persistence.models.async_job import AsyncJob
-from app.infrastructure.persistence.models.user import UserSettings
+from app.infrastructure.persistence.models.recommendation import DailyRecommendation
+from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.ask_conversation_repo import (
     SqlAlchemyAskConversationRepository,
@@ -121,9 +131,11 @@ _REFINEMENT_MARKERS = (
     "brighter",
     "darker",
 )
+_BUTLER_FALLBACK_COPY = {
+    "zh": "这次没能核实穿搭建议。可以告诉我具体场合，或选一件想穿的单品再问我。",
+    "en": "I couldn't verify a styling suggestion this time. Tell me the occasion or pick a piece to start with.",
+}
 # BE#87 — honest fallback when the LLM answer triggers the copy guard.
-# Not a redirect: it tells the user we can't give a more detailed answer
-# right now, without exposing what was filtered.
 _ASK_FALLBACK_COPY = "这身搭配上我给不出更细的说法，但可以从舒服和得体的角度先选。"
 
 # The contract forbids list positions in the user-facing answer (they are an
@@ -260,6 +272,8 @@ class AskResult:
     trip_intent: TripIntent | None = None
     # Tools the model used this turn, in order (empty with ENABLE_ASK_TOOLS off).
     used: list[ToolUse] = field(default_factory=list)
+    styling: AskStylingRevision | None = None
+    design_brief: DesignBrief | None = None
 
 
 @dataclass(frozen=True)
@@ -349,7 +363,7 @@ def _bound_style_tags(tags: Any) -> list[str] | None:
     return bounded or None
 
 
-def _item_to_sanitized(item: WardrobeItem, today: date) -> dict[str, Any]:
+def _item_to_sanitized(item: WardrobeItem, today: date, *, butler: bool = False) -> dict[str, Any]:
     """Project a wardrobe row to the sanitizer-whitelisted fields only.
 
     BE#27 — beyond core category/color/status, emit the extended styling signals
@@ -365,9 +379,9 @@ def _item_to_sanitized(item: WardrobeItem, today: date) -> dict[str, Any]:
         "color_secondary": item.color_secondary,
         "material": item.material,
         "status": item.status,
-        "location": item.location,
+        "location": None if butler else item.location,
         "season_tags": item.season_tags,
-        "style_tags": _bound_style_tags(item.style_tags),
+        "style_tags": None if butler else _bound_style_tags(item.style_tags),
         "formality_score": item.formality_score,
         "time_cost_level": item.time_cost_level,
         "fit_status": item.fit_status,
@@ -481,6 +495,7 @@ def _build_system_prompt(
     *,
     structured: bool = False,
     recent_ref_positions: list[int] | None = None,
+    butler: bool = False,
 ) -> str:
     # BE#66 — compose the system prompt from the shared `llm_prompts` modules
     # (persona / preference rules / reasoning policy / response contract) instead
@@ -495,10 +510,12 @@ def _build_system_prompt(
         wardrobe_clause = _WARDROBE_CONTEXT_CLAUSE.get(lang, _WARDROBE_CONTEXT_CLAUSE[_DEFAULT_LANG])
     else:
         wardrobe_clause = _NO_WARDROBE_CONTEXT_CLAUSE.get(lang, _NO_WARDROBE_CONTEXT_CLAUSE[_DEFAULT_LANG])
-    focus_clause = _FOCUS_CLAUSE.get(lang, _FOCUS_CLAUSE[_DEFAULT_LANG]) if ctx.scope == "item" else None
+    focus_clause = None
+    if ctx.scope == "item" and not butler:
+        focus_clause = _FOCUS_CLAUSE.get(lang, _FOCUS_CLAUSE[_DEFAULT_LANG])
     payload = {
         "context": context_for_prompt(ctx),
-        "items": [_item_to_sanitized(i, today) for i in items],
+        "items": [_item_to_sanitized(i, today, butler=butler) for i in items],
         "usr": hash_user_token(user_id),
     }
     return assemble_system_prompt(
@@ -514,13 +531,14 @@ def _build_system_prompt(
             json.dumps(payload, ensure_ascii=False),
             reasoning_policy(lang),
             ask_structured_contract(lang) if structured else None,
+            ask_butler_contract(lang) if butler else None,
         ]
     )
 
 
 def _extract_structured(
     data: dict[str, Any], item_count: int
-) -> tuple[str, list[int], list[dict[str, str]]] | None:
+) -> tuple[str, list[int], list[dict[str, Any]]] | None:
     """Extract the structured-output envelope from an already-parsed dict.
 
     Returns (answer_text, validated 0-based item indices, stated_preferences) or
@@ -541,7 +559,7 @@ def _extract_structured(
         if 1 <= pos <= item_count and pos not in seen:
             seen.add(pos)
             indices.append(pos - 1)
-    preferences: list[dict[str, str]] = []
+    preferences: list[dict[str, Any]] = []
     raw_prefs = data.get("stated_preferences", [])
     if isinstance(raw_prefs, list):
         for pref in raw_prefs:
@@ -549,7 +567,11 @@ def _extract_structured(
                 continue
             ptype, pvalue, ppolarity = pref.get("type"), pref.get("value"), pref.get("polarity")
             if isinstance(ptype, str) and isinstance(pvalue, str) and isinstance(ppolarity, str):
-                preferences.append({"type": ptype, "value": pvalue, "polarity": ppolarity})
+                entry: dict[str, Any] = {"type": ptype, "value": pvalue, "polarity": ppolarity}
+                for key in ("evidence_text", "scope", "expires_at", "operation"):
+                    if key in pref:
+                        entry[key] = pref[key]
+                preferences.append(entry)
     return answer, indices, preferences
 
 
@@ -714,6 +736,28 @@ def _summarize_old_messages(
     return summary[:_MAX_CONVERSATION_SUMMARY_LEN] or None
 
 
+async def _replay_ask(service: StylingService, saved: AskSession) -> AskResult:
+    context = saved.context or {}
+    conversation_data = context.get("conversation", {})
+    conversation_id = uuid.UUID(str(conversation_data["conversation_id"]))
+    raw_deltas = conversation_data.get("deltas", {})
+    raw_styling = context.get("styling_revision_id")
+    revision = await service.get_revision(uuid.UUID(str(raw_styling))) if raw_styling else None
+    used = context.get("used", [])
+    return AskResult(
+        ask_session_id=saved.id, conversation_id=conversation_id, answer=saved.answer or "",
+        item_refs=[str(ref) for ref in (saved.item_refs or [])],
+        has_wardrobe_context=bool(context.get("has_wardrobe_context", saved.item_refs)),
+        tokens_used=saved.tokens_used or 0,
+        deltas=ConversationDeltas(raw_deltas.get("reasoning"), raw_deltas.get("applied_constraints", [])),
+        effective_locale=str(context.get("response_locale", "zh-CN")),
+        trip_intent=_extract_trip_intent(context),
+        used=[ToolUse(str(entry["tool"]), str(entry["summary"])) for entry in used if isinstance(entry, dict)],
+        styling=revision,
+        design_brief=DesignBrief.model_validate(context["design_brief"]) if context.get("design_brief") else None,
+    )
+
+
 async def answer_question(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -724,7 +768,40 @@ async def answer_question(
     locale: str | None = None,
     focused_item_id: uuid.UUID | None = None,
     conversation_id: uuid.UUID | None = None,
+    weather: WeatherPort | None = None,
+    design_mode: bool = False,
+    request_id: uuid.UUID | None = None,
+    expected_revision: int | None = None,
+    base_outfit_id: uuid.UUID | None = None,
+    constraints: StylingConstraints | None = None,
 ) -> AskResult:
+    turn_started_at = datetime.now(UTC)
+    settings = get_settings()
+    design_requested = design_mode or expected_revision is not None or base_outfit_id is not None
+    if not settings.ENABLE_DESIGNER_SESSIONS and expected_revision is not None:
+        raise FriendlyException(error_codes.FORBIDDEN, "Designer sessions are not enabled", 503)
+    styling_service = StylingService(session, user_id)
+    request_hash = fingerprint(
+        "ask", question=question, context=context, locale=locale, focused_item_id=focused_item_id,
+        conversation_id=conversation_id, expected_revision=expected_revision, base_outfit_id=base_outfit_id,
+        constraints=constraints.model_dump(mode="json") if constraints is not None else None,
+    )
+    if request_id is not None:
+        await lock_request(session, user_id, request_id)
+        saved = await session.scalar(select(AskSession).where(
+            AskSession.user_id == user_id, AskSession.client_request_id == request_id
+        ))
+        if saved is not None:
+            if not settings.ENABLE_DESIGNER_SESSIONS:
+                raise FriendlyException(error_codes.FORBIDDEN, "Designer sessions are not enabled", 503)
+            if saved.request_fingerprint != request_hash:
+                raise conflict("request_id was already used for a different question")
+            return await _replay_ask(styling_service, saved)
+        collision = await session.scalar(select(AskStylingRevision.id).where(
+            AskStylingRevision.user_id == user_id, AskStylingRevision.request_id == request_id
+        ))
+        if collision is not None:
+            raise conflict("request_id was already used for a different action")
     # Validate the focused item before any quota/LLM work. Per repo convention
     # a non-owned (or soft-deleted) resource returns 404 — never reveal that
     # someone else's item exists.
@@ -739,13 +816,13 @@ async def answer_question(
             )
     sanitized_question = sanitize_llm_text(question)
 
-    settings = get_settings()
     # EXPOSURE gate: when ENABLE_ASK_CONVERSATIONS is OFF, a supplied
     # conversation_id must NOT alter the answer context. Rows still persist
     # (clean rollback), but prompt-context injection + the durable-rejection
     # pool exclusion below are gated on the flag, so flag-off + a known
     # conversation_id yields the same answer context as no conversation_id.
     conversations_enabled = settings.ENABLE_ASK_CONVERSATIONS
+    tooling = settings.ENABLE_ASK_TOOLS and settings.ENABLE_ASK_STRUCTURED_OUTPUT and isinstance(llm, ToolCallingLlm)
 
     conversation_repo = SqlAlchemyAskConversationRepository(session)
     if conversation_id is not None:
@@ -762,6 +839,67 @@ async def answer_question(
             title=sanitize_llm_text(question, max_len=80) or None,
         )
     conversation_state = await conversation_repo.get_state(user_id, conversation.id)
+    current_styling = await styling_service.current(conversation.id)
+    current_brief = styling_service.brief(conversation, current_styling)
+    design_requested = design_requested or current_brief is not None
+    if current_brief is not None and not settings.ENABLE_DESIGNER_SESSIONS:
+        raise FriendlyException(error_codes.FORBIDDEN, "Designer sessions are not enabled", 503)
+    designing = settings.ENABLE_DESIGNER_SESSIONS and design_requested
+    if designing:
+        if request_id is None:
+            raise FriendlyException(error_codes.VALIDATION_ERROR, "request_id is required for design requests", 422)
+        if current_brief is not None and expected_revision is None:
+            raise FriendlyException(
+                error_codes.VALIDATION_ERROR, "expected_revision is required to continue a design", 422
+            )
+        if (expected_revision or 0) != conversation.styling_revision:
+            raise conflict()
+        if base_outfit_id is not None and current_brief is not None:
+            raise conflict("A base outfit can only start a new design")
+        if not tooling:
+            raise FriendlyException(error_codes.FORBIDDEN, "A tool-capable stylist is not enabled", 503)
+        conversations_enabled = True
+    design_constraints = constraints or (
+        current_brief.constraints if current_brief is not None else StylingConstraints()
+    )
+    user_settings = await session.scalar(select(UserSettings).where(UserSettings.user_id == user_id))
+    settings_locale = user_settings.locale if user_settings is not None else None
+    effective_locale = resolve_locale(locale, settings_locale)
+    local_today = local_datetime(
+        turn_started_at, user_settings.timezone if user_settings is not None else None, settings.DEFAULT_TIMEZONE
+    ).date()
+    base_id = base_outfit_id or conversation.design_base_outfit_id
+    base_outfit = await styling_service.owned_outfit(base_id) if designing and base_id is not None else None
+    if designing:
+        context = {**({"scene": design_constraints.scene} if design_constraints.scene else {}), **(context or {})}
+        raw_constraints = design_constraints.model_dump()
+        if (base_outfit is not None and base_outfit.daily_recommendation_id is not None
+                and not raw_constraints["target_date"]):
+            source_daily = await session.get(DailyRecommendation, base_outfit.daily_recommendation_id)
+            if source_daily is not None and source_daily.user_id == user_id:
+                raw_constraints["target_date"] = max(local_today, source_daily.recommendation_date)
+        if design_constraints.target_date is not None and design_constraints.target_date < local_today:
+            raw_constraints.update(preference_overrides=[], exploration=False, target_date=local_today)
+        if context.get("scene") is not None:
+            raw_constraints["scene"] = context["scene"]
+        if isinstance(context.get("date"), str):
+            try:
+                raw_constraints["target_date"] = date.fromisoformat(context["date"])
+            except ValueError as exc:
+                raise FriendlyException(error_codes.VALIDATION_ERROR, "Invalid design date", 422) from exc
+        raw_constraints["target_date"] = raw_constraints.get("target_date") or local_today
+        if constraints is None and current_brief is not None and (
+            raw_constraints["target_date"] != design_constraints.target_date
+            or raw_constraints.get("scene") != design_constraints.scene
+        ):
+            raw_constraints.update(preference_overrides=[], exploration=False)
+        try:
+            design_constraints = StylingConstraints.model_validate(raw_constraints)
+        except ValidationError as exc:
+            raise FriendlyException(error_codes.VALIDATION_ERROR, "Invalid design context", 422) from exc
+        if design_constraints.target_date is not None and design_constraints.target_date < local_today:
+            raise FriendlyException(error_codes.VALIDATION_ERROR, "Design date must be today or in the future", 422)
+        context["date"] = (design_constraints.target_date or local_today).isoformat()
     # Rejection is derived from the STRUCTURED model output post-call, never from
     # substring-sniffing free text (that misfired on phrases like "不要太正式").
     # The DURABLE rejected_item_ids (persisted from a prior turn's structured
@@ -771,6 +909,10 @@ async def answer_question(
         conversation_state.rejected_item_ids if conversation_state else None
     )
     existing_rejected_ids = set(rejected_item_ids)
+    if focused_item_id is not None:
+        # A fresh explicit selection overrides earlier conversational rejection.
+        # Current design exclusions remain separate and are checked by the tools.
+        existing_rejected_ids.discard(str(focused_item_id))
 
     # Priority order: most-worn / most-recent first. NULLs-last keeps never-worn
     # items from sorting to the top under DESC. Reused for the per-category
@@ -784,6 +926,13 @@ async def answer_question(
     # Rank within each category, then keep the top `_PER_CATEGORY_FETCH_CAP` per
     # category — so a huge single-category-dominated wardrobe can't truncate
     # other categories out of the pool before curation balances coverage.
+    eligible = [
+        WardrobeItem.user_id == user_id,
+        WardrobeItem.status == ItemStatus.WEARABLE.value,
+        WardrobeItem.deleted_at.is_(None),
+    ]
+    if tooling:
+        eligible.append(WardrobeItem.fit_status != FitStatus.NO_LONGER_FITS.value)
     ranked = (
         select(
             WardrobeItem.id,
@@ -791,11 +940,7 @@ async def answer_question(
             .over(partition_by=WardrobeItem.category, order_by=priority_order)
             .label("rn"),
         )
-        .where(
-            WardrobeItem.user_id == user_id,
-            WardrobeItem.status == ItemStatus.WEARABLE.value,
-            WardrobeItem.deleted_at.is_(None),
-        )
+        .where(*eligible)
         .subquery()
     )
     pool = list(
@@ -813,6 +958,21 @@ async def answer_question(
     # always shown this turn — whether the user rejects it is only known after
     # the call, from the structured signal.
     items = _curate_candidates(pool, focused_item, max_items=_MAX_ITEMS)
+    current_outfit_ids: list[uuid.UUID] = []
+    if designing and (current_styling is not None or base_outfit is not None):
+        current_outfit = (
+            await styling_service.owned_outfit(current_styling.outfit_id) if current_styling else base_outfit
+        )
+        assert current_outfit is not None
+        current_outfit_ids = [
+            entry.item_id for entry in sorted(current_outfit.items, key=lambda entry: entry.display_order)
+        ]
+        current_pieces = list(await session.scalars(select(WardrobeItem).where(
+            WardrobeItem.user_id == user_id, WardrobeItem.id.in_(current_outfit_ids), WardrobeItem.deleted_at.is_(None)
+        )))
+        pinned = {item.id for item in current_pieces}
+        items = current_pieces + [item for item in items if item.id not in pinned]
+        items = items[:_MAX_ITEMS]
     today = datetime.now(UTC).date()
 
     # Quota — refuses BEFORE any LLM spend (the item fetch above is a cheap DB
@@ -829,17 +989,20 @@ async def answer_question(
     preference_memory: dict[str, list[dict[str, Any]]] = {}
     if settings.ENABLE_PREFERENCE_MEMORY:
         preference_memory = await read_preference_memory(
-            SqlAlchemyPreferenceMemoryRepository(session), user_id
+            SqlAlchemyPreferenceMemoryRepository(session), user_id,
+            scene=design_constraints.scene if designing else (context or {}).get("scene"),
+            target_date=design_constraints.target_date if designing else local_today,
+            overrides=[entry.model_dump(mode="json", exclude_none=True)
+                       for entry in design_constraints.preference_overrides] if designing else (),
         )
     # BE#30 — when the request omits a locale, fall back to the user's
     # persisted settings locale (then the zh-CN default) so the answer
     # language tracks the user's UI choice.
-    settings_locale = await session.scalar(select(UserSettings.locale).where(UserSettings.user_id == user_id))
-    effective_locale = resolve_locale(locale, settings_locale)
     ctx = await build_wardrobe_context(
         session,
         user_id,
         items=items,
+        settings=user_settings,
         focused_item_id=focused_item.id if focused_item is not None else None,
         locale=_resolve_lang(locale, settings_locale),
         today=today,
@@ -859,31 +1022,63 @@ async def answer_question(
     for past in await SqlAlchemyAskRepository(session).list_for_user(user_id, limit=5, offset=0):
         recent_refs.update(str(ref) for ref in (past.item_refs or []))
     recent_positions = [pos + 1 for pos, it in enumerate(items) if str(it.id) in recent_refs]
+    butler = None
+    if tooling:
+        butler = AskButler(
+            session,
+            user_id,
+            items,
+            today=local_datetime(
+                datetime.now(UTC),
+                user_settings.timezone if user_settings is not None else None,
+                settings.DEFAULT_TIMEZONE,
+            ).date(),
+            location=user_settings.location if user_settings is not None else None,
+            weather=weather,
+            lang=ctx.locale,
+            focused_item_id=focused_item_id,
+            excluded_ids=existing_rejected_ids if conversations_enabled else set(),
+            context=context,
+            design_constraints=design_constraints if designing else None,
+            current_outfit_ids=current_outfit_ids,
+            question=question,
+            preference_memory_enabled=settings.ENABLE_PREFERENCE_MEMORY,
+        )
     system_prompt = _build_system_prompt(
-        user_id, items, ctx, today, structured=structured, recent_ref_positions=recent_positions
+        user_id,
+        items,
+        ctx,
+        today,
+        structured=structured,
+        recent_ref_positions=recent_positions,
+        butler=butler is not None,
     )
     prompt_question = sanitized_question or question
     used_tools: list[ToolUse] = []
     loop_tokens = 0
-    registry = build_registry(session, user_id) if settings.ENABLE_ASK_TOOLS else None
-    if registry and isinstance(llm, ToolCallingLlm):
+    tools_completed = False
+    if butler is not None and isinstance(llm, ToolCallingLlm):
         tool_answer = await llm.ask_with_tools(
-            system_prompt,
+            system_prompt + butler.prompt_context,
             prompt_question,
-            registry.specs,
-            registry.execute,
+            butler.registry.specs,
+            butler.registry.execute,
             json_mode=structured,
             max_rounds=settings.ASK_TOOL_MAX_ROUNDS,
         )
         used_tools = tool_answer.used
         logger.info("ask.tool_loop", rounds=tool_answer.rounds, tools=[u.tool for u in used_tools])
         answer: LlmAnswer = tool_answer
-        if not tool_answer.text:
-            # Tool loop failed or timed out: answer the old way, still counting
-            # what the failed rounds cost.
+        tools_completed = bool(tool_answer.text)
+        if not tools_completed:
+            # Keep the fallback inside the same verification boundary.
             loop_tokens = tool_answer.tokens_used
             used_tools = []
-            answer = await llm.ask(system_prompt, prompt_question, json_mode=structured)
+            answer = await llm.ask(
+                system_prompt + "\nTools are unavailable. Return general or individual item advice only.",
+                prompt_question,
+                json_mode=structured,
+            )
     else:
         answer = await llm.ask(system_prompt, prompt_question, json_mode=structured)
 
@@ -899,12 +1094,14 @@ async def answer_question(
     item_refs: list[str]
     # Preferences the user explicitly stated this turn — only the structured
     # path can surface them reliably; empty everywhere else.
-    stated_preferences: list[dict[str, str]] = []
+    stated_preferences: list[dict[str, Any]] = []
+    verified_outfit = False
     # Rejection of the focused item comes ONLY from the structured channel; with
     # structured off / parse failed we leave durable rejection untouched rather
     # than guess from substrings.
     focus_is_rejection = False
     trip_intent: TripIntent | None = None
+    suppressed_reply = False
     if structured:
         # Parse the JSON envelope exactly once; feed both the item/preference
         # extractor and the conversation-deltas extractor from the same dict.
@@ -913,7 +1110,7 @@ async def answer_question(
         except ValueError:  # JSONDecodeError is a ValueError subclass
             parsed_data = None
         parsed = (
-            _extract_structured(parsed_data, len(items))
+            _extract_structured(parsed_data, len(butler.item_ids) if butler is not None else len(items))
             if isinstance(parsed_data, dict)
             else None
         )
@@ -922,14 +1119,29 @@ async def answer_question(
             # error, which surfaces above as empty text). Stay honest: keep the
             # raw text as the answer but fall back to the focused item only.
             logger.warning("ask.structured_output.parse_failed")
+            suppressed_reply = butler is not None
             item_refs = [str(focused_item.id)] if focused_item is not None else []
             parsed_deltas = ConversationDeltas(reasoning=None, applied_constraints=[])
         else:
             answer_text, indices, stated_preferences = parsed
-            referenced_items = [items[i] for i in indices]
+            data = cast(dict[str, Any], parsed_data)
+            parsed_deltas = _extract_conversation_deltas(data)
+            trip_intent = _extract_trip_intent(data)
+            if butler is not None:
+                verified = await butler.resolve_reply(
+                    data.get("reply_kind"),
+                    data.get("referenced_items"),
+                    tools_completed=tools_completed,
+                    focus_rejected=parsed_deltas.rejected_focused_item,
+                )
+                suppressed_reply = verified is None
+                referenced_items = verified or []
+                verified_outfit = verified is not None and data.get("reply_kind") == "outfit"
+                if designing:
+                    preference_memory = butler.effective_preferences
+            else:
+                referenced_items = [items[i] for i in indices]
             item_refs = [str(it.id) for it in referenced_items]
-            parsed_deltas = _extract_conversation_deltas(cast(dict[str, Any], parsed_data))
-            trip_intent = _extract_trip_intent(cast(dict[str, Any], parsed_data))
             # BE#66 — deterministic self-critique: surface (do NOT mutate) any
             # cited item that contradicts an explicit negative preference, so the
             # regression is observable without risking suppressing a valid answer.
@@ -957,10 +1169,20 @@ async def answer_question(
         logger.warning("ask.structured_output.disabled", item_refs_quality="limited")
         item_refs = [str(focused_item.id)] if focused_item is not None else []
         parsed_deltas = ConversationDeltas(reasoning=None, applied_constraints=[])
+    if suppressed_reply:
+        answer_text = _BUTLER_FALLBACK_COPY[ctx.locale]
+        item_refs = []
+        parsed_deltas = ConversationDeltas(
+            reasoning=None, applied_constraints=[], rejected_focused_item=focus_is_rejection
+        )
+        logger.info("ask.butler.reply_suppressed")
     answer_text = sanitize_generated_copy(
         _strip_ordinal_leaks(answer_text),
         fallback=_ASK_FALLBACK_COPY,
     )
+    weather_summaries = list(dict.fromkeys(tool.summary for tool in used_tools if tool.tool == "get_weather"))
+    if weather_summaries:
+        answer_text = "\n".join([*weather_summaries, "", answer_text])
     tokens_used = answer.tokens_used + loop_tokens
     heuristic_constraints = _heuristic_constraints(
         question=sanitized_question,
@@ -977,6 +1199,36 @@ async def answer_question(
         ),
     )
 
+    # Do not hold a conversation row lock during a provider call. Revalidate
+    # the revision only now, under the same User -> conversation lock order as memory deletion.
+    pref_repo = SqlAlchemyPreferenceMemoryRepository(session)
+    await pref_repo.lock_user(user_id)
+    if designing:
+        conversation = await styling_service.lock_conversation(conversation.id, expected_revision or 0)
+        if butler is not None and butler.design_constraints is not None:
+            design_constraints = butler.design_constraints
+        if verified_outfit and not suppressed_reply:
+            assert request_id is not None
+            current_styling = await styling_service.save_draft(
+                conversation_id=conversation.id, expected_revision=expected_revision or 0,
+                item_ids=[uuid.UUID(ref) for ref in item_refs], constraints=design_constraints,
+                request_id=request_id, request_fingerprint=request_hash,
+                title="Your styled outfit" if ctx.locale == "en" else "为你设计的搭配", reason=answer_text,
+            )
+        else:
+            await styling_service.save_brief(conversation, design_constraints)
+            if base_outfit is not None:
+                conversation.design_base_outfit_id = base_outfit.id
+        current_brief = styling_service.brief(conversation, current_styling)
+    if not designing:
+        await session.refresh(conversation)
+    conversation_state = await conversation_repo.get_state(user_id, conversation.id)
+    if conversation_state is not None:
+        await session.refresh(conversation_state)
+    rejected_item_ids = _json_str_list(conversation_state.rejected_item_ids if conversation_state else None)
+    memory_user = await session.scalar(select(User).where(User.id == user_id).execution_options(populate_existing=True))
+    memory_reset_at = memory_user.memory_context_reset_at if memory_user is not None else None
+
     # Persist the context snapshot alongside the client-supplied context
     # (date/scene/time_left) so the answer stays traceable to the wardrobe
     # state it was grounded in.
@@ -990,7 +1242,14 @@ async def answer_question(
                 "applied_constraints": response_deltas.applied_constraints,
             },
         },
+        "response_locale": effective_locale,
+        "has_wardrobe_context": bool(items),
+        "used": [{"tool": entry.tool, "summary": entry.summary} for entry in used_tools],
     }
+    if current_styling is not None and designing:
+        persisted_context["styling_revision_id"] = str(current_styling.id)
+    if current_brief is not None and designing:
+        persisted_context["design_brief"] = current_brief.model_dump(mode="json")
     if trip_intent is not None:
         # BE#120 — persist the trip signal so history can re-offer the
         # packing-list handoff; only affirmative intents are stored.
@@ -1010,6 +1269,9 @@ async def answer_question(
         context=persisted_context,
         tokens_used=tokens_used,
     )
+    if designing:
+        ask_row.client_request_id = request_id
+        ask_row.request_fingerprint = request_hash
     session.add(
         AsyncJob(
             job_type=_JOB_TYPE,
@@ -1027,6 +1289,7 @@ async def answer_question(
         role="user",
         content=question,
         ask_session_id=ask_row.id,
+        created_at=turn_started_at,
         message_metadata={
             "focused_item_id": str(focused_item_id) if focused_item_id is not None else None,
             "focused_item_rejected": focus_is_rejection,
@@ -1037,7 +1300,15 @@ async def answer_question(
         role="assistant",
         content=answer_text,
         ask_session_id=ask_row.id,
-        message_metadata={"item_refs": item_refs},
+        created_at=turn_started_at,
+        message_metadata={
+            "item_refs": item_refs,
+            **({"styling_revision_id": str(current_styling.id)} if current_styling is not None and designing else {}),
+            **(
+                {"design_brief": current_brief.model_dump(mode="json")}
+                if current_brief is not None and designing else {}
+            ),
+        },
     )
 
     existing_constraints = _sanitize_constraint_list(
@@ -1060,7 +1331,7 @@ async def answer_question(
     summary = conversation_state.summary if conversation_state is not None else None
     if conversation.message_count > _CONVERSATION_SUMMARY_THRESHOLD:
         messages = await conversation_repo.list_messages(
-            user_id, conversation.id, limit=_MAX_MESSAGES_TO_SUMMARIZE
+            user_id, conversation.id, limit=_MAX_MESSAGES_TO_SUMMARIZE, after=memory_reset_at
         )
         summary = _summarize_old_messages(
             summary,
@@ -1071,6 +1342,12 @@ async def answer_question(
         state=conversation_state,
         last_outfit={
             "item_refs": item_refs,
+            "answer": sanitize_llm_text(answer_text, max_len=240),
+        } if current_styling is None else {
+            "item_refs": [
+                str(item.item_id) for item in (await styling_service.owned_outfit(current_styling.outfit_id)).items
+            ],
+            "outfit_id": str(current_styling.outfit_id), "revision": current_styling.revision,
             "answer": sanitize_llm_text(answer_text, max_len=240),
         },
         active_constraints=active_constraints,
@@ -1086,8 +1363,10 @@ async def answer_question(
     # service re-validates against its allowlist) is dropped, never fails the
     # answer the user actually asked for. `ask_row.id` is the provenance link.
     if stated_preferences:
-        pref_repo = SqlAlchemyPreferenceMemoryRepository(session)
         for pref in stated_preferences:
+            evidence = pref.get("evidence_text")
+            if not isinstance(evidence, str) or not evidence.strip() or evidence not in question:
+                continue
             # BE#87 — drop any preference whose value contains forbidden copy
             # (body-shaming / age-anxiety language). Dropping is honest;
             # rewriting could reverse the user's stated meaning.
@@ -1099,6 +1378,23 @@ async def answer_question(
                 )
                 continue
             try:
+                scope = pref.get("scope")
+                if scope is not None and not isinstance(scope, dict):
+                    continue
+                scope = normalize_scope(scope)
+                operation = pref.get("operation", "remember")
+                if operation == "forget":
+                    await forget_preference(
+                        pref_repo, user_id=user_id, preference_type=pref["type"],
+                        preference_value=pref_value, scope=scope, evidence_at=turn_started_at,
+                    )
+                    continue
+                if operation != "remember":
+                    continue
+                raw_expiry = pref.get("expires_at")
+                expires_at = datetime.fromisoformat(raw_expiry) if isinstance(raw_expiry, str) else None
+                if expires_at is not None and expires_at.tzinfo is None:
+                    continue
                 await record_preference(
                     pref_repo,
                     user_id=user_id,
@@ -1108,8 +1404,11 @@ async def answer_question(
                     confidence=_EXPLICIT_PREFERENCE_CONFIDENCE,
                     source=SOURCE_EXPLICIT,
                     source_message_id=ask_row.id,
+                    scope=scope,
+                    expires_at=expires_at,
+                    evidence_at=turn_started_at,
                 )
-            except PreferenceMemoryError as exc:
+            except (PreferenceMemoryError, ValueError) as exc:
                 logger.warning("ask.preference_write_skipped", reason=str(exc))
 
     await session.flush()
@@ -1125,6 +1424,8 @@ async def answer_question(
         effective_locale=effective_locale,
         trip_intent=trip_intent,
         used=used_tools,
+        styling=current_styling if designing else None,
+        design_brief=current_brief if designing else None,
     )
 
 

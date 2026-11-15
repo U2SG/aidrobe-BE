@@ -32,7 +32,9 @@ _ASK_STRUCTURED: dict[str, str] = {
     "zh": (
         "\n请只返回一个 JSON 对象，不要包含任何其它文字："
         '{"answer": "你的中文建议", "referenced_items": [引用到的单品在上面列表中的序号，从 1 开始], '
-        '"stated_preferences": [{"type": "类型", "value": "简短的值", "polarity": "positive 或 negative"}], '
+        '"stated_preferences": [{"operation": "remember 或 forget", "type": "类型", "value": "简短的值", '
+        '"polarity": "positive、negative 或 neutral", '
+        '"evidence_text": "当前用户原话中的连续片段", "scope": {"scene": "仅明确限定场景时填写"}}], '
         '"conversation_deltas": {"reasoning": "一句话说明如何延续上一轮", '
         '"applied_constraints": ["本轮临时约束"], '
         '"rejected_focused_item": 仅当用户明确表示不要/换掉当前聚焦的那件单品时为 true，否则为 false}, '
@@ -41,6 +43,12 @@ _ASK_STRUCTURED: dict[str, str] = {
         "若没有引用任何单品，referenced_items 返回空数组。"
         f"stated_preferences 只收录用户本轮明确表达的长期偏好（如「我不喜欢宽松衬衫」），"
         f"type 必须是以下之一：{PREFERENCE_TYPE_VOCAB}；不要从一次性的请求里推断，没有就返回空数组。"
+        "evidence_text 必须逐字引用当前这条用户消息，不能引用历史、摘要或你自己的话。"
+        "今天试试新风格、一次性例外和灵感收藏只能作为本次设计约束，不写长期偏好。"
+        "用户明确修订以往偏好时，用同一 type/value 的新 polarity；明确撤回厌恶但未表达喜欢时用 neutral。"
+        "用户明确要求删除或忘记一项偏好时，operation=forget，并给出该项的 type/value/scope；不要以neutral代替删除。"
+        "只在用户明确限定场景时写 scope.scene（commute/formal/casual/date/travel）或"
+        "scope.day_type（weekday/weekend）；否则 scope={}，不得把场景偏好升级为全局。"
         "answer 是唯一展示给用户的文字：提及单品只用「白色上衣」这类自然名称，"
         "严禁出现「序号1」「（序号2）」「第 3 件」等列表位置——位置只能写进 referenced_items。"
         "不要用「根据您的衣橱和偏好」这类模板开场；单品卡片会另行展示，不要逐条罗列清单。"
@@ -51,7 +59,9 @@ _ASK_STRUCTURED: dict[str, str] = {
         "\nRespond with a single JSON object and nothing else: "
         '{"answer": "your advice in English", "referenced_items": [1-based positions '
         'of the items above you reference], '
-        '"stated_preferences": [{"type": "...", "value": "short value", "polarity": "positive" or "negative"}], '
+        '"stated_preferences": [{"operation": "remember" or "forget", "type": "...", "value": "short value", '
+        '"polarity": "positive" or "negative" or "neutral", '
+        '"evidence_text": "exact substring of the current user message", "scope": {}}], '
         '"conversation_deltas": {"reasoning": "one sentence on how this refines the previous turn", '
         '"applied_constraints": ["temporary constraints applied this turn"], '
         '"rejected_focused_item": true only when the user explicitly rejects / wants to swap out the '
@@ -64,6 +74,14 @@ _ASK_STRUCTURED: dict[str, str] = {
         '(e.g. "I dislike oversized shirts"); '
         f"type must be one of: {PREFERENCE_TYPE_VOCAB}. Do not infer from a one-off request; "
         "return an empty array when there are none. "
+        "evidence_text must quote this current user message verbatim, never history, a summary or your own answer. "
+        "One-time experiments, inspiration saves and temporary exceptions are design constraints, not durable memory. "
+        "For explicit revisions, emit the same type/value with the new polarity; use neutral to withdraw a dislike "
+        "without inventing a like. "
+        "Use operation=forget for an explicit request to delete a particular type/value/scope; "
+        "never substitute neutral. "
+        "Scope only explicitly contextual preferences using scene (commute/formal/casual/date/travel) "
+        "or day_type (weekday/weekend); otherwise use scope={}. "
         "The answer field is the only text the user sees: refer to items by natural name "
         '(like "the white shirt"), never by list position ("item 2", "#3") — positions belong '
         "only in referenced_items. Skip template openers such as \"Based on your wardrobe and "
@@ -78,3 +96,38 @@ _ASK_STRUCTURED: dict[str, str] = {
 def ask_structured_contract(lang: str) -> str:
     """Return the Ask structured-output JSON contract for a language subtag."""
     return _ASK_STRUCTURED.get(lang, _ASK_STRUCTURED[_DEFAULT_LANG])
+
+
+_ASK_BUTLER = {
+    "zh": (
+        "衣橱管家规则。最终 JSON 增加 reply_kind，取值 outfit、item_advice 或 general。"
+        "用户要穿什么或要一整套时，只推荐一套。搭配须有上装＋下装或连衣裙，且须有鞋；"
+        "在回复前用 validate_outfit 校验全部单品。校验通过才可用 outfit，并把完全相同的序号放进 referenced_items。"
+        "部分搭配或单品问题用 item_advice，引用真实可穿单品。两种答复都用单品自然名称。"
+        "无可核实的建议时用 general，referenced_items 为空，只提供通用建议或问一个具体问题。"
+        "天气或日期影响建议时先用 get_weather，采用用户点名的城市，没点名就省略 place。"
+        "系统会在答复前展示查到的天气。answer 只解释怎么穿，不复述天气或确认用户的天气猜测。"
+        "查不到就说明。校验搭配时用同一日期和城市，面试或正式会议用 formal。"
+        "校验成功后直接用结果中的 positions 作为 referenced_items，保留全部序号，别再搜索或增减衣物。"
+        "衣橱列表不足、问到具体名字或需要查状态时用 search_wardrobe，搜索返回的序号可直接引用。"
+        "若聚焦第 1 件单品，搭配需包含它；该件不可穿时请说明，用户明确要求换掉时才推荐替换搭配。"
+    ),
+    "en": (
+        "Wardrobe butler rules. Add reply_kind to the final JSON: outfit, item_advice or general. "
+        "For what-to-wear questions, recommend one complete look: top and bottom or a dress, plus shoes. "
+        "Call validate_outfit on the exact set first. Use outfit only after it passes; referenced_items must match "
+        "the checked positions. Use item_advice for individual pieces or partial pairings, citing wearable pieces. "
+        "Use natural item names. For general guidance or a clarifying question, use general with no references. "
+        "Call get_weather first when weather or a date affects the advice; supply a city only if the user named one. "
+        "The server displays retrieved conditions above the advice. Explain how to dress without repeating weather "
+        "or adopting the user's weather assumptions. Say if weather is unavailable. Validate for the same date "
+        "and city, using formal for interviews or formal meetings. After validation passes, copy its positions "
+        "to referenced_items and finish without changing the set. Search to find named pieces or check availability; "
+        "its positions are valid references. Include the first piece in an item-scoped outfit unless the user "
+        "explicitly asks to replace it. Explain when that piece is unavailable."
+    ),
+}
+
+
+def ask_butler_contract(lang: str) -> str:
+    return _ASK_BUTLER.get(lang, _ASK_BUTLER[_DEFAULT_LANG])

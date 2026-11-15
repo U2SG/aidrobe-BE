@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,6 +19,7 @@ class AskSession(UUIDPrimaryKeyMixin, Base):
     mirrors the cost recorded on async_jobs for the feature record."""
 
     __tablename__ = "ask_sessions"
+    __table_args__ = (UniqueConstraint("user_id", "client_request_id", name="uq_ask_client_request"),)
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
@@ -28,6 +29,8 @@ class AskSession(UUIDPrimaryKeyMixin, Base):
     item_refs: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
     context: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
     tokens_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    client_request_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

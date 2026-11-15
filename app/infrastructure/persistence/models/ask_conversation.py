@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,6 +19,11 @@ class AskConversation(UUIDPrimaryKeyMixin, Base):
     )
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    styling_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    design_constraints: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    design_base_outfit_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("outfits.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -71,3 +76,33 @@ class AskConversationState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class AskStylingRevision(UUIDPrimaryKeyMixin, Base):
+    """Immutable design result; adopting a draft never changes its item set."""
+
+    __tablename__ = "ask_styling_revisions"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "revision", name="uq_ask_styling_revision"),
+        UniqueConstraint("user_id", "request_id", name="uq_ask_styling_request"),
+        CheckConstraint("status IN ('draft', 'adopted')", name="styling_status"),
+    )
+
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("ask_conversations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    outfit_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("outfits.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    request_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    constraints: Mapped[JsonDict] = mapped_column(JSONB, nullable=False, default=dict)
+    recommendation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("daily_recommendations.id", ondelete="SET NULL"), nullable=True
+    )
+    recommendation_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recommendation_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

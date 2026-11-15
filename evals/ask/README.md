@@ -5,7 +5,8 @@ LLM** and scored with deterministic checks. Not part of CI (needs a model key an
 costs a few fen per run).
 
 ```bash
-scripts/dev-up.sh                       # with AIDROBE_LLM_PROVIDER=qwen (and weather) in .env
+scripts/dev-up.sh                       # use AIDROBE_LLM_PROVIDER=qwen and AIDROBE_WEATHER_PROVIDER=qweather
+                                        # enable ENABLE_ASK_AIDROBE and ENABLE_ASK_TOOLS in .env
 uv run --python 3.12 python -m evals.ask.run --out /tmp/ask-eval.json
 ```
 

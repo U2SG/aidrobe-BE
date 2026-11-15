@@ -102,6 +102,36 @@ def test_one_off_feedback_does_not_become_durable() -> None:
     assert signals.weak_preferences == []
 
 
+def test_deleted_inference_does_not_return_from_old_feedback_or_live_scoring() -> None:
+    old = [_dislike(["x", "y"], ["too_formal"], age_days=2) for _ in range(3)]
+    barrier = _NOW - timedelta(days=1)
+    signals = derive_learning_signals(
+        old + [_dislike(["x", "y"], ["too_formal"])], now=_NOW,
+        forgotten_before={("formality", "too_formal"): barrier},
+    )
+    assert signals.weak_preferences == []  # only one fresh observation
+    assert signals.formality_bias == -1  # old reasons no longer affect ranking
+    fresh = [_dislike(["x", "y"], ["too_formal"]) for _ in range(3)]
+    relearned = derive_learning_signals(
+        old + fresh, now=_NOW, forgotten_before={("formality", "too_formal"): barrier}
+    )
+    assert len(relearned.weak_preferences) == 1
+    assert relearned.weak_preferences[0].evidence_at == _NOW
+
+
+def test_clear_watermark_applies_to_suppression_and_weak_inferences() -> None:
+    events = [_dislike(["x", "y"], ["too_formal", "too_warm"], age_days=2) for _ in range(3)]
+    signals = derive_learning_signals(events, now=_NOW, reset_at=_NOW - timedelta(days=1))
+    assert signals == LearningSignals()
+
+
+def test_replaying_same_observations_does_not_refresh_evidence_timestamp() -> None:
+    events = [_dislike(["x", "y"], ["too_formal"], age_days=2) for _ in range(3)]
+    first = derive_learning_signals(events, now=_NOW).weak_preferences[0]
+    replay = derive_learning_signals(events, now=_NOW + timedelta(days=1)).weak_preferences[0]
+    assert first.evidence_at == replay.evidence_at == _NOW - timedelta(days=2)
+
+
 def test_weak_preference_values_are_canonical_tokens() -> None:
     # Even though reasons arrive as tags, the derived preference value is a fixed
     # token (never raw user text), so it is prompt-safe downstream.

@@ -104,6 +104,7 @@ async def build_wardrobe_context(
     user_id: uuid.UUID,
     *,
     items: list[WardrobeItem],
+    settings: UserSettings | None,
     focused_item_id: uuid.UUID | None,
     locale: str,
     today: date,
@@ -114,9 +115,6 @@ async def build_wardrobe_context(
     style_tags = (await SqlAlchemyStyleRepository(session).get_style_tags(user_id))[
         :_MAX_STYLE_TAGS
     ]
-    settings = await session.scalar(
-        select(UserSettings).where(UserSettings.user_id == user_id)
-    )
     departure_time = (
         settings.departure_time.strftime("%H:%M")
         if settings is not None and settings.departure_time is not None

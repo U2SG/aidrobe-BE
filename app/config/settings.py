@@ -93,11 +93,11 @@ class Settings(BaseSettings):
     # than the short, template-shaped `polish_reason` call that uses
     # LLM_TIMEOUT_SECONDS. Used by the providers' `ask` path only.
     LLM_ASK_TIMEOUT_SECONDS: float = 12.0
-    # Ask tool loop (butler P0): off = the single-call path, byte-identical.
+    # Ask butler tools are available on the structured Qwen path.
     ENABLE_ASK_TOOLS: bool = False
     ASK_TOOL_MAX_ROUNDS: int = 4
-    # Whole-turn budget; once exceeded the next round must answer (no tools).
-    ASK_TOOL_TOTAL_TIMEOUT_SECONDS: float = 20.0
+    # Tool loop deadline, including model rounds and tool execution.
+    ASK_TOOL_TOTAL_TIMEOUT_SECONDS: float = 12.0
     EMBEDDING_PROVIDER: str = "fake"
     CLIP_EMBEDDING_API_KEY: str | None = None
     CLIP_EMBEDDING_BASE_URL: str = "https://api.openai.com/v1/embeddings"
@@ -149,6 +149,7 @@ class Settings(BaseSettings):
     # state are persisted regardless; this flag only exposes conversation_id and
     # structured deltas in the API response.
     ENABLE_ASK_CONVERSATIONS: bool = False
+    ENABLE_DESIGNER_SESSIONS: bool = False
     # Total daily_recommendations rows allowed per (user, date), inclusive
     # of the original background-generated rev-1. Enforced when
     # ENABLE_TODAY_REFRESH=True. Set <= 0 to disable the cap entirely.

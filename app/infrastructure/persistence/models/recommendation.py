@@ -99,8 +99,8 @@ class RecommendationTrace(UUIDPrimaryKeyMixin, Base):
 class Outfit(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "outfits"
 
-    daily_recommendation_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("daily_recommendations.id", ondelete="CASCADE"), nullable=False, index=True
+    daily_recommendation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("daily_recommendations.id", ondelete="CASCADE"), nullable=True, index=True
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
@@ -121,7 +121,7 @@ class Outfit(UUIDPrimaryKeyMixin, Base):
     reasoning_json: Mapped[list[JsonDict] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    daily_recommendation: Mapped[DailyRecommendation] = relationship(back_populates="outfits")
+    daily_recommendation: Mapped[DailyRecommendation | None] = relationship(back_populates="outfits")
     items: Mapped[list["OutfitItem"]] = relationship(
         back_populates="outfit", cascade="all, delete-orphan"
     )
