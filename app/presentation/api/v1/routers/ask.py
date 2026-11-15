@@ -13,17 +13,22 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ask import answer_question as ask_uc
 from app.application.ask.answer_question import ItemRefSnapshot, build_item_ref_snapshots
+from app.application.ask.styling import StylingService
 from app.application.ports.llm import LlmPort
-from app.bootstrap.container import llm_service
+from app.application.ports.weather import WeatherPort
+from app.bootstrap.container import llm_service, weather_service
 from app.common import error_codes
 from app.common.enums import FeedbackType, RecommendationEventType
 from app.common.exceptions import FriendlyException
+from app.common.local_time import local_datetime, utc_now
 from app.config.settings import get_settings
+from app.infrastructure.cache.client import get_redis_client, invalidate_daily_recommendation_cache
 from app.infrastructure.persistence.models.ask_conversation import AskMessage
 from app.infrastructure.persistence.models.ask_session import AskSession
 from app.infrastructure.persistence.models.recommendation import RecommendationEvent
@@ -31,17 +36,25 @@ from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
+from app.infrastructure.persistence.repositories.ask_conversation_repo import SqlAlchemyAskConversationRepository
+from app.infrastructure.persistence.repositories.user_repo import SqlAlchemyUserRepository
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url
+from app.presentation.api.v1.routers.recommendations import render_styling
 from app.presentation.api.v1.schemas.ask import (
+    AdoptStylingRequest,
     AskConversationDeltas,
+    AskConversationMessage,
+    AskConversationResponse,
     AskHistoryItem,
     AskItemRefSnapshot,
     AskRequest,
     AskResponse,
     AskToolUse,
     AskTripIntent,
+    CreateOutfitRevisionRequest,
+    StylingResponse,
 )
 from app.presentation.api.v1.schemas.recommendations import FeedbackRequest, FeedbackResponse
 
@@ -66,6 +79,10 @@ def _gate() -> None:
         )
 
 
+def _ask_weather_service() -> WeatherPort | None:
+    return weather_service() if get_settings().ENABLE_ASK_TOOLS else None
+
+
 def _to_schema(snapshots: list[ItemRefSnapshot]) -> list[AskItemRefSnapshot]:
     """Sign each snapshot's thumbnail at request time (never persist a
     TTL-bound URL) and project to the response schema."""
@@ -87,6 +104,7 @@ async def ask(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     llm: Annotated[LlmPort, Depends(llm_service)],
+    weather: Annotated[WeatherPort | None, Depends(_ask_weather_service)],
 ) -> AskResponse:
     _gate()
     context = payload.context.model_dump(exclude_none=True) if payload.context else None
@@ -96,9 +114,15 @@ async def ask(
         question=payload.question,
         context=context,
         llm=llm,
+        weather=weather,
         locale=payload.locale,
         focused_item_id=payload.focused_item_id,
         conversation_id=payload.conversation_id,
+        design_mode=payload.design_mode,
+        request_id=payload.request_id,
+        expected_revision=payload.expected_revision,
+        base_outfit_id=payload.base_outfit_id,
+        constraints=payload.constraints,
     )
     # Reuse the locale answer_question already resolved (request > settings >
     # default) — no second settings query. Snapshot names use the request
@@ -109,13 +133,14 @@ async def ask(
         result.item_refs,
         locale=result.effective_locale,
     )
-    expose_conversation = get_settings().ENABLE_ASK_CONVERSATIONS
+    expose_conversation = get_settings().ENABLE_ASK_CONVERSATIONS or get_settings().ENABLE_DESIGNER_SESSIONS
     # BE#86 — recommendation_id is set to ask_session_id when the answer
     # references wardrobe items, giving the client a stable anchor for feedback.
     # Pure-text answers (no cited items) leave it None.
     recommendation_id = result.ask_session_id if result.item_refs else None
     return AskResponse(
         ask_session_id=result.ask_session_id,
+        styling=await render_styling(session, current_user.id, result.styling),
         conversation_id=result.conversation_id if expose_conversation else None,
         answer=result.answer,
         item_refs=result.item_refs,
@@ -185,7 +210,7 @@ async def ask_history(
     # uses this to resume a past conversation (#114). Exposure follows
     # ENABLE_ASK_CONVERSATIONS, same as POST /v1/ask — rows persist regardless.
     conversation_by_session: dict[uuid.UUID, uuid.UUID] = {}
-    if rows and get_settings().ENABLE_ASK_CONVERSATIONS:
+    if rows and (get_settings().ENABLE_ASK_CONVERSATIONS or get_settings().ENABLE_DESIGNER_SESSIONS):
         message_rows = await session.execute(
             select(AskMessage.ask_session_id, AskMessage.conversation_id).where(
                 AskMessage.ask_session_id.in_([row.id for row in rows])
@@ -208,9 +233,97 @@ async def ask_history(
                 item_ref_snapshots=_to_schema(row_snaps),
                 created_at=row.created_at,
                 trip_intent=_trip_intent_from_context(row.context),
+                styling=await _styling_from_metadata(session, current_user.id, row.context),
             )
         )
     return out
+
+
+async def _styling_from_metadata(
+    session: AsyncSession, user_id: uuid.UUID, metadata: dict[str, object] | None,
+) -> StylingResponse | None:
+    if not get_settings().ENABLE_DESIGNER_SESSIONS:
+        return None
+    raw = (metadata or {}).get("styling_revision_id")
+    if not isinstance(raw, str):
+        return None
+    try:
+        revision_id = uuid.UUID(raw)
+    except ValueError:
+        return None
+    revision = await StylingService(session, user_id).get_revision(revision_id)
+    return await render_styling(session, user_id, revision)
+
+
+def _design_gate() -> None:
+    _gate()
+    if not get_settings().ENABLE_DESIGNER_SESSIONS:
+        raise FriendlyException(error_codes.FORBIDDEN, "Designer sessions are not enabled", 503)
+
+
+@router.get("/conversations/{conversation_id}", response_model=AskConversationResponse)
+async def get_conversation(
+    conversation_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> AskConversationResponse:
+    _gate()
+    repository = SqlAlchemyAskConversationRepository(session)
+    conversation = await repository.get_owned_conversation(current_user.id, conversation_id)
+    if conversation is None:
+        raise FriendlyException(error_codes.NOT_FOUND, "Conversation not found", 404)
+    messages = await repository.list_messages(current_user.id, conversation_id)
+    current = await StylingService(session, current_user.id).current(conversation_id)
+    return AskConversationResponse(
+        conversation_id=conversation.id, title=conversation.title,
+        styling=await render_styling(session, current_user.id, current) if get_settings().ENABLE_DESIGNER_SESSIONS else None,
+        messages=[AskConversationMessage(
+            id=message.id, ask_session_id=message.ask_session_id, role=message.role,
+            content=message.content, created_at=message.created_at,
+            styling=await _styling_from_metadata(session, current_user.id, message.message_metadata),
+        ) for message in messages],
+    )
+
+
+@router.post("/conversations/{conversation_id}/outfit-revisions", response_model=StylingResponse)
+async def create_outfit_revision(
+    conversation_id: uuid.UUID,
+    payload: CreateOutfitRevisionRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> StylingResponse:
+    _design_gate()
+    if payload.replace is None and payload.locked_item_ids is None and payload.excluded_item_ids is None:
+        raise FriendlyException(error_codes.VALIDATION_ERROR, "Provide a replacement or updated constraints", 422)
+    revision = await StylingService(session, current_user.id).revise(
+        conversation_id=conversation_id, expected_revision=payload.expected_revision, request_id=payload.request_id,
+        replace=(payload.replace.item_id, payload.replace.replacement_item_id) if payload.replace else None,
+        locked_item_ids=payload.locked_item_ids, excluded_item_ids=payload.excluded_item_ids,
+    )
+    result = await render_styling(session, current_user.id, revision)
+    assert result is not None
+    return result
+
+
+@router.post("/conversations/{conversation_id}/adopt", response_model=StylingResponse)
+async def adopt_styling(
+    conversation_id: uuid.UUID,
+    payload: AdoptStylingRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[Redis, Depends(get_redis_client)],
+) -> StylingResponse:
+    _design_gate()
+    user_settings = await SqlAlchemyUserRepository(session).get_or_create_settings(current_user.id)
+    local_today = local_datetime(utc_now(), user_settings.timezone, get_settings().DEFAULT_TIMEZONE).date()
+    revision = await StylingService(session, current_user.id).adopt(
+        conversation_id=conversation_id, expected_revision=payload.expected_revision, request_id=payload.request_id,
+        day=payload.date, default_day=local_today,
+    )
+    await invalidate_daily_recommendation_cache(redis_client, current_user.id)
+    result = await render_styling(session, current_user.id, revision)
+    assert result is not None
+    return result
 
 
 def _trip_intent_from_context(context: dict[str, object] | None) -> AskTripIntent | None:

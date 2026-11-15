@@ -109,19 +109,23 @@ class FeedbackOutfit:
         write them weakly (capped 0.4, source=feedback_signal). Fail-soft per row:
         the just-recorded feedback event must persist even if learning errors."""
         try:
+            pref_repo = SqlAlchemyPreferenceMemoryRepository(self.repository.session)
+            await pref_repo.lock_user(user_id)
             # Flush so the event just added is visible to the derivation read.
             await self.repository.session.flush()
             now = datetime.now(UTC)
             events = await self.repository.list_recommendation_events(
                 user_id, since=now - timedelta(days=DEFAULT_SUPPRESSION_DAYS)
             )
-            signals = derive_learning_signals(events, now=now)
+            reset_at, forgotten_before = await pref_repo.learning_cutoffs(user_id)
+            signals = derive_learning_signals(
+                events, now=now, reset_at=reset_at, forgotten_before=forgotten_before
+            )
         except Exception as exc:
             logger.warning("feedback_learning.derive_failed", user_id=str(user_id), error=str(exc))
             return
         if not signals.weak_preferences:
             return
-        pref_repo = SqlAlchemyPreferenceMemoryRepository(self.repository.session)
         for pref in signals.weak_preferences:
             try:
                 # Savepoint per row: a DBAPI/ON CONFLICT error rolls back only this
@@ -137,6 +141,7 @@ class FeedbackOutfit:
                         polarity=pref.polarity,
                         confidence=_FEEDBACK_PREFERENCE_CONFIDENCE,
                         source=SOURCE_FEEDBACK,
+                        evidence_at=pref.evidence_at,
                     )
             except PreferenceMemoryError as exc:
                 logger.warning(

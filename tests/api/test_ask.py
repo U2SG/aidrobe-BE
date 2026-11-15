@@ -406,8 +406,10 @@ async def test_ask_structured_persists_explicit_stated_preferences(
     llm = _FakeLlm(
         text=(
             '{"answer": "ok", "referenced_items": [], "stated_preferences": ['
-            '{"type": "fit", "value": "oversized shirts", "polarity": "negative"},'
-            '{"type": "bogus", "value": "junk", "polarity": "negative"}]}'
+            '{"type": "fit", "value": "oversized shirts", "polarity": "negative", '
+            '"evidence_text": "I dislike oversized shirts"},'
+            '{"type": "bogus", "value": "junk", "polarity": "negative", '
+            '"evidence_text": "I dislike oversized shirts"}]}'
         )
     )
     app = _build_app(

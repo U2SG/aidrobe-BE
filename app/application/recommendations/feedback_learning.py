@@ -104,6 +104,9 @@ class WeakPreference:
     preference_type: str
     preference_value: str
     polarity: str
+    # Oldest supporting observation: the complete threshold must be newer than
+    # a correction, and replaying a batch must not extend its lifetime.
+    evidence_at: datetime | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -153,6 +156,8 @@ def derive_learning_signals(
     now: datetime,
     suppression_days: int = DEFAULT_SUPPRESSION_DAYS,
     durable_min_count: int = DEFAULT_DURABLE_MIN_COUNT,
+    reset_at: datetime | None = None,
+    forgotten_before: Mapping[tuple[str, str], datetime] | None = None,
 ) -> LearningSignals:
     """Aggregate recent feedback events into bounded learning signals.
 
@@ -163,6 +168,7 @@ def derive_learning_signals(
     """
     cutoff = now - timedelta(days=suppression_days)
     signal_counts: Counter[str] = Counter()
+    evidence_times: dict[str, datetime] = {}
     thermal_net = 0
     formality_net = 0
     # Per signature, the most-recent suppression vs positive timestamps. A later
@@ -177,6 +183,8 @@ def derive_learning_signals(
         if created is not None and created < cutoff:
             continue
         stamp = created if created is not None else now
+        if reset_at is not None and stamp <= reset_at:
+            continue
         signature = _signature(event.event_metadata)
         if signature is not None:
             if event.event_type in _SUPPRESSION_EVENT_TYPES:
@@ -186,13 +194,24 @@ def derive_learning_signals(
             elif event.event_type in _POSITIVE_EVENT_TYPES:
                 positive_at[signature] = max(positive_at.get(signature, stamp), stamp)
         tags = {tag.strip().lower() for tag in _reason_tags(event.event_metadata)}
+        # A removed derived preference must not continue to influence real-time
+        # formality scoring through the same old raw events.
+        allowed_tags: set[str] = set()
+        for tag in tags:
+            signal = _REASON_TAG_TO_SIGNAL.get(tag)
+            preference = _SIGNAL_TO_PREFERENCE.get(signal) if signal else None
+            revoked = (forgotten_before or {}).get((preference[0], preference[1])) if preference else None
+            if revoked is None or stamp > revoked:
+                allowed_tags.add(tag)
+        tags = allowed_tags
         thermal_net += (TOO_WARM in tags) - (TOO_COLD in tags)
         formality_net += (TOO_CASUAL in tags) - (TOO_FORMAL in tags)
         # Durable-preference counting (only the self-describing reason signals).
-        signals = normalize_event(event.event_type, _reason_tags(event.event_metadata))
+        signals = normalize_event(event.event_type, tags)
         for signal in signals:
             if signal in _SIGNAL_TO_PREFERENCE:
                 signal_counts[signal] += 1
+                evidence_times[signal] = min(evidence_times.get(signal, stamp), stamp)
 
     suppressed = [
         sig
@@ -204,7 +223,7 @@ def derive_learning_signals(
     for signal, count in signal_counts.items():
         if count >= durable_min_count:
             ptype, pvalue, polarity = _SIGNAL_TO_PREFERENCE[signal]
-            weak.append(WeakPreference(ptype, pvalue, polarity))
+            weak.append(WeakPreference(ptype, pvalue, polarity, evidence_times[signal]))
 
     thermal_offset = max(-THERMAL_MAX_C, min(THERMAL_MAX_C, thermal_net * THERMAL_STEP_C))
     return LearningSignals(

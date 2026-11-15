@@ -140,6 +140,7 @@ class RecommendationStatus(StrEnum):
 
 
 class RecommendationGenerationSource(StrEnum):
+    DESIGNER = "designer"
     NIGHTLY = "nightly"
     DEPARTURE = "departure"
     READ_TIME = "read_time"

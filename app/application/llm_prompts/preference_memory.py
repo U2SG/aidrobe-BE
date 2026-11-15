@@ -1,9 +1,9 @@
 """Render durable preference memory as a PRIORITIZED prompt section (BE#66).
 
 The pre-#66 prompt folded preferences into a JSON context block where they were
-"included but not prioritized". This renders them as explicit rules: negatives
-become hard avoid-rules (listed first), positives become soft preferences — so
-the model treats them with the right weight.
+"included but not prioritized". Explicit dislikes are meaningful defaults,
+listed first; a current explicit exploration of the same value can override
+them without changing the durable memory.
 
 Input is the compact shape from
 `app.application.preferences.memory.read_preference_memory`:
@@ -21,24 +21,24 @@ from app.infrastructure.llm.sanitizer import sanitize_preference_value
 
 _DEFAULT_LANG = "zh"
 
-# (hard-avoid, soft-avoid, prefer) headers per language. BE#69 review: a negative
+# (explicit-avoid, soft-avoid, prefer) headers per language. BE#69 review: a negative
 # row derived from feedback/inference is intentionally capped at low confidence so
 # one behavioral signal can't become a strong preference — so it must NOT be
-# rendered with the same "MUST AVOID, highest priority" weight as an explicit
-# dislike. Strong negatives → hard avoid; weak ones → a softer lean-away hint.
+# rendered with the same weight as an explicit dislike. Both are resolved in
+# context; only a current explicit exception may relax an explicit default.
 _HEADERS: dict[str, tuple[str, str, str]] = {
     "zh": (
-        "必须避免（用户明确不喜欢，最高优先级）：",
+        "默认避免（明确偏好；用户本次明确探索对应项时，以本次有效条件为准）：",
         "尽量避免（较弱倾向，可权衡）：",
         "倾向偏好（在可行时优先满足）：",
     ),
     "en": (
-        "MUST AVOID (the user explicitly dislikes these — highest priority):",
+        "AVOID BY DEFAULT (explicit preferences; a current explicit exception for that value takes precedence):",
         "LEAN AWAY (weaker signal — weigh against other factors):",
         "PREFER (favor these when feasible):",
     ),
 }
-# Confidence at/above which a negative is a hard rule. Explicit statements are
+# Confidence at/above which a negative is an explicit default. Statements are
 # written at ~0.9; feedback/inference are capped at 0.4 — so 0.5 cleanly splits
 # them. Entries with no confidence (legacy/explicit callers) default to strong.
 _STRONG_CONFIDENCE = 0.5

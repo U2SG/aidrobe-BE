@@ -1,5 +1,5 @@
+import asyncio
 import json
-import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -10,6 +10,7 @@ from app.application.ports.llm import LlmAnswer, ToolAskAnswer, ToolExecutor, To
 from app.config.settings import Settings
 
 logger = structlog.get_logger(__name__)
+_MAX_TOOL_CALLS_PER_ROUND = 4
 
 
 def _thinking_off(model: str) -> dict[str, Any]:
@@ -94,8 +95,8 @@ class QwenLlm:
         max_rounds: int = 4,
     ) -> ToolAskAnswer:
         """OpenAI-compatible tool loop. The model may call tools for up to
-        `max_rounds - 1` rounds; the final round (or the first one past the
-        overall deadline) sets tool_choice=none so it must answer."""
+        `max_rounds - 1` rounds. The final round sets tool_choice=none.
+        The turn deadline includes provider requests and tool execution."""
         if not self.settings.QWEN_API_KEY:
             return ToolAskAnswer(text="", tokens_used=0)
         messages: list[dict[str, Any]] = [
@@ -110,15 +111,17 @@ class QwenLlm:
             for t in tools
         ]
         headers = {"Authorization": f"Bearer {self.settings.QWEN_API_KEY}"}
-        deadline = time.monotonic() + self.settings.ASK_TOOL_TOTAL_TIMEOUT_SECONDS
         used: list[ToolUse] = []
         tokens = 0
         rounds = 0
         try:
-            async with httpx.AsyncClient(timeout=self.settings.LLM_ASK_TIMEOUT_SECONDS) as client:
+            async with (
+                asyncio.timeout(self.settings.ASK_TOOL_TOTAL_TIMEOUT_SECONDS),
+                httpx.AsyncClient(timeout=self.settings.LLM_ASK_TIMEOUT_SECONDS) as client,
+            ):
                 while True:
                     rounds += 1
-                    final = rounds >= max_rounds or time.monotonic() >= deadline or not tool_defs
+                    final = rounds >= max_rounds or not tool_defs
                     payload: dict[str, Any] = {
                         "model": self.settings.QWEN_LLM_MODEL,
                         "messages": messages,
@@ -140,6 +143,7 @@ class QwenLlm:
                         return ToolAskAnswer(
                             text=str(message.get("content") or ""), tokens_used=tokens, used=used, rounds=rounds
                         )
+                    calls = calls[:_MAX_TOOL_CALLS_PER_ROUND]
                     messages.append(
                         {"role": "assistant", "content": message.get("content") or "", "tool_calls": calls}
                     )

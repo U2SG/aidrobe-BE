@@ -11,7 +11,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from app.application.outfits.scoring.static import compute_static_breakdown, get_rules_version
 from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherInfo, WeatherPort
-from app.application.preferences.memory import live_negative_values_by_type
+from app.application.preferences.memory import live_negative_values_by_type, resolve_effective_preferences
 from app.application.recommendations.decision_trace import (
     TRACE_SCHEMA_VERSION,
     build_decision_trace_payload,
@@ -163,8 +163,8 @@ class RecommendationGenerator:
         # BE#46 — let explicit NEGATIVE color preferences down-rank matching
         # outfits. Read only when the flag is on (rows persist regardless), so a
         # flag-off generation is byte-identical to the legacy one.
-        disliked_colors = await self._load_disliked_colors(user_id, settings)
-        memory_items = await self._load_memory_items(user_id)
+        disliked_colors = await self._load_disliked_colors(user_id, settings, scene=scene, target_date=target_date)
+        memory_items = await self._load_memory_items(user_id, scene=scene, target_date=target_date)
         # BE#67 — down-rank looks the user recently dismissed/disliked. Derived at
         # read time from the event stream (no persistence), gated by the flag so a
         # flag-off generation is byte-identical to the legacy one.
@@ -471,7 +471,9 @@ class RecommendationGenerator:
             )
             return []
 
-    async def _load_disliked_colors(self, user_id: uuid.UUID, settings: Any) -> set[str]:
+    async def _load_disliked_colors(
+        self, user_id: uuid.UUID, settings: Any, *, scene: str | None = None, target_date: date | None = None
+    ) -> set[str]:
         """BE#46 — lowercased colors the user has explicitly stated they dislike.
 
         Off (empty) unless ENABLE_PREFERENCE_MEMORY is on. `color` is the
@@ -493,6 +495,8 @@ class RecommendationGenerator:
                 user_id,
                 "color",
                 "negative_preference",
+                scene=scene,
+                target_date=target_date,
             )
         except Exception as exc:
             logger.warning("preference_memory_load_failed", user_id=str(user_id), error=str(exc))
@@ -513,7 +517,16 @@ class RecommendationGenerator:
             events = await self.repository.list_recommendation_events(
                 user_id, since=now - timedelta(days=DEFAULT_SUPPRESSION_DAYS)
             )
-            return derive_learning_signals(events, now=now)
+            from app.infrastructure.persistence.repositories.preference_memory_repo import (
+                SqlAlchemyPreferenceMemoryRepository,
+            )
+
+            reset_at, forgotten_before = await SqlAlchemyPreferenceMemoryRepository(
+                self.repository.session
+            ).learning_cutoffs(user_id)
+            return derive_learning_signals(
+                events, now=now, reset_at=reset_at, forgotten_before=forgotten_before
+            )
         except Exception as exc:
             logger.warning("feedback_learning_load_failed", user_id=str(user_id), error=str(exc))
             return LearningSignals()
@@ -610,16 +623,19 @@ class RecommendationGenerator:
             return None
 
     async def _load_memory_items(
-        self, user_id: uuid.UUID
+        self, user_id: uuid.UUID, *, scene: str | None = None, target_date: date | None = None
     ) -> list[UserPreferenceMemory]:
         try:
             from app.infrastructure.persistence.repositories.preference_memory_repo import (
                 SqlAlchemyPreferenceMemoryRepository,
             )
 
-            return await SqlAlchemyPreferenceMemoryRepository(
+            rows = await SqlAlchemyPreferenceMemoryRepository(
                 self.repository.session
             ).list_live(user_id)
+            return [row for row in resolve_effective_preferences(
+                rows, scene=scene, target_date=target_date
+            ) if row.polarity != "neutral"]
         except Exception as exc:
             logger.warning(
                 "preference_memory_trace_load_failed",

@@ -13,14 +13,16 @@ silently (the user must be able to see AND delete everything learned).
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application import audit
+from app.application.preferences.memory import scope_text
 from app.application.safety.copy_guard import find_forbidden_terms
 from app.application.users.clear_data import clear_user_data
 from app.application.users.storage_purge import collect_user_object_keys, enqueue_storage_purge
@@ -94,6 +96,9 @@ class MemoryItemResponse(BaseModel):
     source: str
     confidence: str
     created_at: str
+    scope: dict[str, str] = Field(default_factory=dict)
+    scope_text: str = ""
+    expires_at: datetime | None = None
 
 
 class MemoryListResponse(BaseModel):
@@ -167,6 +172,9 @@ async def list_learned_memory(
             source=_SOURCE_LABELS.get(row.source, "inferred"),
             confidence=_confidence_bucket(float(row.confidence)),
             created_at=row.created_at.isoformat(),
+            scope=row.scope or {},
+            scope_text=scope_text(row.scope, resolved_locale),
+            expires_at=row.expires_at,
         )
         for row in rows
     ]
@@ -174,7 +182,7 @@ async def list_learned_memory(
 
 
 async def _delete_one(
-    session: AsyncSession, user_id: uuid.UUID, preference_id: uuid.UUID, action: str
+    session: AsyncSession, user_id: uuid.UUID, preference_id: uuid.UUID, action: str, redis_client: Redis
 ) -> ResponseModel[MemoryMutationResponse]:
     deleted = await SqlAlchemyPreferenceMemoryRepository(session).soft_delete(
         user_id, preference_id
@@ -192,6 +200,7 @@ async def _delete_one(
         target_type="preference_memory",
         target_id=preference_id,
     )
+    await invalidate_daily_recommendation_cache(redis_client, user_id)
     return ResponseModel(data=MemoryMutationResponse(deleted=1))
 
 
@@ -200,10 +209,11 @@ async def delete_memory_item(
     preference_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[Redis, Depends(get_redis_client)],
 ) -> ResponseModel[MemoryMutationResponse]:
     _require_data_trust()
     return await _delete_one(
-        session, current_user.id, preference_id, audit.ACTION_MEMORY_DELETED
+        session, current_user.id, preference_id, audit.ACTION_MEMORY_DELETED, redis_client
     )
 
 
@@ -215,12 +225,13 @@ async def mark_memory_item_wrong(
     preference_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[Redis, Depends(get_redis_client)],
 ) -> ResponseModel[MemoryMutationResponse]:
     """Same removal as DELETE, but audited distinctly — "this is wrong" is a
     correction signal future learning can weigh, not just a removal."""
     _require_data_trust()
     return await _delete_one(
-        session, current_user.id, preference_id, audit.ACTION_MEMORY_MARKED_WRONG
+        session, current_user.id, preference_id, audit.ACTION_MEMORY_MARKED_WRONG, redis_client
     )
 
 
@@ -228,6 +239,7 @@ async def mark_memory_item_wrong(
 async def clear_learned_memory(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[Redis, Depends(get_redis_client)],
 ) -> ResponseModel[MemoryMutationResponse]:
     _require_data_trust()
     count = await SqlAlchemyPreferenceMemoryRepository(session).soft_delete_all_live(
@@ -240,6 +252,7 @@ async def clear_learned_memory(
         user_id=current_user.id,
         payload={"cleared": count},
     )
+    await invalidate_daily_recommendation_cache(redis_client, current_user.id)
     return ResponseModel(data=MemoryMutationResponse(deleted=count))
 
 

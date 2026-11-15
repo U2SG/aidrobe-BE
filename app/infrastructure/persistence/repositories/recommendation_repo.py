@@ -313,6 +313,8 @@ class SqlAlchemyRecommendationRepository:
         preserve_refresh_after: datetime | None = None,
         wardrobe_read_at: datetime | None = None,
     ) -> bool:
+        if existing.generation_source == RecommendationGenerationSource.DESIGNER.value:
+            return True
         if existing.generation_source == RecommendationGenerationSource.REFRESH.value:
             updated_at = existing.updated_at
             if updated_at is not None and preserve_refresh_after is not None:
@@ -449,6 +451,12 @@ class SqlAlchemyRecommendationRepository:
         return existing, False
 
     async def daily_has_engagement(self, daily_recommendation_id: uuid.UUID) -> bool:
+        designer_daily = await self.session.scalar(select(DailyRecommendation.id).where(
+            DailyRecommendation.id == daily_recommendation_id,
+            DailyRecommendation.generation_source == RecommendationGenerationSource.DESIGNER.value,
+        ))
+        if designer_daily is not None:
+            return True
         feedback_id = await self.session.scalar(
             select(OutfitFeedback.id)
             .join(Outfit, Outfit.id == OutfitFeedback.outfit_id)

@@ -53,9 +53,9 @@ def test_builder_grounds_preferences_weather_and_hides_titles() -> None:
     items = _items()
     prompt = _build_system_prompt(uuid.uuid4(), items, _ctx(items), _TODAY, structured=True)
 
-    # Preference memory is rendered as a PRIORITIZED hard avoid-rule, not just
-    # buried in JSON (the issue's "included but not prioritized" regression).
-    assert "必须避免" in prompt
+    # Keep explicit defaults visible while allowing a same-value exploration.
+    assert "默认避免" in prompt
+    assert "本次有效条件" in prompt
     assert "oversized" in prompt
     # Reasoning policy makes weather/occasion decision dimensions explicit.
     assert "天气" in prompt and "场合" in prompt

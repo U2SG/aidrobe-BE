@@ -21,6 +21,7 @@ from app.infrastructure.persistence.models.recommendation import (
 )
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.repositories.preference_memory_repo import SqlAlchemyPreferenceMemoryRepository
 from tests.api.test_outfit_actions import build_outfit_app
 
 
@@ -143,3 +144,38 @@ async def test_preference_write_db_error_does_not_fail_feedback(
         select(OutfitFeedback).where(OutfitFeedback.outfit_id == outfit_id)
     )
     assert persisted is not None and persisted.feedback_type == "dislike"
+
+
+async def test_deleting_learned_preference_requires_fresh_feedback_to_learn_again(
+    db_session: AsyncSession, monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        feedback_module, "get_settings",
+        lambda: Settings(APP_ENV="dev", ENABLE_FEEDBACK_LEARNING=True),
+    )
+    user_id = uuid.uuid4()
+    outfit_id = await _seed_outfit(db_session, user_id)
+    app = build_outfit_app(db_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        async def dislike() -> None:
+            response = await client.post(
+                f"/v1/recommendations/outfits/{outfit_id}/feedback",
+                headers={"X-User-Id": str(user_id)},
+                json={"feedback_type": "dislike", "reason_tags": ["too_formal"]},
+            )
+            assert response.status_code == 200
+
+        for _ in range(3):
+            await dislike()
+        learned = (await _formality_prefs(db_session, user_id))[0]
+        repo = SqlAlchemyPreferenceMemoryRepository(db_session)
+        assert await repo.soft_delete(user_id, learned.id)
+        await dislike()
+        assert await repo.list_live(user_id) == []  # three old events cannot count again
+        await dislike()
+        assert await repo.list_live(user_id) == []
+        await dislike()
+        fresh = await repo.list_live(user_id)
+    assert len(fresh) == 1 and fresh[0].id != learned.id
+    assert fresh[0].evidence_at is not None and learned.deleted_at is not None
+    assert fresh[0].evidence_at > learned.deleted_at

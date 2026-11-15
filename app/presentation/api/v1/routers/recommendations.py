@@ -10,6 +10,8 @@ from redis.exceptions import RedisError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ask.design_types import StylingConstraints
+from app.application.ask.styling import StylingService
 from app.application.outfits.feedback import FeedbackOutfit
 from app.application.outfits.obstacles import (
     attach_replacement_candidates,
@@ -51,6 +53,7 @@ from app.infrastructure.cache.client import (
 )
 from app.infrastructure.cache.keys import build_daily_recommendation_cache_key
 from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit
+from app.infrastructure.persistence.models.ask_conversation import AskStylingRevision
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.operation_log_repo import (
@@ -66,6 +69,7 @@ from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import wardrobe_image_urls
 from app.presentation.api.v1.schemas.common import ResponseModel
+from app.presentation.api.v1.schemas.ask import ReviseOutfitRequest, StylingResponse
 from app.presentation.api.v1.schemas.recommendations import (
     AppliedContextResponse,
     FavoriteOutfitResponse,
@@ -266,6 +270,28 @@ async def _get_favorited_outfit_ids(
 ) -> set[uuid.UUID]:
     return await SqlAlchemyRecommendationRepository(session).list_favorited_outfit_ids(
         user_id, outfit_ids
+    )
+
+
+async def render_styling(
+    session: AsyncSession, user_id: uuid.UUID, revision: AskStylingRevision | None,
+) -> StylingResponse | None:
+    if revision is None:
+        return None
+    repository = SqlAlchemyRecommendationRepository(session)
+    outfit = await repository.get_outfit_for_user(revision.outfit_id, user_id)
+    if outfit is None or revision.user_id != user_id:
+        raise FriendlyException(error_codes.NOT_FOUND, "Outfit not found", 404)
+    favorited = await repository.list_favorited_outfit_ids(user_id, [outfit.id])
+    outfits = await _enrich_outfits(
+        session, [outfit], revision.recommendation_date or utc_now().date(), favorited_outfit_ids=favorited
+    )
+    return StylingResponse(
+        conversation_id=revision.conversation_id, revision=revision.revision,
+        status="adopted" if revision.status == "adopted" else "draft", outfit=outfits[0],
+        constraints=StylingConstraints.model_validate(revision.constraints),
+        recommendation_id=revision.recommendation_id, recommendation_revision=revision.recommendation_revision,
+        recommendation_date=revision.recommendation_date,
     )
 
 
@@ -560,6 +586,15 @@ async def get_today_recommendation(
         reasoning=get_settings().ENABLE_TODAY_REASONING,
         vision_style=get_settings().ENABLE_VISION_STYLE_LEARNING,
     )
+    # A slow pre-adoption/deletion request may still fill its old cache key.
+    # Namespace by durable state so subsequent reads cannot consume that fill.
+    daily_identity = await session.scalar(select(DailyRecommendation.id).where(
+        DailyRecommendation.user_id == current_user.id,
+        DailyRecommendation.recommendation_date == target,
+        DailyRecommendation.is_current.is_(True),
+    ))
+    memory_version = current_user.memory_context_reset_at.isoformat() if current_user.memory_context_reset_at else "none"
+    cache_key += f":daily={daily_identity or 'none'}:memory={memory_version}"
     try:
         cached = await redis_client.get(cache_key)
     except RedisError:
@@ -787,6 +822,26 @@ async def get_outfit_detail(
         favorited_outfit_ids=favorited,
     )
     return ResponseModel(data=enriched[0])
+
+
+@router.post("/outfits/{outfit_id}/revisions", response_model=StylingResponse)
+async def revise_outfit(
+    outfit_id: uuid.UUID,
+    payload: ReviseOutfitRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[Redis, Depends(get_redis_client)],
+) -> StylingResponse:
+    if not get_settings().ENABLE_DESIGNER_SESSIONS:
+        raise FriendlyException(error_codes.FORBIDDEN, "Designer sessions are not enabled", 503)
+    revision = await StylingService(session, current_user.id).revise_outfit(
+        outfit_id=outfit_id, request_id=payload.request_id, item_id=payload.item_id,
+        replacement_item_id=payload.replacement_item_id,
+    )
+    await invalidate_daily_recommendation_cache(redis_client, current_user.id)
+    result = await render_styling(session, current_user.id, revision)
+    assert result is not None
+    return result
 
 
 @router.get(

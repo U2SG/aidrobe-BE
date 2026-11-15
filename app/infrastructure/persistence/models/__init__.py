@@ -2,6 +2,7 @@ from app.infrastructure.persistence.models.ask_conversation import (
     AskConversation,
     AskConversationState,
     AskMessage,
+    AskStylingRevision,
 )
 from app.infrastructure.persistence.models.ask_session import AskSession
 from app.infrastructure.persistence.models.async_job import AsyncJob
@@ -47,6 +48,7 @@ __all__ = [
     "AskConversation",
     "AskConversationState",
     "AskMessage",
+    "AskStylingRevision",
     "AsyncJob",
     "AuditLog",
     "AvatarProfile",

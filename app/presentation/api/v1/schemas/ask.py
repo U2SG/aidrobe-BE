@@ -1,9 +1,14 @@
 """Ask Aidrobe schemas — M15."""
 
 import uuid
+from datetime import date as DateValue
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from app.application.ask.design_types import StylingConstraints
+from app.presentation.api.v1.schemas.recommendations import OutfitResponse
 
 
 class AskContext(BaseModel):
@@ -24,6 +29,61 @@ class AskRequest(BaseModel):
     # Optional thread id for multi-turn outfit refinement. Persisted even when
     # response exposure is feature-flagged off.
     conversation_id: uuid.UUID | None = None
+    design_mode: bool = False
+    request_id: uuid.UUID | None = None
+    expected_revision: int | None = Field(default=None, ge=0)
+    base_outfit_id: uuid.UUID | None = None
+    constraints: StylingConstraints | None = None
+
+
+class StylingResponse(BaseModel):
+    conversation_id: uuid.UUID
+    revision: int
+    status: Literal["draft", "adopted"]
+    outfit: OutfitResponse
+    constraints: StylingConstraints
+    recommendation_id: uuid.UUID | None = None
+    recommendation_revision: int | None = None
+    recommendation_date: DateValue | None = None
+
+
+class OutfitItemReplacementRequest(BaseModel):
+    item_id: uuid.UUID
+    replacement_item_id: uuid.UUID
+
+
+class CreateOutfitRevisionRequest(BaseModel):
+    request_id: uuid.UUID
+    expected_revision: int = Field(ge=1)
+    replace: OutfitItemReplacementRequest | None = None
+    locked_item_ids: list[uuid.UUID] | None = Field(default=None, max_length=8)
+    excluded_item_ids: list[uuid.UUID] | None = Field(default=None, max_length=100)
+
+
+class ReviseOutfitRequest(OutfitItemReplacementRequest):
+    request_id: uuid.UUID
+
+
+class AdoptStylingRequest(BaseModel):
+    request_id: uuid.UUID
+    expected_revision: int = Field(ge=1)
+    date: DateValue | None = None
+
+
+class AskConversationMessage(BaseModel):
+    id: uuid.UUID
+    ask_session_id: uuid.UUID | None = None
+    role: str
+    content: str
+    created_at: datetime
+    styling: StylingResponse | None = None
+
+
+class AskConversationResponse(BaseModel):
+    conversation_id: uuid.UUID
+    title: str | None = None
+    styling: StylingResponse | None = None
+    messages: list[AskConversationMessage] = Field(default_factory=list)
 
 
 class AskItemRefSnapshot(BaseModel):
@@ -64,6 +124,7 @@ class AskToolUse(BaseModel):
 
 class AskResponse(BaseModel):
     ask_session_id: uuid.UUID
+    styling: StylingResponse | None = None
     conversation_id: uuid.UUID | None = None
     answer: str  # LLM prose, generated in the effective locale (prompt-driven)
     item_refs: list[str]
@@ -88,6 +149,7 @@ class AskResponse(BaseModel):
 
 class AskHistoryItem(BaseModel):
     ask_session_id: uuid.UUID
+    styling: StylingResponse | None = None
     # Conversation this turn belongs to (resolved via ask_messages) so the
     # client can resume it; None for legacy rows without message linking.
     conversation_id: uuid.UUID | None = None

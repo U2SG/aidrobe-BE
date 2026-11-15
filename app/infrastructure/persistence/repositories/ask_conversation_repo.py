@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any, cast
 
 from sqlalchemy import select
@@ -80,6 +81,7 @@ class SqlAlchemyAskConversationRepository:
         conversation_id: uuid.UUID,
         *,
         limit: int | None = None,
+        after: datetime | None = None,
     ) -> list[AskMessage]:
         stmt = (
             select(AskMessage)
@@ -89,6 +91,8 @@ class SqlAlchemyAskConversationRepository:
             )
             .order_by(AskMessage.created_at.asc(), AskMessage.id.asc())
         )
+        if after is not None:
+            stmt = stmt.where(AskMessage.created_at > after)
         if limit is not None:
             stmt = stmt.limit(limit)
         result = await self.session.scalars(stmt)
