@@ -177,3 +177,46 @@ async def test_adopt_default_target_and_retry_do_not_move_at_midnight(db_session
     assert adopted.id == repeated.id and adopted.outfit_id == draft.outfit_id
     assert adopted.recommendation_date == tomorrow
     assert await service.recommendations.get_daily(user_id, date.today()) is None
+
+
+async def test_expired_draft_defaults_to_current_local_day(db_session: AsyncSession) -> None:
+    user_id, conversation_id, items = await _seed(db_session)
+    service = StylingService(db_session, user_id)
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    draft = await service.save_draft(
+        conversation_id=conversation_id, expected_revision=0,
+        item_ids=[item.id for item in items[:3]],
+        constraints=StylingConstraints(target_date=yesterday), request_id=uuid.uuid4(),
+        request_fingerprint=fingerprint("expired-draft"), title="Yesterday", reason="Saved earlier.",
+    )
+    request_id = uuid.uuid4()
+    adopted = await service.adopt(
+        conversation_id=conversation_id, expected_revision=1,
+        request_id=request_id, default_day=today,
+    )
+    assert adopted.outfit_id == draft.outfit_id
+    assert adopted.recommendation_date == today
+    assert await service.recommendations.get_daily(user_id, today) is not None
+    assert await service.recommendations.get_daily(user_id, yesterday) is None
+
+    # A later retry must replay the original adoption even after local midnight.
+    replay = await service.adopt(
+        conversation_id=conversation_id, expected_revision=1,
+        request_id=request_id, default_day=today + timedelta(days=1),
+    )
+    assert replay.id == adopted.id
+
+
+async def test_explicit_past_adoption_requires_a_new_date(db_session: AsyncSession) -> None:
+    user_id, conversation_id, items = await _seed(db_session)
+    service = StylingService(db_session, user_id)
+    await _draft(db_session, user_id, conversation_id, items)
+    today = date.today()
+    with pytest.raises(FriendlyException) as exc_info:
+        await service.adopt(
+            conversation_id=conversation_id, expected_revision=1, request_id=uuid.uuid4(),
+            day=today - timedelta(days=1), default_day=today,
+        )
+    assert exc_info.value.status_code == 422
+    assert await service.recommendations.get_daily(user_id, today - timedelta(days=1)) is None
