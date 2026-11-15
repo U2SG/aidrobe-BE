@@ -212,7 +212,8 @@ class GeneratePackingList:
         destination = packing_list.destination or ("your trip" if locale.startswith("en") else "这次旅行")
         summary = (
             f"Prepared a {packing_list.days}-day packing list for {destination}, using {count} wardrobe items."
-            if locale.startswith("en") else f"已为{destination}准备 {packing_list.days} 天旅行清单，共选用 {count} 件衣物。"
+            if locale.startswith("en")
+            else f"已为{destination}准备 {packing_list.days} 天旅行清单，共选用 {count} 件衣物。"
         )
         await record_linked_result(self.repository.session, packing_list.user_id, context, LinkedDesignResult(
             kind="packing_list", resource_id=packing_list.id, source_revision=context.revision, summary=summary[:1000],

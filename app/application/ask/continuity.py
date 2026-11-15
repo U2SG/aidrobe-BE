@@ -53,7 +53,9 @@ async def load_design_context(
     brief = service.brief(conversation, current)
     constraints = brief.constraints if brief is not None else StylingConstraints()
     # Pending conditions remain useful; the earlier outfit is not their result.
-    outfit_id = current.outfit_id if current is not None and brief is not None and not brief.needs_outfit_update else None
+    outfit_id = (
+        current.outfit_id if current is not None and brief is not None and not brief.needs_outfit_update else None
+    )
     return DesignContextSnapshot(
         conversation_id=conversation.id, revision=conversation.styling_revision,
         outfit_id=outfit_id, constraints=constraints,
