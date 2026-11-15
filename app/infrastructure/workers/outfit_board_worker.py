@@ -77,13 +77,17 @@ async def enqueue_outfit_board(
     outfit_id: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
     correlation_id: str | None = None,
+    retry_after: uuid.UUID | None = None,
 ) -> tuple[AsyncJob, bool]:
     """Idempotent enqueue. Caller owns commit and is responsible for having
     already inserted the matching `OutfitVisualAsset` row."""
+    key = _idempotency_key(outfit_id=outfit_id, asset_id=asset_id, layout_version=layout_version)
+    if retry_after is not None:
+        key = f"{key}:retry:{retry_after}"
     return await enqueue(
         session,
         job_type=JOB_TYPE,
-        idempotency_key=_idempotency_key(outfit_id=outfit_id, asset_id=asset_id, layout_version=layout_version),
+        idempotency_key=key,
         payload={
             "asset_id": str(asset_id),
             "layout_version": layout_version,

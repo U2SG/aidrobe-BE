@@ -246,6 +246,17 @@ async def test_gpt_outfit_board_uses_a_separate_reusable_asset(
         replay = await client.post(path, headers=headers, params={"generate": "true"})
         assert replay.json()["asset_id"] == generated.json()["asset_id"]
 
+        rejected = await db_session.get(OutfitVisualAsset, uuid.UUID(generated.json()["asset_id"]))
+        assert rejected is not None
+        rejected.generation_status = "rejected_by_quality_gate"
+        await db_session.flush()
+        retry = await client.post(path, headers=headers, params={"generate": "true"})
+        assert retry.status_code == 202, retry.text
+        assert retry.json()["asset_id"] != generated.json()["asset_id"]
+        lookup = await client.get(path, headers=headers)
+        replay = await client.post(path, headers=headers, params={"generate": "true"})
+        assert lookup.json()["asset_id"] == replay.json()["asset_id"] == retry.json()["asset_id"]
+
     job = (await db_session.scalars(
         select(AsyncJob).where(AsyncJob.target_id == uuid.UUID(generated.json()["asset_id"]))
     )).one()
