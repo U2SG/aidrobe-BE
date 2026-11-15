@@ -268,8 +268,8 @@ class QwenVision:
             "Reject a different garment, extra clothing, or changed visible details. "
             "Allow plain, consistent completion of parts genuinely hidden by another garment or the frame. "
             "Allow reasonable changes in folds and lighting from wearing versus a product display. "
-            "Compare exact visible lettering or graphic shape, orientation, position and scale of marks. "
-            "Inspect waistbands. Reject guessed lettering where a mark is visible but too blurry to read. "
+            "Compare the position, scale, and general appearance of visible marks, including on waistbands. "
+            "Allow minor differences in letter shapes of small or blurred marks if their appearance is similar. "
             "Check shoe toe panels, perforations, stitching "
             "and sole shape. Score corresponding visible areas. A generic match in type and color is insufficient. "
             "Return only JSON with a boolean field accepted.",
@@ -288,6 +288,7 @@ class QwenVision:
             f"The reference garments in order are {json.dumps(garments, ensure_ascii=False)}. "
             "Check each target garment separately. Match the visible color, neckline or collar, sleeves, "
             "hem, leg width, fabric, pockets, seams, fasteners, and the side and position of marks. "
+            "Allow minor differences in letter shapes of small or blurred marks with similar appearance. "
             "Reject mirrored or moved visible details, changed visible construction, or extra pieces. "
             "Allow a new angle and completion of areas genuinely hidden in the references. "
             "Check for material changes to any area visible in both images. Specifically compare shoe "
