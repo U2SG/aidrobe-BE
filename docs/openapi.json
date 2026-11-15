@@ -15071,7 +15071,13 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 32
+                "enum": [
+                  "commute",
+                  "formal",
+                  "casual",
+                  "date",
+                  "travel"
+                ]
               },
               {
                 "type": "null"

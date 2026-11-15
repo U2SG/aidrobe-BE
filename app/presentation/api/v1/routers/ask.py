@@ -33,10 +33,10 @@ from app.infrastructure.persistence.models.ask_conversation import AskMessage
 from app.infrastructure.persistence.models.ask_session import AskSession
 from app.infrastructure.persistence.models.recommendation import RecommendationEvent
 from app.infrastructure.persistence.models.user import User, UserSettings
+from app.infrastructure.persistence.repositories.ask_conversation_repo import SqlAlchemyAskConversationRepository
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
-from app.infrastructure.persistence.repositories.ask_conversation_repo import SqlAlchemyAskConversationRepository
 from app.infrastructure.persistence.repositories.user_repo import SqlAlchemyUserRepository
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
@@ -276,7 +276,9 @@ async def get_conversation(
     current = await StylingService(session, current_user.id).current(conversation_id)
     return AskConversationResponse(
         conversation_id=conversation.id, title=conversation.title,
-        styling=await render_styling(session, current_user.id, current) if get_settings().ENABLE_DESIGNER_SESSIONS else None,
+        styling=(
+            await render_styling(session, current_user.id, current) if get_settings().ENABLE_DESIGNER_SESSIONS else None
+        ),
         messages=[AskConversationMessage(
             id=message.id, ask_session_id=message.ask_session_id, role=message.role,
             content=message.content, created_at=message.created_at,

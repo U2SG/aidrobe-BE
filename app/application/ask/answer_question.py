@@ -845,7 +845,9 @@ async def answer_question(
         if request_id is None:
             raise FriendlyException(error_codes.VALIDATION_ERROR, "request_id is required for design requests", 422)
         if current_styling is not None and expected_revision is None:
-            raise FriendlyException(error_codes.VALIDATION_ERROR, "expected_revision is required to continue a design", 422)
+            raise FriendlyException(
+                error_codes.VALIDATION_ERROR, "expected_revision is required to continue a design", 422
+            )
         if (expected_revision or 0) != conversation.styling_revision:
             raise conflict()
         if base_outfit_id is not None and current_styling is not None:
@@ -862,11 +864,14 @@ async def answer_question(
     local_today = local_datetime(
         turn_started_at, user_settings.timezone if user_settings is not None else None, settings.DEFAULT_TIMEZONE
     ).date()
-    base_outfit = await styling_service.owned_outfit(base_outfit_id) if designing and base_outfit_id is not None else None
+    base_outfit = (
+        await styling_service.owned_outfit(base_outfit_id) if designing and base_outfit_id is not None else None
+    )
     if designing:
         context = {**({"scene": design_constraints.scene} if design_constraints.scene else {}), **(context or {})}
         raw_constraints = design_constraints.model_dump()
-        if base_outfit is not None and base_outfit.daily_recommendation_id is not None and not raw_constraints["target_date"]:
+        if (base_outfit is not None and base_outfit.daily_recommendation_id is not None
+                and not raw_constraints["target_date"]):
             source_daily = await session.get(DailyRecommendation, base_outfit.daily_recommendation_id)
             if source_daily is not None and source_daily.user_id == user_id:
                 raw_constraints["target_date"] = max(local_today, source_daily.recommendation_date)
@@ -891,7 +896,7 @@ async def answer_question(
             raise FriendlyException(error_codes.VALIDATION_ERROR, "Invalid design context", 422) from exc
         if design_constraints.target_date is not None and design_constraints.target_date < local_today:
             raise FriendlyException(error_codes.VALIDATION_ERROR, "Design date must be today or in the future", 422)
-        context["date"] = design_constraints.target_date.isoformat() if design_constraints.target_date else local_today.isoformat()
+        context["date"] = (design_constraints.target_date or local_today).isoformat()
     # Rejection is derived from the STRUCTURED model output post-call, never from
     # substring-sniffing free text (that misfired on phrases like "不要太正式").
     # The DURABLE rejected_item_ids (persisted from a prior turn's structured
@@ -948,9 +953,13 @@ async def answer_question(
     items = _curate_candidates(pool, focused_item, max_items=_MAX_ITEMS)
     current_outfit_ids: list[uuid.UUID] = []
     if designing and (current_styling is not None or base_outfit is not None):
-        current_outfit = await styling_service.owned_outfit(current_styling.outfit_id) if current_styling else base_outfit
+        current_outfit = (
+            await styling_service.owned_outfit(current_styling.outfit_id) if current_styling else base_outfit
+        )
         assert current_outfit is not None
-        current_outfit_ids = [entry.item_id for entry in sorted(current_outfit.items, key=lambda entry: entry.display_order)]
+        current_outfit_ids = [
+            entry.item_id for entry in sorted(current_outfit.items, key=lambda entry: entry.display_order)
+        ]
         current_pieces = list(await session.scalars(select(WardrobeItem).where(
             WardrobeItem.user_id == user_id, WardrobeItem.id.in_(current_outfit_ids), WardrobeItem.deleted_at.is_(None)
         )))
@@ -1315,7 +1324,9 @@ async def answer_question(
             "item_refs": item_refs,
             "answer": sanitize_llm_text(answer_text, max_len=240),
         } if current_styling is None else {
-            "item_refs": [str(item.item_id) for item in (await styling_service.owned_outfit(current_styling.outfit_id)).items],
+            "item_refs": [
+                str(item.item_id) for item in (await styling_service.owned_outfit(current_styling.outfit_id)).items
+            ],
             "outfit_id": str(current_styling.outfit_id), "revision": current_styling.revision,
             "answer": sanitize_llm_text(answer_text, max_len=240),
         },

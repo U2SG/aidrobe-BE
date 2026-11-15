@@ -52,8 +52,8 @@ from app.infrastructure.cache.client import (
     invalidate_daily_recommendation_cache,
 )
 from app.infrastructure.cache.keys import build_daily_recommendation_cache_key
-from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit
 from app.infrastructure.persistence.models.ask_conversation import AskStylingRevision
+from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.operation_log_repo import (
@@ -68,8 +68,8 @@ from app.infrastructure.persistence.repositories.wardrobe_repo import SqlAlchemy
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import wardrobe_image_urls
-from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.ask import ReviseOutfitRequest, StylingResponse
+from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.recommendations import (
     AppliedContextResponse,
     FavoriteOutfitResponse,
@@ -593,7 +593,9 @@ async def get_today_recommendation(
         DailyRecommendation.recommendation_date == target,
         DailyRecommendation.is_current.is_(True),
     ))
-    memory_version = current_user.memory_context_reset_at.isoformat() if current_user.memory_context_reset_at else "none"
+    memory_version = (
+        current_user.memory_context_reset_at.isoformat() if current_user.memory_context_reset_at else "none"
+    )
     cache_key += f":daily={daily_identity or 'none'}:memory={memory_version}"
     try:
         cached = await redis_client.get(cache_key)

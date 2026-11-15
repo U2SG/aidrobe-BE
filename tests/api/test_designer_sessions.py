@@ -81,7 +81,9 @@ class _Designer:
         if self.change_shoes:
             brief["change_positions"] = [position("shoes", "black")]
         if self.explore:
-            brief.update(exploration=True, target_style="streetwear", preference_overrides=[{"type": "color", "value": "red"}])
+            brief.update(
+                exploration=True, target_style="streetwear", preference_overrides=[{"type": "color", "value": "red"}]
+            )
         result = await execute("update_design_brief", brief)
         assert result.content["updated"] is True
         self.preferences_after_update = result.content["preferences"]
@@ -126,7 +128,9 @@ async def _setup(
     return app, user_id, items, model, settings
 
 
-async def test_design_resume_revision_adoption_and_actions_use_one_outfit(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_design_resume_revision_adoption_and_actions_use_one_outfit(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app, user_id, items, model, _ = await _setup(db_session, monkeypatch)
     headers = {"X-User-Id": str(user_id)}
     request = {"question": "设计一套明快的搭配", "design_mode": True, "request_id": str(uuid.uuid4())}
@@ -189,7 +193,9 @@ async def test_design_resume_revision_adoption_and_actions_use_one_outfit(db_ses
         assert stale.status_code == 409
 
 
-async def test_natural_language_partial_edit_cannot_change_unrequested_slots(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_natural_language_partial_edit_cannot_change_unrequested_slots(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app, user_id, items, model, _ = await _setup(db_session, monkeypatch)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver",
                            headers={"X-User-Id": str(user_id)}) as client:
@@ -216,7 +222,9 @@ async def test_natural_language_partial_edit_cannot_change_unrequested_slots(db_
         assert {entry["item_id"] for entry in latest["outfit"]["items"]} == {str(items[i].id) for i in (0, 1, 3)}
 
 
-async def test_exploration_exception_applies_this_turn_without_rewriting_memory(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_exploration_exception_applies_this_turn_without_rewriting_memory(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app, user_id, items, model, _ = await _setup(db_session, monkeypatch)
     repository = SqlAlchemyPreferenceMemoryRepository(db_session)
     await record_preference(repository, user_id=user_id, preference_type="color", preference_value="red",
@@ -234,11 +242,15 @@ async def test_exploration_exception_applies_this_turn_without_rewriting_memory(
     assert [entry["value"] for entry in (await read_preference_memory(repository, user_id))["negative"]] == ["red"]
 
 
-async def test_flag_off_degrades_new_ask_but_rejects_design_continuation(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_flag_off_degrades_new_ask_but_rejects_design_continuation(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app, user_id, _, _, _ = await _setup(db_session, monkeypatch, enabled=False)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver",
                            headers={"X-User-Id": str(user_id)}) as client:
-        plain = await client.post("/v1/ask", json={"question": "hello", "design_mode": True, "request_id": str(uuid.uuid4())})
+        plain = await client.post("/v1/ask", json={
+            "question": "hello", "design_mode": True, "request_id": str(uuid.uuid4()),
+        })
         assert plain.status_code == 200 and plain.json()["styling"] is None
         continuation = await client.post("/v1/ask", json={
             "question": "换一件", "design_mode": True, "request_id": str(uuid.uuid4()), "expected_revision": 1,
@@ -246,7 +258,9 @@ async def test_flag_off_degrades_new_ask_but_rejects_design_continuation(db_sess
         assert continuation.status_code == 503
 
 
-async def test_base_outfit_executes_the_first_question_and_inherits_tomorrow(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_base_outfit_executes_the_first_question_and_inherits_tomorrow(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app, user_id, items, model, _ = await _setup(db_session, monkeypatch)
     tomorrow = date.today() + timedelta(days=1)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver",
@@ -276,7 +290,9 @@ async def test_base_outfit_executes_the_first_question_and_inherits_tomorrow(db_
         assert tomorrow_daily is not None and str(tomorrow_daily.outfits[0].id) == base_id
 
 
-async def test_memory_write_requires_current_evidence_and_forget_really_deletes(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_memory_write_requires_current_evidence_and_forget_really_deletes(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app, user_id, _, _, _ = await _setup(db_session, monkeypatch)
     repository = SqlAlchemyPreferenceMemoryRepository(db_session)
     await record_preference(repository, user_id=user_id, preference_type="color", preference_value="red",

@@ -89,7 +89,9 @@ class AskStylingRevision(UUIDPrimaryKeyMixin, Base):
     )
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    outfit_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("outfits.id", ondelete="CASCADE"), nullable=False, index=True)
+    outfit_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("outfits.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     request_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")

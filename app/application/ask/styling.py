@@ -40,7 +40,9 @@ def conflict(message: str = "This design changed. Reload it before editing.") ->
 
 async def lock_request(session: AsyncSession, user_id: uuid.UUID, request_id: uuid.UUID) -> None:
     digest = hashlib.sha256(f"design-request:{user_id}:{request_id}".encode()).digest()[:8]
-    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": int.from_bytes(digest, "big", signed=True)})
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"), {"key": int.from_bytes(digest, "big", signed=True)}
+    )
 
 
 class StylingService:
@@ -103,7 +105,9 @@ class StylingService:
         self, item_ids: Sequence[uuid.UUID], constraints: StylingConstraints
     ) -> list[WardrobeItem]:
         if not 2 <= len(item_ids) <= 8 or len(set(item_ids)) != len(item_ids):
-            raise FriendlyException(error_codes.VALIDATION_ERROR, "Choose a complete outfit without duplicate items", 422)
+            raise FriendlyException(
+                error_codes.VALIDATION_ERROR, "Choose a complete outfit without duplicate items", 422
+            )
         all_ids = set(item_ids) | set(constraints.locked_item_ids) | set(constraints.excluded_item_ids)
         rows = list(await self.session.scalars(select(WardrobeItem).where(
             WardrobeItem.user_id == self.user_id,
@@ -189,7 +193,9 @@ class StylingService:
             if replacement is None:
                 raise FriendlyException(error_codes.NOT_FOUND, "Replacement item not found", 404)
             if replacement.category != old.role:
-                raise FriendlyException(error_codes.VALIDATION_ERROR, "Replace a piece with one from the same slot", 422)
+                raise FriendlyException(
+                    error_codes.VALIDATION_ERROR, "Replace a piece with one from the same slot", 422
+                )
             ids[ids.index(item_id)] = replacement_id
         return await self.validate_items(ids, constraints)
 
@@ -198,8 +204,10 @@ class StylingService:
         replace: tuple[uuid.UUID, uuid.UUID] | None, locked_item_ids: list[uuid.UUID] | None,
         excluded_item_ids: list[uuid.UUID] | None,
     ) -> AskStylingRevision:
-        request_hash = fingerprint("revise", conversation_id=conversation_id, expected_revision=expected_revision,
-                                   replace=replace, locked_item_ids=locked_item_ids, excluded_item_ids=excluded_item_ids)
+        request_hash = fingerprint(
+            "revise", conversation_id=conversation_id, expected_revision=expected_revision,
+            replace=replace, locked_item_ids=locked_item_ids, excluded_item_ids=excluded_item_ids,
+        )
         if replay := await self.replay(request_id, request_hash):
             return replay
         conversation = await self.lock_conversation(conversation_id, expected_revision)
@@ -241,7 +249,9 @@ class StylingService:
         self, *, conversation_id: uuid.UUID, expected_revision: int, request_id: uuid.UUID,
         day: date | None = None, default_day: date | None = None,
     ) -> AskStylingRevision:
-        request_hash = fingerprint("adopt", conversation_id=conversation_id, expected_revision=expected_revision, date=day)
+        request_hash = fingerprint(
+            "adopt", conversation_id=conversation_id, expected_revision=expected_revision, date=day
+        )
         if replay := await self.replay(request_id, request_hash):
             return replay
         conversation = await self.lock_conversation(conversation_id, expected_revision)
@@ -252,6 +262,10 @@ class StylingService:
         outfit = await self.owned_outfit(current.outfit_id)
         await self.validate_items([item.item_id for item in outfit.items], constraints)
         target = day or constraints.target_date or default_day or utc_now().date()
+        if constraints.target_date != target:
+            constraints = constraints.model_copy(update={
+                "target_date": target, "preference_overrides": [], "exploration": False,
+            })
         daily = await self._adopt_outfit(outfit, constraints, target)
         return await self._save(conversation, outfit, constraints, request_id, request_hash, daily)
 
@@ -291,5 +305,7 @@ class StylingService:
                 raise conflict("Today's outfit changed. Reload it before replacing a piece.")
         items = await self._replacement(base, constraints, (item_id, replacement_item_id))
         outfit = await self._outfit(items, title=base.title, reason="已按你的选择更换单品，其余搭配保持不变。")
-        adopted = await self._adopt_outfit(outfit, constraints, source_daily.recommendation_date) if source_daily else None
+        adopted = (
+            await self._adopt_outfit(outfit, constraints, source_daily.recommendation_date) if source_daily else None
+        )
         return await self._save(conversation, outfit, constraints, request_id, request_hash, adopted)

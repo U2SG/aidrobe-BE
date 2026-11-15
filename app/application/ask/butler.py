@@ -68,7 +68,9 @@ class _BriefArgs(_ToolArgs):
         default_factory=list, max_length=8,
         description="Existing outfit pieces the user wants to change; retain all others",
     )
-    redesign_all: bool = Field(default=False, description="True only for an explicit request to redesign the whole look")
+    redesign_all: bool = Field(
+        default=False, description="True only for an explicit request to redesign the whole look"
+    )
     preference_overrides: list[PreferenceOverride] | None = Field(default=None, max_length=8)
     when: str | None = None
     scene: str | None = Field(default=None, max_length=32)
@@ -263,8 +265,10 @@ class AskButler:
             brief["notes"] = [sanitize_llm_text(note, max_len=240) for note in self.design_constraints.notes]
             brief["current_positions"] = [self._known_positions[ident] for ident in self.current_outfit_ids
                                           if ident in self._known_positions]
-            brief["locked_positions"] = [self._known_positions[ident] for ident in self.design_constraints.locked_item_ids
-                                         if ident in self._known_positions]
+            brief["locked_positions"] = [
+                self._known_positions[ident] for ident in self.design_constraints.locked_item_ids
+                if ident in self._known_positions
+            ]
             details += "\nDesign session: " + json.dumps(brief, ensure_ascii=False)
             details += ("\nCall update_design_brief before searching or validating. Use a quote from the current user "
                         "message. Preserve existing pieces except change_positions; never change a locked piece. "
@@ -325,7 +329,9 @@ class AskButler:
             self.effective_preferences = await read_preference_memory(
                 SqlAlchemyPreferenceMemoryRepository(self.session), self.user_id,
                 scene=candidate.scene, target_date=candidate.target_date,
-                overrides=[entry.model_dump(mode="json", exclude_none=True) for entry in candidate.preference_overrides],
+                overrides=[
+                    entry.model_dump(mode="json", exclude_none=True) for entry in candidate.preference_overrides
+                ],
             )
         return ToolResult({"updated": True, "preferences": self.effective_preferences,
                            "retained_positions": [self._known_positions[ident] for ident in self.preserved_ids
@@ -390,7 +396,9 @@ class AskButler:
             ).limit(80 if self.design_constraints is not None else args.limit)
         ))
         if self.design_constraints is not None:
-            attributes = {"color": "color_main", "material": "material", "fit": "fit_status", "footwear": "sub_category"}
+            attributes = {
+                "color": "color_main", "material": "material", "fit": "fit_status", "footwear": "sub_category"
+            }
             negatives = self.effective_preferences.get("negative", [])
             desired_style = (self.design_constraints.target_style or "").casefold()
 
