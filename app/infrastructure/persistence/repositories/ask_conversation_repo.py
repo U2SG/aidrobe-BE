@@ -45,10 +45,14 @@ class SqlAlchemyAskConversationRepository:
         return cast(
             AskConversationState | None,
             await self.session.scalar(
-                select(AskConversationState).where(
+                select(AskConversationState)
+                .where(
                     AskConversationState.conversation_id == conversation_id,
                     AskConversationState.user_id == user_id,
                 )
+                # A different request may have revoked source context and
+                # cleared this row since it entered the session's identity map.
+                .execution_options(populate_existing=True)
             ),
         )
 

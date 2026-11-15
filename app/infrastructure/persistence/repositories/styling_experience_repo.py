@@ -61,9 +61,9 @@ class SqlAlchemyStylingExperienceRepository:
         )))
 
     async def latest_worn_date(self, user_id: uuid.UUID, outfit_id: uuid.UUID, *, through: date) -> date | None:
-        return await self.session.scalar(select(func.max(WearHistory.worn_date)).where(
+        return cast(date | None, await self.session.scalar(select(func.max(WearHistory.worn_date)).where(
             WearHistory.user_id == user_id, WearHistory.outfit_id == outfit_id, WearHistory.worn_date <= through,
-        ))
+        )))
 
     async def reset_context(self, user: User, at: datetime) -> None:
         await SqlAlchemyPreferenceMemoryRepository(self.session).reset_context(user, at)
