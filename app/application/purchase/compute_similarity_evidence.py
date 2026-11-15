@@ -108,6 +108,15 @@ OWNED_STATUSES: tuple[str, ...] = (
 )
 
 
+def _owned_garment_type(item: WardrobeItem) -> str | None:
+    # A recognized user title takes precedence over stale AI names and categories.
+    if item.name_source == "user":
+        user_type = garment_type(item.title)
+        if user_type is not None:
+            return user_type
+    return garment_type(item.canonical_name, item.sub_category, item.title)
+
+
 async def compute_similarity_evidence(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -144,11 +153,7 @@ async def compute_similarity_evidence(
             category=item.category,
             color_main=item.color_main or "",
             material=item.material,
-            garment_type=(
-                garment_type(item.title, item.sub_category)
-                if item.name_source == "user"
-                else garment_type(item.canonical_name, item.sub_category, item.title)
-            ),
+            garment_type=_owned_garment_type(item),
             style_tags=normalize_style_tags(item.style_tags),
             wear_scenes=tuple(sorted(scenes.get(item.id, set()))),
         )
