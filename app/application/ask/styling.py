@@ -261,7 +261,15 @@ class StylingService:
         constraints = StylingConstraints.model_validate(current.constraints)
         outfit = await self.owned_outfit(current.outfit_id)
         await self.validate_items([item.item_id for item in outfit.items], constraints)
-        target = day or constraints.target_date or default_day or utc_now().date()
+        # Default to the user's local day. A draft resumed after its planned day
+        # must not silently land in an old Today recommendation.
+        local_today = default_day or utc_now().date()
+        if day is not None and day < local_today:
+            raise FriendlyException(
+                error_codes.VALIDATION_ERROR, "Choose today or a future date to adopt this outfit", 422
+            )
+        saved_day = constraints.target_date
+        target = day or (saved_day if saved_day is not None and saved_day >= local_today else local_today)
         if constraints.target_date != target:
             constraints = constraints.model_copy(update={
                 "target_date": target, "preference_overrides": [], "exploration": False,
