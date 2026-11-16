@@ -59,6 +59,7 @@ class _Designer:
         self.explore = False
         self.clarify = False
         self.lock_top = False
+        self.adapt_shoes_to_wear_feedback = False
         self.seen_briefs: list[dict[str, Any]] = []
         self.preferences_after_update: dict[str, Any] = {}
         self.seen_wear_feedback: list[list[dict[str, Any]]] = []
@@ -89,10 +90,18 @@ class _Designer:
                         if item["category"] == category and item["color_main"] == color)
 
         brief: dict[str, Any] = {"evidence_text": question, "goal": question}
+        shoes = "brown" if self.change_shoes else "black"
         if self.lock_top:
             brief["locked_positions"] = [position("top", "white")]
         if self.change_shoes:
             brief["change_positions"] = [position("shoes", "black")]
+        if self.adapt_shoes_to_wear_feedback and self.seen_wear_feedback[-1]:
+            reason_tags = self.seen_wear_feedback[-1][0]["reason_tags"]
+            if "too_warm" in reason_tags:
+                brief["change_positions"] = [position("shoes", "black")]
+                shoes = "brown"
+            elif "too_cold" in reason_tags:
+                brief["change_positions"] = [position("shoes", "brown")]
         if self.explore:
             brief.update(
                 exploration=True, target_style="streetwear", preference_overrides=[{"type": "color", "value": "red"}]
@@ -105,7 +114,6 @@ class _Designer:
                 "answer": "条件已经记下，想要更正式还是更轻松一点？", "reply_kind": "general", "referenced_items": [],
             }, ensure_ascii=False), 7)
         top = "red" if self.explore or self.change_unrequested_top else "white"
-        shoes = "brown" if self.change_shoes else "black"
         selected = [position("top", top), position("bottom", "black"), position("shoes", shoes)]
         validation = await execute("validate_outfit", {"positions": selected})
         assert validation.content["valid"] is (not self.change_unrequested_top)
@@ -226,7 +234,8 @@ async def test_design_resume_revision_adoption_and_actions_use_one_outfit(
 async def test_next_design_uses_corrected_feedback_from_the_original_outfit(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app, user_id, _, model, _ = await _setup(db_session, monkeypatch)
+    app, user_id, items, model, _ = await _setup(db_session, monkeypatch)
+    model.adapt_shoes_to_wear_feedback = True
     headers = {"X-User-Id": str(user_id)}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver", headers=headers) as client:
         original = (await client.post("/v1/ask", json={
@@ -245,6 +254,7 @@ async def test_next_design_uses_corrected_feedback_from_the_original_outfit(
         assert next_version.status_code == 200, next_version.text
         second = next_version.json()["styling"]
         assert second["revision"] == 2 and second["outfit"]["outfit_id"] != outfit_id
+        assert {item["item_id"] for item in second["outfit"]["items"]} == {str(items[i].id) for i in (0, 1, 3)}
         assert model.seen_wear_feedback[-1] == [{
             "version": 1, "rating": "dislike", "reason_tags": ["too_warm"], "note": warm["note"],
         }]
@@ -256,6 +266,9 @@ async def test_next_design_uses_corrected_feedback_from_the_original_outfit(
             "conversation_id": conversation_id, "expected_revision": 2, "request_id": str(uuid.uuid4()),
         })
         assert retry.status_code == 200, retry.text
+        revised = retry.json()["styling"]
+        assert revised["revision"] == 3
+        assert {item["item_id"] for item in revised["outfit"]["items"]} == {str(item.id) for item in items[:3]}
         assert model.seen_wear_feedback[-1] == [{
             "version": 1, "rating": "dislike", "reason_tags": ["too_cold"], "note": cool["note"],
         }]

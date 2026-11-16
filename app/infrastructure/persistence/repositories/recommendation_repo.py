@@ -570,11 +570,12 @@ class SqlAlchemyRecommendationRepository:
         return await self.session.scalar(stmt) is not None
 
     async def get_wear_feedback_for_user(self, outfit_id: uuid.UUID, user_id: uuid.UUID) -> OutfitFeedback | None:
-        return await self.session.scalar(select(OutfitFeedback).where(
+        result = await self.session.scalars(select(OutfitFeedback).where(
             OutfitFeedback.outfit_id == outfit_id,
             OutfitFeedback.user_id == user_id,
             OutfitFeedback.feedback_type == WEAR_FEEDBACK_TYPE,
         ))
+        return result.first()
 
     async def list_design_wear_feedback(
         self, user_id: uuid.UUID, conversation_id: uuid.UUID,
