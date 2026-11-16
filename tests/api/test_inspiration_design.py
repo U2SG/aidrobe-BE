@@ -31,6 +31,7 @@ async def test_queued_inspiration_uses_visual_palette_to_save_and_restore_a_draf
     request = {
         "question": "用这张灵感图搭一套苏州两天旅行穿搭",
         "inspiration_id": str(source.id),
+        "inspiration_only": True,
         "request_id": str(uuid.uuid4()),
         "constraints": {
             "locked_item_ids": [str(items[1].id)],
@@ -61,6 +62,42 @@ async def test_queued_inspiration_uses_visual_palette_to_save_and_restore_a_draf
     await db_session.refresh(source)
     assert source.learn_status == "learned"
     assert source.learned_summary == analysis.return_value
+
+
+async def test_custom_inspiration_question_supplies_visual_context_and_waits_for_verification(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, user_id, _, model, _ = await _setup(db_session, monkeypatch)
+    source = UserStyleProfile(
+        user_id=user_id, source_type="inspiration_image", learn_status="learned",
+        image_url="https://cdn.example.com/private-reference.jpg",
+        learned_summary={"style_tags": ["minimal"], "color_palette": ["red", "black"], "source": "vision"},
+    )
+    db_session.add(source)
+    await db_session.commit()
+    # A clarification must never turn into an automatically generated outfit.
+    model.clarify = True
+    provider = AsyncMock(wraps=model.ask_with_tools)
+    monkeypatch.setattr(model, "ask_with_tools", provider)
+    question = "参考这张图搭配，但不要红色"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver",
+                           headers={"X-User-Id": str(user_id)}) as client:
+        response = await client.post("/v1/ask", json={
+            "question": question,
+            "inspiration_id": str(source.id),
+            "request_id": str(uuid.uuid4()),
+        })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["styling"] is None
+    assert body["design_brief"]["constraints"]["inspiration_id"] == str(source.id)
+    assert body["design_brief"]["constraints"]["goal"] == question
+    provider.assert_awaited_once()
+    prompt, user_text, *_ = provider.call_args.args
+    assert user_text == question
+    assert 'Reference: {"styles": ["minimal"], "palette": ["black", "red"]}' in prompt
+    assert str(source.id) not in prompt
+    assert "private-reference.jpg" not in prompt
 
 
 async def test_foreign_inspiration_cannot_start_a_design(

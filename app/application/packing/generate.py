@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ask.design_types import StylingConstraints
-from app.application.ask.styling import StylingService, conflict
+from app.application.ask.styling import StylingService, conflict, fingerprint, lock_request
 from app.application.ports.weather import WeatherInfo, WeatherPort
 from app.common import error_codes
 from app.common.exceptions import FriendlyException
@@ -57,6 +57,7 @@ SCENE_ALIASES: dict[str, str] = {
 DEFAULT_CATEGORIES: list[str] = ["top", "bottom", "shoes"]
 
 RECENT_WEAR_DAYS = 7
+_REQUEST_FINGERPRINT = "_request_fingerprint"
 
 
 def _categories_for_scene(scene: str) -> list[str]:
@@ -75,6 +76,12 @@ class _DesignSource:
     expected_revision: int
 
 
+@dataclass(frozen=True)
+class _PackingRequest:
+    packing_list_id: uuid.UUID
+    fingerprint: str
+
+
 def _design_trip_day(scene: str | None, scenes: list[str], days: int) -> int:
     if scene is None:
         return 1
@@ -83,7 +90,10 @@ def _design_trip_day(scene: str | None, scenes: list[str], days: int) -> int:
         key = trip_scene.lower()
         if SCENE_ALIASES.get(key, key) == design_scene:
             return day
-    raise conflict("Include a trip occasion that matches the saved outfit.")
+    raise FriendlyException(
+        error_codes.VALIDATION_ERROR, "Include a trip occasion that matches the saved outfit.", 422,
+        data={"reason": "packing_scene_mismatch"},
+    )
 
 
 class GeneratePackingList:
@@ -107,6 +117,7 @@ class GeneratePackingList:
         *,
         conversation_id: uuid.UUID | None = None,
         expected_revision: int | None = None,
+        request_id: uuid.UUID | None = None,
     ) -> PackingList:
         if days < 1:
             raise FriendlyException(
@@ -118,6 +129,29 @@ class GeneratePackingList:
                 "scenes must not be empty",
                 status_code=422,
             )
+
+        if conversation_id is None and (expected_revision is not None or request_id is not None):
+            raise FriendlyException(error_codes.VALIDATION_ERROR, "Provide a design conversation", 422)
+
+        request = None
+        if request_id is not None:
+            request = _PackingRequest(
+                uuid.uuid5(uuid.NAMESPACE_URL, f"aidrobe:packing-list:{user_id}:{request_id}"),
+                fingerprint(
+                    "design-packing", conversation_id=conversation_id, expected_revision=expected_revision,
+                    destination=destination, days=days, scenes=scenes, weather_hint=weather_hint,
+                    departure_date=departure_date,
+                ),
+            )
+            await lock_request(self.repository.session, user_id, request.packing_list_id)
+            existing = await self.repository.get_for_user(request.packing_list_id, user_id)
+            if existing is not None:
+                if (existing.plan_json or {}).get(_REQUEST_FINGERPRINT) != request.fingerprint:
+                    raise FriendlyException(
+                        error_codes.STATE_CONFLICT, "request_id was already used for a different packing list", 409,
+                        data={"reason": "packing_request_conflict"},
+                    )
+                return existing
 
         source = await self._resolve_design_source(user_id, conversation_id, expected_revision)
         candidates = await self.repository.list_candidate_items(user_id)
@@ -136,7 +170,7 @@ class GeneratePackingList:
         # so both views stay consistent. Flag off → the legacy round-robin below.
         if get_settings().ENABLE_PACKING_PLANNER:
             return await self._generate_with_planner(
-                user_id, destination, days, scenes, weather_hint, departure_date, candidates, locale, source
+                user_id, destination, days, scenes, weather_hint, departure_date, candidates, locale, source, request,
             )
 
         by_category: dict[str, list[WardrobeItem]] = {}
@@ -182,8 +216,6 @@ class GeneratePackingList:
         self, user_id: uuid.UUID, conversation_id: uuid.UUID | None, expected_revision: int | None,
     ) -> _DesignSource | None:
         if conversation_id is None:
-            if expected_revision is not None:
-                raise FriendlyException(error_codes.VALIDATION_ERROR, "Provide a design conversation", 422)
             return None
         settings = get_settings()
         if not settings.ENABLE_DESIGNER_SESSIONS or not settings.ENABLE_PACKING_PLANNER:
@@ -238,6 +270,7 @@ class GeneratePackingList:
         candidates: list[WardrobeItem],
         locale: str,
         source: _DesignSource | None,
+        request: _PackingRequest | None,
     ) -> PackingList:
         # Lazy import breaks the planner<->generate import cycle (planner imports
         # SCENE_CATEGORIES from this module at load time).
@@ -272,7 +305,10 @@ class GeneratePackingList:
             travel_date = (departure_date or date.today()) + timedelta(days=design_day - 1)
             trip_season = current_season(travel_date)
             if any(not in_season(season_tags_of(item.season_tags), trip_season) for item in design_items):
-                raise conflict("Update the saved outfit for the trip's season.")
+                raise FriendlyException(
+                    error_codes.VALIDATION_ERROR, "Update the saved outfit for the trip's season.", 422,
+                    data={"reason": "packing_season_mismatch"},
+                )
             design_ids = {item.id for item in design_items}
             excluded_ids = set(constraints.excluded_item_ids)
             candidates = [
@@ -322,7 +358,11 @@ class GeneratePackingList:
             for daily in plan.daily_outfits
             for item_id in daily.item_ids
         ]
+        plan_json = plan.to_dict()
+        if request is not None:
+            plan_json[_REQUEST_FINGERPRINT] = request.fingerprint
         packing_list = PackingList(
+            id=request.packing_list_id if request is not None else uuid.uuid4(),
             user_id=user_id,
             conversation_id=source.outfit_revision.conversation_id if source else None,
             styling_revision_id=source.outfit_revision.id if source else None,
@@ -331,7 +371,7 @@ class GeneratePackingList:
             scenes=list(scenes),
             departure_date=departure_date,
             items=selected,
-            plan_json=plan.to_dict(),
+            plan_json=plan_json,
             status="draft",
         )
         return await self.repository.add(packing_list)
@@ -374,11 +414,11 @@ async def describe_packing_list(
             day_pieces.append(item_id)
 
     item_ids = {item_id for pieces in by_day.values() for item_id in pieces}
-    items = await session.scalars(select(WardrobeItem).where(
+    items: list[WardrobeItem] = list(await session.scalars(select(WardrobeItem).where(
         WardrobeItem.user_id == packing_list.user_id,
         WardrobeItem.id.in_(item_ids),
         WardrobeItem.deleted_at.is_(None),
-    )) if item_ids else []
+    ))) if item_ids else []
     descriptions: dict[uuid.UUID, PackedItemDescription] = {
         item.id: {
             "item_id": str(item.id),
@@ -464,7 +504,10 @@ class UpdatePackingList:
             # inconsistent items-vs-plan response. Only the planned selection
             # counts: toggling `packed` / editing `notes` keeps the plan.
             if _selection(items) != _selection(cast(list[dict[str, object]], packing_list.items or [])):
-                packing_list.plan_json = None
+                request_fingerprint = (packing_list.plan_json or {}).get(_REQUEST_FINGERPRINT)
+                packing_list.plan_json = (
+                    {_REQUEST_FINGERPRINT: request_fingerprint} if request_fingerprint is not None else None
+                )
             packing_list.items = items
         if status is not None:
             packing_list.status = status

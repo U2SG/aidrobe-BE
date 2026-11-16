@@ -23,6 +23,7 @@ class CreatePackingListRequest(BaseModel):
     departure_date: date | None = None
     conversation_id: uuid.UUID | None = None
     expected_revision: Annotated[int, Field(ge=1)] | None = None
+    request_id: uuid.UUID | None = None
 
 
 class UpdatePackingListRequest(BaseModel):

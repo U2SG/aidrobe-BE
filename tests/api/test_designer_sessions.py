@@ -270,6 +270,15 @@ async def test_saved_packing_list_returns_to_the_original_design(
         assert reopened.json()["messages"][-1]["content"] == answer["answer"]
         assert reopened.json()["styling"]["outfit"]["outfit_id"] == saved_outfit
 
+        model.change_shoes = True
+        edited = await client.post("/v1/ask", json={
+            **question, "request_id": str(uuid.uuid4()),
+            "question": "看一下打包清单，把这套的鞋换成棕色那双",
+        })
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["styling"]["revision"] == 2 and model.calls == calls + 1
+        assert (await client.get(outfit_path)).json()["packing_list"] == packing
+
 
 async def test_natural_language_partial_edit_cannot_change_unrequested_slots(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,

@@ -142,13 +142,18 @@ def pick_inspiration_outfit(
     required = set(constraints.locked_item_ids)
     excluded = set(constraints.excluded_item_ids)
     buckets: dict[str, list[WardrobeItem]] = {category: [] for category in _CORE_CATEGORIES}
+    locked_extras: list[WardrobeItem] = []
     season = current_season(target)
     for item in items:
         if (
-            item.category in buckets and item.id not in excluded and item.status == WardrobeItemStatus.WEARABLE
-            and item.fit_status != FitStatus.NO_LONGER_FITS and in_season(season_tags_of(item.season_tags), season)
+            item.id in excluded or item.status != WardrobeItemStatus.WEARABLE
+            or item.fit_status == FitStatus.NO_LONGER_FITS or not in_season(season_tags_of(item.season_tags), season)
         ):
+            continue
+        if item.category in buckets:
             buckets[item.category].append(item)
+        elif item.id in required:
+            locked_extras.append(item)
     for category, choices in buckets.items():
         locked = [item for item in choices if item.id in required]
         if locked:
@@ -160,6 +165,7 @@ def pick_inspiration_outfit(
         return len(tags & styles)
 
     matches = {item.id: style_matches(item) for item in items}
+    colors_by_id = {item.id: item.color_main.lower() for item in items}
     outerwear = buckets[Category.OUTERWEAR]
     layers: list[WardrobeItem | None] = [*outerwear, None]
     occasion = FitScene(constraints.scene) if constraints.scene else None
@@ -167,15 +173,15 @@ def pick_inspiration_outfit(
     best_score = (-1, -1, -1, -1)
     for core in ((Category.TOP, Category.BOTTOM, Category.SHOES), (Category.DRESS, Category.SHOES)):
         for combo in product(*(buckets[category] for category in core), layers):
-            look = [item for item in combo if item is not None]
-            if not required.issubset(item.id for item in look) or _outfit_issues(look, target, occasion, weather):
+            look = [item for item in combo if item is not None] + locked_extras
+            if len(look) > 8 or not required.issubset(item.id for item in look):
                 continue
-            colors = [item.color_main.lower() for item in look]
+            colors = [colors_by_id[item.id] for item in look]
             score = (
                 len(set(colors) & palette), sum(color in palette for color in colors),
                 sum(matches[item.id] for item in look), -len(look),
             )
-            if score > best_score:
+            if score > best_score and not _outfit_issues(look, target, occasion, weather):
                 best = look
                 best_score = score
     return best

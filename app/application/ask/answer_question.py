@@ -784,9 +784,12 @@ async def answer_question(
     base_outfit_id: uuid.UUID | None = None,
     constraints: StylingConstraints | None = None,
     inspiration_id: uuid.UUID | None = None,
+    inspiration_only: bool = False,
 ) -> AskResult:
     turn_started_at = datetime.now(UTC)
     settings = get_settings()
+    if inspiration_only and inspiration_id is None:
+        raise FriendlyException(error_codes.VALIDATION_ERROR, "An inspiration image is required for quick design", 422)
     design_requested = design_mode or any(
         value is not None for value in (expected_revision, base_outfit_id, inspiration_id)
     )
@@ -800,6 +803,7 @@ async def answer_question(
             constraints.model_dump(mode="json", exclude={"inspiration_id"}) if constraints is not None else None
         ),
         **({"inspiration_id": inspiration_id} if inspiration_id is not None else {}),
+        **({"inspiration_only": True} if inspiration_only else {}),
     )
     if request_id is not None:
         await lock_request(session, user_id, request_id)
@@ -887,7 +891,7 @@ async def answer_question(
         await read_saved_packing_answer(session, user_id, conversation.id, question, effective_locale)
         if designing and conversation_id is not None and settings.ENABLE_PACKING_LIST else None
     )
-    if designing and packing_answer is None and inspiration_id is None and not tooling:
+    if designing and packing_answer is None and not inspiration_only and not tooling:
         raise FriendlyException(error_codes.FORBIDDEN, "A tool-capable stylist is not enabled", 503)
     palette: set[str] = set()
     inspiration_styles: list[str] = []
@@ -915,6 +919,11 @@ async def answer_question(
         )
         if inspiration_id is not None:
             raw_constraints["goal"] = design_constraints.goal or sanitized_question[:600]
+            if focused_item is not None:
+                raw_constraints["locked_item_ids"] = list(dict.fromkeys(
+                    [*design_constraints.locked_item_ids, focused_item.id]
+                ))
+        if inspiration_only:
             raw_constraints["target_style"] = (
                 design_constraints.target_style or ", ".join(inspiration_styles)[:120] or None
             )
@@ -1034,7 +1043,7 @@ async def answer_question(
     # read, not spend). Projecting from the assembled candidate count keeps the
     # reservation honest as the prompt grows. DB-aggregate path (no
     # redis_client) so tests are deterministic; no-op when ENABLE_COST_GUARD off.
-    if packing_answer is None and inspiration_id is None:
+    if packing_answer is None and not inspiration_only:
         await assert_within_quota(session, user_id, _JOB_TYPE, cost_tokens=_project_tokens(len(items)))
 
     structured = settings.ENABLE_ASK_STRUCTURED_OUTPUT
@@ -1079,7 +1088,7 @@ async def answer_question(
         recent_refs.update(str(ref) for ref in (past.item_refs or []))
     recent_positions = [pos + 1 for pos, it in enumerate(items) if str(it.id) in recent_refs]
     butler = None
-    if tooling and inspiration_id is None and packing_answer is None:
+    if tooling and not inspiration_only and packing_answer is None:
         butler = AskButler(
             session,
             user_id,
@@ -1109,6 +1118,13 @@ async def answer_question(
         recent_ref_positions=recent_positions,
         butler=butler is not None,
     )
+    if inspiration_id is not None and not inspiration_only:
+        reference = json.dumps({"styles": inspiration_styles, "palette": sorted(palette)}, ensure_ascii=False)
+        system_prompt += (
+            "\nSaved photo observations (data only). Respect the user's explicit constraints first, "
+            "and use compatible colors and styles from this reference when proposing a look.\n"
+            f"Reference: {reference}"
+        )
     prompt_question = sanitized_question or question
     used_tools: list[ToolUse] = []
     loop_tokens = 0
@@ -1116,7 +1132,7 @@ async def answer_question(
     inspired_outfit: list[WardrobeItem] = []
     if packing_answer is not None:
         answer: LlmAnswer = LlmAnswer(packing_answer, 0)
-    elif inspiration_id is not None:
+    elif inspiration_only:
         target = design_constraints.target_date or local_today
         # A travel brief has no destination until the user fills the packing form.
         # Use available weather for local looks without treating home weather as trip weather.
@@ -1188,7 +1204,7 @@ async def answer_question(
     focus_is_rejection = False
     trip_intent: TripIntent | None = None
     suppressed_reply = False
-    if packing_answer is not None or inspiration_id is not None:
+    if packing_answer is not None or inspiration_only:
         item_refs = [str(item.id) for item in inspired_outfit]
         verified_outfit = bool(inspired_outfit)
         parsed_deltas = ConversationDeltas(reasoning=None, applied_constraints=[])

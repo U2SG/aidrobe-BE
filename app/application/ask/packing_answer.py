@@ -10,6 +10,10 @@ from app.common.locale import lang_subtag
 _LIST_NAMES = ("打包清单", "打包单", "行李清单", "packing list", "packing plan")
 _SAVED_REFERENCES = ("刚才", "刚保存", "已保存", "这份", "刚生成", "saved", "actual", "existing")
 _READ_REQUESTS = ("读", "看", "列", "哪些", "什么", "read", "show", "tell", "what", "which")
+_EDIT_REQUESTS = (
+    "换成", "换掉", "帮我换", "替换", "调整", "删除", "去掉", "加上", "重新排", "重排", "重新生成",
+    "replace ", "swap ", "change ", "remove ", "add ", "update ", "redo ",
+)
 
 
 async def read_saved_packing_answer(
@@ -19,7 +23,10 @@ async def read_saved_packing_answer(
     refers_to_list = any(name in text for name in _LIST_NAMES) or (
         "清单" in text and any(reference in text for reference in _SAVED_REFERENCES)
     )
-    if not refers_to_list or not any(request in text for request in _READ_REQUESTS):
+    if (
+        not refers_to_list or not any(request in text for request in _READ_REQUESTS)
+        or any(request in text for request in _EDIT_REQUESTS)
+    ):
         return None
     packing = await load_conversation_packing_list(session, user_id, conversation_id)
     if packing is None:

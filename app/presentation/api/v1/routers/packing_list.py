@@ -55,7 +55,7 @@ def render_packing_list(packing_list: PackingList) -> PackingListResponse:
     plan_json = cast("dict[str, object] | None", packing_list.plan_json)
     plan = (
         PackingPlan.model_validate(plan_json)
-        if plan_json and get_settings().ENABLE_PACKING_PLANNER
+        if plan_json and "summary" in plan_json and get_settings().ENABLE_PACKING_PLANNER
         else None
     )
     return PackingListResponse(
@@ -90,6 +90,7 @@ async def create_packing_list(
         await resolve_user_locale(session, current_user.id),
         conversation_id=payload.conversation_id,
         expected_revision=payload.expected_revision,
+        request_id=payload.request_id,
     )
     return render_packing_list(packing_list)
 

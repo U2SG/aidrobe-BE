@@ -126,6 +126,7 @@ async def ask(
         expected_revision=payload.expected_revision,
         base_outfit_id=payload.base_outfit_id,
         inspiration_id=payload.inspiration_id,
+        inspiration_only=payload.inspiration_only,
         constraints=payload.constraints,
     )
     # Reuse the locale answer_question already resolved (request > settings >

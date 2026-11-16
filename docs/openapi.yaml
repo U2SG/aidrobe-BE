@@ -5338,6 +5338,11 @@ components:
             format: uuid
           - type: 'null'
           title: Inspiration Id
+        inspiration_only:
+          type: boolean
+          title: Inspiration Only
+          description: Start a draft directly from the saved image.
+          default: false
         constraints:
           anyOf:
           - $ref: '#/components/schemas/StylingConstraints'
@@ -6437,6 +6442,12 @@ components:
             minimum: 1.0
           - type: 'null'
           title: Expected Revision
+        request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Request Id
       type: object
       required:
       - days

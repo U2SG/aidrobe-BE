@@ -37,6 +37,7 @@ class AskRequest(BaseModel):
     expected_revision: int | None = Field(default=None, ge=0)
     base_outfit_id: uuid.UUID | None = None
     inspiration_id: uuid.UUID | None = None
+    inspiration_only: bool = Field(default=False, description="Start a draft directly from the saved image.")
     constraints: StylingConstraints | None = None
 
 

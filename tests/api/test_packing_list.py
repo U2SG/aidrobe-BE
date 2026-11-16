@@ -425,14 +425,14 @@ async def test_linked_trip_restores_the_actual_saved_selection(
         title="Travel outfit", reason="For two days in Suzhou",
     )
     headers = {"X-User-Id": str(user_id)}
+    request = {
+        "destination": "Suzhou", "days": 2, "scenes": ["casual"],
+        "conversation_id": str(conversation.id), "expected_revision": revision.revision,
+        "request_id": str(uuid.uuid4()),
+    }
     app = _build_app(db_session)
     async with _client(app) as client:
-        created = await client.post(
-            "/v1/packing-lists", headers=headers, json={
-                "destination": "Suzhou", "days": 2, "scenes": ["casual"],
-                "conversation_id": str(conversation.id), "expected_revision": revision.revision,
-            },
-        )
+        created = await client.post("/v1/packing-lists", headers=headers, json=request)
         assert created.status_code == 200, created.text
         trip = created.json()
         trip_id = trip["packing_list_id"]
@@ -461,6 +461,16 @@ async def test_linked_trip_restores_the_actual_saved_selection(
         )
         assert patched.status_code == 200, patched.text
         assert patched.json()["plan"] is None
+
+        retried = await client.post("/v1/packing-lists", headers=headers, json=request)
+        assert retried.status_code == 200, retried.text
+        assert retried.json() == patched.json()
+        different_trip = await client.post(
+            "/v1/packing-lists", headers=headers, json={**request, "destination": "Hangzhou"},
+        )
+        assert different_trip.status_code == 409
+        assert different_trip.json()["data"]["reason"] == "packing_request_conflict"
+
         standalone = await client.post(
             "/v1/packing-lists", headers=headers, json={"days": 1, "scenes": ["casual"]},
         )
@@ -498,10 +508,13 @@ async def test_linked_trip_requires_owned_current_saved_outfit(
         empty = await client.post("/v1/packing-lists", headers=owner_headers, json=payload)
         assert empty.status_code == 409
 
-        item_ids = [(await _seed_item(db_session, owner_id, slot)).id for slot in ("top", "bottom", "shoes")]
+        top = await _seed_item(db_session, owner_id, "top")
+        top.season_tags = {"tags": ["winter"]}
+        bottom = await _seed_item(db_session, owner_id, "bottom")
+        shoes = await _seed_item(db_session, owner_id, "shoes")
         revision = await styling.save_draft(
-            conversation_id=conversation.id, expected_revision=0, item_ids=item_ids,
-            constraints=StylingConstraints(), request_id=uuid.uuid4(), request_fingerprint="saved-outfit",
+            conversation_id=conversation.id, expected_revision=0, item_ids=[top.id, bottom.id, shoes.id],
+            constraints=StylingConstraints(scene="travel"), request_id=uuid.uuid4(), request_fingerprint="saved-outfit",
             title="Travel outfit", reason="Test",
         )
         stale = await client.post(
@@ -509,6 +522,16 @@ async def test_linked_trip_requires_owned_current_saved_outfit(
             json={**payload, "expected_revision": revision.revision + 1},
         )
         assert stale.status_code == 409
+        wrong_scene = await client.post(
+            "/v1/packing-lists", headers=owner_headers, json={**payload, "scenes": ["business"]},
+        )
+        assert wrong_scene.status_code == 422
+        assert wrong_scene.json()["data"]["reason"] == "packing_scene_mismatch"
+        wrong_season = await client.post(
+            "/v1/packing-lists", headers=owner_headers, json={**payload, "departure_date": "2026-07-01"},
+        )
+        assert wrong_season.status_code == 422
+        assert wrong_season.json()["data"]["reason"] == "packing_season_mismatch"
 
 
 async def test_planner_off_leaves_plan_null(
