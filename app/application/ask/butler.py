@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
+from itertools import product
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
@@ -131,6 +132,53 @@ def _outfit_issues(
         if occasion == FitScene.CASUAL and mean > CASUAL_FORMALITY:
             return {"error": "too formal"}
     return {}
+
+
+def pick_inspiration_outfit(
+    items: list[WardrobeItem], constraints: StylingConstraints, *, target: date,
+    weather: WeatherInfo | None, palette: set[str], styles: set[str],
+) -> list[WardrobeItem]:
+    """Rank complete wardrobe looks by the saved photo's visual signals."""
+    required = set(constraints.locked_item_ids)
+    excluded = set(constraints.excluded_item_ids)
+    buckets: dict[str, list[WardrobeItem]] = {category: [] for category in _CORE_CATEGORIES}
+    season = current_season(target)
+    for item in items:
+        if (
+            item.category in buckets and item.id not in excluded and item.status == WardrobeItemStatus.WEARABLE
+            and item.fit_status != FitStatus.NO_LONGER_FITS and in_season(season_tags_of(item.season_tags), season)
+        ):
+            buckets[item.category].append(item)
+    for category, choices in buckets.items():
+        locked = [item for item in choices if item.id in required]
+        if locked:
+            buckets[category] = locked
+
+    def style_matches(item: WardrobeItem) -> int:
+        raw = (item.style_tags or {}).get("tags")
+        tags = {tag.lower() for tag in raw if isinstance(tag, str)} if isinstance(raw, list) else set()
+        return len(tags & styles)
+
+    matches = {item.id: style_matches(item) for item in items}
+    outerwear = buckets[Category.OUTERWEAR]
+    layers: list[WardrobeItem | None] = [*outerwear, None]
+    occasion = FitScene(constraints.scene) if constraints.scene else None
+    best: list[WardrobeItem] = []
+    best_score = (-1, -1, -1, -1)
+    for core in ((Category.TOP, Category.BOTTOM, Category.SHOES), (Category.DRESS, Category.SHOES)):
+        for combo in product(*(buckets[category] for category in core), layers):
+            look = [item for item in combo if item is not None]
+            if not required.issubset(item.id for item in look) or _outfit_issues(look, target, occasion, weather):
+                continue
+            colors = [item.color_main.lower() for item in look]
+            score = (
+                len(set(colors) & palette), sum(color in palette for color in colors),
+                sum(matches[item.id] for item in look), -len(look),
+            )
+            if score > best_score:
+                best = look
+                best_score = score
+    return best
 
 
 def _search_fields(item: WardrobeItem) -> dict[str, Any]:
@@ -262,7 +310,7 @@ class AskButler:
             details += f" Requested occasion: {self.requested_occasion.value}."
         if self.design_constraints is not None:
             brief = self.design_constraints.model_dump(mode="json", exclude={
-                "locked_item_ids", "excluded_item_ids", "preference_overrides"
+                "inspiration_id", "locked_item_ids", "excluded_item_ids", "preference_overrides"
             })
             brief["goal"] = sanitize_llm_text(self.design_constraints.goal or "", max_len=600)
             brief["target_style"] = sanitize_llm_text(self.design_constraints.target_style or "", max_len=120)

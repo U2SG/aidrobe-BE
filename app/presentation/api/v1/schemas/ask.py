@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.application.ask.design_types import DesignBrief, StylingConstraints
+from app.presentation.api.v1.schemas.packing_list import PackingListResponse
 from app.presentation.api.v1.schemas.recommendations import OutfitResponse
 
 
@@ -35,6 +36,7 @@ class AskRequest(BaseModel):
     request_id: uuid.UUID | None = None
     expected_revision: int | None = Field(default=None, ge=0)
     base_outfit_id: uuid.UUID | None = None
+    inspiration_id: uuid.UUID | None = None
     constraints: StylingConstraints | None = None
 
 
@@ -90,6 +92,7 @@ class AskConversationResponse(BaseModel):
     title: str | None = None
     styling: StylingResponse | None = None
     design_brief: DesignBrief | None = None
+    packing_list: PackingListResponse | None = None
     messages: list[AskConversationMessage] = Field(default_factory=list)
 
 

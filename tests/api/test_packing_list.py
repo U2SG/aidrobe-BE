@@ -17,6 +17,8 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ask.design_types import StylingConstraints
+from app.application.ask.styling import StylingService
 from app.application.packing import generate as packing_generate
 from app.config.settings import Settings
 from app.infrastructure.persistence.models.packing_list import PackingList
@@ -333,10 +335,13 @@ async def test_patch_invalid_status_returns_422(
     assert resp.status_code == 422
 
 
-def _enable_planner(monkeypatch: pytest.MonkeyPatch) -> None:
+def _enable_planner(monkeypatch: pytest.MonkeyPatch, *, designer_sessions: bool = False) -> None:
     # Router gate (ENABLE_PACKING_LIST) + the use case's planner flag live in two
     # different modules' lru-cached get_settings; patch both.
-    settings = Settings(APP_ENV="dev", ENABLE_PACKING_LIST=True, ENABLE_PACKING_PLANNER=True)
+    settings = Settings(
+        APP_ENV="dev", ENABLE_PACKING_LIST=True, ENABLE_PACKING_PLANNER=True,
+        ENABLE_DESIGNER_SESSIONS=designer_sessions,
+    )
     monkeypatch.setattr(packing_list, "get_settings", lambda: settings)
     monkeypatch.setattr(packing_generate, "get_settings", lambda: settings)
 
@@ -395,6 +400,115 @@ async def test_planner_returns_persisted_plan_with_daily_outfits_and_missing_ite
         )
     assert fetched.status_code == 200
     assert fetched.json()["plan"]["summary"] == plan["summary"]
+
+
+async def test_linked_trip_restores_the_actual_saved_selection(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_planner(monkeypatch, designer_sessions=True)
+    user_id = uuid.uuid4()
+    await _ensure_user(db_session, user_id)
+    top = await _seed_item(db_session, user_id, "top")
+    bottom = await _seed_item(db_session, user_id, "bottom")
+    shoes = await _seed_item(db_session, user_id, "shoes")
+    spare_top = await _seed_item(db_session, user_id, "top")
+    spare_top.title = "Spare knit"
+    spare_top.name_source = "user"
+    outfit_item_ids = [top.id, bottom.id, shoes.id]
+
+    styling = StylingService(db_session, user_id)
+    conversation = await styling.conversations.create_conversation(user_id=user_id)
+    revision = await styling.save_draft(
+        conversation_id=conversation.id, expected_revision=0, item_ids=outfit_item_ids,
+        constraints=StylingConstraints(locked_item_ids=[shoes.id], scene="travel"),
+        request_id=uuid.uuid4(), request_fingerprint="saved-suzhou-outfit",
+        title="Travel outfit", reason="For two days in Suzhou",
+    )
+    headers = {"X-User-Id": str(user_id)}
+    app = _build_app(db_session)
+    async with _client(app) as client:
+        created = await client.post(
+            "/v1/packing-lists", headers=headers, json={
+                "destination": "Suzhou", "days": 2, "scenes": ["casual"],
+                "conversation_id": str(conversation.id), "expected_revision": revision.revision,
+            },
+        )
+        assert created.status_code == 200, created.text
+        trip = created.json()
+        trip_id = trip["packing_list_id"]
+        assert trip["conversation_id"] == str(conversation.id)
+        assert trip["styling_revision_id"] == str(revision.id)
+        assert trip["plan"]["daily_outfits"][0]["item_ids"] == [str(item_id) for item_id in outfit_item_ids]
+        assert [row["item_id"] for row in trip["items"] if row["day"] == 1] == [
+            str(item_id) for item_id in outfit_item_ids
+        ]
+
+        # A later outfit edit leaves the list linked to the version it used.
+        revised = await styling.revise(
+            conversation_id=conversation.id, expected_revision=revision.revision,
+            request_id=uuid.uuid4(), replace=(top.id, spare_top.id),
+            locked_item_ids=None, excluded_item_ids=None,
+        )
+        assert revised.id != revision.id
+        fetched = await client.get(f"/v1/packing-lists/{trip_id}", headers=headers)
+        assert fetched.status_code == 200, fetched.text
+        assert fetched.json()["styling_revision_id"] == str(revision.id)
+
+        # The conversation's description follows edits to the saved checklist.
+        edited_items = [{"item_id": str(spare_top.id), "day": 2, "scene": "casual"}]
+        patched = await client.patch(
+            f"/v1/packing-lists/{trip_id}", headers=headers, json={"items": edited_items},
+        )
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["plan"] is None
+        standalone = await client.post(
+            "/v1/packing-lists", headers=headers, json={"days": 1, "scenes": ["casual"]},
+        )
+        assert standalone.status_code == 200, standalone.text
+        assert standalone.json()["conversation_id"] is None
+
+    saved = await packing_generate.load_conversation_packing_list(db_session, user_id, conversation.id)
+    assert saved is not None and str(saved.id) == trip_id
+    description = await packing_generate.describe_packing_list(db_session, saved, "en-US")
+    assert description == {
+        "packing_list_id": trip_id, "destination": "Suzhou", "days": 2,
+        "daily_outfits": [{"day": 2, "items": [{
+            "item_id": str(spare_top.id), "name": "Spare knit", "category": "top",
+        }]}],
+    }
+    assert await packing_generate.load_conversation_packing_list(db_session, uuid.uuid4(), conversation.id) is None
+
+
+async def test_linked_trip_requires_owned_current_saved_outfit(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_planner(monkeypatch, designer_sessions=True)
+    owner_id = uuid.uuid4()
+    caller_id = uuid.uuid4()
+    await _ensure_user(db_session, owner_id)
+    await _ensure_user(db_session, caller_id)
+    styling = StylingService(db_session, owner_id)
+    conversation = await styling.conversations.create_conversation(user_id=owner_id)
+    payload = {"days": 2, "scenes": ["casual"], "conversation_id": str(conversation.id)}
+    app = _build_app(db_session)
+    owner_headers = {"X-User-Id": str(owner_id)}
+    async with _client(app) as client:
+        foreign = await client.post("/v1/packing-lists", headers={"X-User-Id": str(caller_id)}, json=payload)
+        assert foreign.status_code == 404
+        empty = await client.post("/v1/packing-lists", headers=owner_headers, json=payload)
+        assert empty.status_code == 409
+
+        item_ids = [(await _seed_item(db_session, owner_id, slot)).id for slot in ("top", "bottom", "shoes")]
+        revision = await styling.save_draft(
+            conversation_id=conversation.id, expected_revision=0, item_ids=item_ids,
+            constraints=StylingConstraints(), request_id=uuid.uuid4(), request_fingerprint="saved-outfit",
+            title="Travel outfit", reason="Test",
+        )
+        stale = await client.post(
+            "/v1/packing-lists", headers=owner_headers,
+            json={**payload, "expected_revision": revision.revision + 1},
+        )
+        assert stale.status_code == 409
 
 
 async def test_planner_off_leaves_plan_null(

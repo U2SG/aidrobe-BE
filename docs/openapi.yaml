@@ -5181,6 +5181,10 @@ components:
           anyOf:
           - $ref: '#/components/schemas/DesignBrief'
           - type: 'null'
+        packing_list:
+          anyOf:
+          - $ref: '#/components/schemas/PackingListResponse'
+          - type: 'null'
         messages:
           items:
             $ref: '#/components/schemas/AskConversationMessage'
@@ -5328,6 +5332,12 @@ components:
             format: uuid
           - type: 'null'
           title: Base Outfit Id
+        inspiration_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Inspiration Id
         constraints:
           anyOf:
           - $ref: '#/components/schemas/StylingConstraints'
@@ -6415,6 +6425,18 @@ components:
             format: date
           - type: 'null'
           title: Departure Date
+        conversation_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Conversation Id
+        expected_revision:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Expected Revision
       type: object
       required:
       - days
@@ -7780,6 +7802,18 @@ components:
         status:
           type: string
           title: Status
+        conversation_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Conversation Id
+        styling_revision_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Styling Revision Id
         plan:
           anyOf:
           - $ref: '#/components/schemas/PackingPlan'
@@ -9518,6 +9552,12 @@ components:
       title: StyleTrendResponse
     StylingConstraints:
       properties:
+        inspiration_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Inspiration Id
         locked_item_ids:
           items:
             type: string

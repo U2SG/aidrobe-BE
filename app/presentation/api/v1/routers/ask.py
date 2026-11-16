@@ -21,6 +21,7 @@ from app.application.ask import answer_question as ask_uc
 from app.application.ask.answer_question import ItemRefSnapshot, build_item_ref_snapshots
 from app.application.ask.design_types import DesignBrief
 from app.application.ask.styling import StylingService
+from app.application.packing.generate import load_conversation_packing_list
 from app.application.ports.llm import LlmPort
 from app.application.ports.weather import WeatherPort
 from app.bootstrap.container import llm_service, weather_service
@@ -42,6 +43,7 @@ from app.infrastructure.persistence.repositories.user_repo import SqlAlchemyUser
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url
+from app.presentation.api.v1.routers.packing_list import render_packing_list
 from app.presentation.api.v1.routers.recommendations import render_styling
 from app.presentation.api.v1.schemas.ask import (
     AdoptStylingRequest,
@@ -123,6 +125,7 @@ async def ask(
         request_id=payload.request_id,
         expected_revision=payload.expected_revision,
         base_outfit_id=payload.base_outfit_id,
+        inspiration_id=payload.inspiration_id,
         constraints=payload.constraints,
     )
     # Reuse the locale answer_question already resolved (request > settings >
@@ -313,12 +316,17 @@ async def get_conversation(
             item_refs=refs, item_ref_snapshots=_to_schema([by_item[ref] for ref in refs if ref in by_item]),
             trip_intent=_trip_intent_from_context(turn.context) if turn is not None else None,
         ))
+    settings = get_settings()
+    packing_list = None
+    if settings.ENABLE_DESIGNER_SESSIONS and settings.ENABLE_PACKING_LIST:
+        packing_list = await load_conversation_packing_list(session, current_user.id, conversation.id)
     return AskConversationResponse(
         conversation_id=conversation.id, title=conversation.title,
         styling=(
-            await render_styling(session, current_user.id, current) if get_settings().ENABLE_DESIGNER_SESSIONS else None
+            await render_styling(session, current_user.id, current) if settings.ENABLE_DESIGNER_SESSIONS else None
         ),
-        design_brief=service.brief(conversation, current) if get_settings().ENABLE_DESIGNER_SESSIONS else None,
+        design_brief=service.brief(conversation, current) if settings.ENABLE_DESIGNER_SESSIONS else None,
+        packing_list=render_packing_list(packing_list) if packing_list is not None else None,
         messages=restored,
     )
 

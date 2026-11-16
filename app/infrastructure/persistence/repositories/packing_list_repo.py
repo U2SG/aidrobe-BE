@@ -45,6 +45,15 @@ class SqlAlchemyPackingListRepository:
         )
         return list(result)
 
+    async def latest_for_conversation(
+        self, user_id: uuid.UUID, conversation_id: uuid.UUID,
+    ) -> PackingList | None:
+        return cast(PackingList | None, await self.session.scalar(
+            select(PackingList).where(
+                PackingList.user_id == user_id, PackingList.conversation_id == conversation_id,
+            ).order_by(PackingList.created_at.desc(), PackingList.id.desc()).limit(1)
+        ))
+
     async def list_candidate_items(self, user_id: uuid.UUID) -> list[WardrobeItem]:
         """Wearable, non-deleted wardrobe items, best-fit first.
 

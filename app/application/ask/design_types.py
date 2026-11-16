@@ -24,6 +24,7 @@ class PreferenceOverride(BaseModel):
 
 class StylingConstraints(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    inspiration_id: uuid.UUID | None = Field(default=None, exclude_if=lambda value: value is None)
     locked_item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=8)
     excluded_item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
     goal: str | None = Field(default=None, max_length=600)

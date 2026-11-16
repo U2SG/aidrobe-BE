@@ -21,6 +21,8 @@ class CreatePackingListRequest(BaseModel):
     scenes: list[str]
     weather_hint: str | None = None
     departure_date: date | None = None
+    conversation_id: uuid.UUID | None = None
+    expected_revision: Annotated[int, Field(ge=1)] | None = None
 
 
 class UpdatePackingListRequest(BaseModel):
@@ -64,5 +66,7 @@ class PackingListResponse(BaseModel):
     departure_date: date | None = None
     items: list[PackingItem]
     status: str
+    conversation_id: uuid.UUID | None = None
+    styling_revision_id: uuid.UUID | None = None
     # BE#68 — additive; None for legacy / planner-off lists (FE ignores it).
     plan: PackingPlan | None = None

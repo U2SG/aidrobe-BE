@@ -13,9 +13,11 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
+from app.application.packing import generate as packing_generate
 from app.application.ports.llm import LlmAnswer, ToolAskAnswer, ToolExecutor, ToolSpec
 from app.application.preferences.memory import read_preference_memory, record_preference
 from app.bootstrap.container import llm_service
+from app.common.item_labels import localized_item_name
 from app.config.settings import Settings, get_settings
 from app.infrastructure.cache.client import get_redis_client
 from app.infrastructure.persistence.models.async_job import AsyncJob
@@ -25,7 +27,7 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.preference_memory_repo import SqlAlchemyPreferenceMemoryRepository
 from app.infrastructure.persistence.repositories.recommendation_repo import SqlAlchemyRecommendationRepository
 from app.infrastructure.persistence.session import get_db_session
-from app.presentation.api.v1.routers import ask, outfit_visual, recommendations
+from app.presentation.api.v1.routers import ask, outfit_visual, packing_list, recommendations
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
 
 
@@ -215,6 +217,58 @@ async def test_design_resume_revision_adoption_and_actions_use_one_outfit(
             "request_id": str(uuid.uuid4()), "item_id": str(items[3].id), "replacement_item_id": str(items[2].id),
         })
         assert stale.status_code == 409
+
+
+async def test_saved_packing_list_returns_to_the_original_design(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, user_id, items, model, settings = await _setup(db_session, monkeypatch)
+    settings.ENABLE_PACKING_LIST = True
+    settings.ENABLE_PACKING_PLANNER = True
+    for module in (packing_list, packing_generate):
+        monkeypatch.setattr(module, "get_settings", lambda: settings)
+    app.include_router(packing_list.router)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver",
+        headers={"X-User-Id": str(user_id)},
+    ) as client:
+        design = await client.post("/v1/ask", json={
+            "question": "设计一套旅行搭配", "design_mode": True, "request_id": str(uuid.uuid4()),
+        })
+        assert design.status_code == 200, design.text
+        turn = design.json()
+        conversation_id = turn["conversation_id"]
+        saved_outfit = turn["styling"]["outfit"]["outfit_id"]
+        created = await client.post("/v1/packing-lists", json={
+            "conversation_id": conversation_id, "expected_revision": 1,
+            "destination": "苏州", "days": 2, "scenes": ["casual"],
+        })
+        assert created.status_code == 200, created.text
+        packing = created.json()
+        assert packing["conversation_id"] == conversation_id
+        assert set(packing["plan"]["daily_outfits"][0]["item_ids"]) == {str(item.id) for item in items[:3]}
+        outfit_path = f"/v1/ask/conversations/{conversation_id}"
+        restored = await client.get(outfit_path)
+        assert restored.json()["packing_list"] == packing
+        calls = model.calls
+        question = {
+            "question": "帮我读一下刚保存的苏州打包清单", "design_mode": True,
+            "request_id": str(uuid.uuid4()), "conversation_id": conversation_id, "expected_revision": 1,
+        }
+        reply = await client.post("/v1/ask", json=question)
+        assert reply.status_code == 200, reply.text
+        answer = reply.json()
+        assert answer["conversation_id"] == conversation_id
+        assert "苏州" in answer["answer"] and "第 2 天" in answer["answer"]
+        top = items[0]
+        assert localized_item_name(
+            title=top.title, color_main=top.color_main, category=top.category, locale="zh-CN",
+            localized_names=top.localized_names, name_source=top.name_source,
+        ) in answer["answer"]
+        assert model.calls == calls and answer["tokens_used"] == 0
+        reopened = await client.get(outfit_path)
+        assert reopened.json()["messages"][-1]["content"] == answer["answer"]
+        assert reopened.json()["styling"]["outfit"]["outfit_id"] == saved_outfit
 
 
 async def test_natural_language_partial_edit_cannot_change_unrequested_slots(

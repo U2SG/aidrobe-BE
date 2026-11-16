@@ -8621,6 +8621,16 @@
               }
             ]
           },
+          "packing_list": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PackingListResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "messages": {
             "items": {
               "$ref": "#/components/schemas/AskConversationMessage"
@@ -8862,6 +8872,18 @@
               }
             ],
             "title": "Base Outfit Id"
+          },
+          "inspiration_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inspiration Id"
           },
           "constraints": {
             "anyOf": [
@@ -10514,6 +10536,30 @@
               }
             ],
             "title": "Departure Date"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
           }
         },
         "type": "object",
@@ -12517,6 +12563,30 @@
           "status": {
             "type": "string",
             "title": "Status"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "styling_revision_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Styling Revision Id"
           },
           "plan": {
             "anyOf": [
@@ -15091,6 +15161,18 @@
       },
       "StylingConstraints": {
         "properties": {
+          "inspiration_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inspiration Id"
+          },
           "locked_item_ids": {
             "items": {
               "type": "string",
