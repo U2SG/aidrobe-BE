@@ -1,7 +1,7 @@
 """Packing list (M16) schemas — V3-style direct return (no envelope)."""
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated
 
 from pydantic import BaseModel, Field
@@ -69,5 +69,6 @@ class PackingListResponse(BaseModel):
     status: str
     conversation_id: uuid.UUID | None = None
     styling_revision_id: uuid.UUID | None = None
+    created_at: datetime | None = None
     # BE#68 — additive; None for legacy / planner-off lists (FE ignores it).
     plan: PackingPlan | None = None

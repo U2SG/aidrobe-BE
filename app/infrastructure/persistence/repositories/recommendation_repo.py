@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.common.enums import ItemStatus, RecommendationEventType, RecommendationGenerationSource
 from app.common.local_time import local_datetime, utc_now
+from app.infrastructure.persistence.models.ask_conversation import AskStylingRevision
 from app.infrastructure.persistence.models.operation_log import OperationLog
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
@@ -25,6 +26,8 @@ from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 FIRST_OUTFIT_GENERATION_SOURCE = "first_outfit_gate"
+WEAR_FEEDBACK_TYPE = "wear_feedback"
+_DESIGN_WEAR_FEEDBACK_LIMIT = 8
 
 
 class SqlAlchemyRecommendationRepository:
@@ -551,9 +554,51 @@ class SqlAlchemyRecommendationRepository:
                 select(OutfitFeedback).where(
                     OutfitFeedback.outfit_id == outfit_id,
                     OutfitFeedback.user_id == user_id,
+                    OutfitFeedback.feedback_type != WEAR_FEEDBACK_TYPE,
                 )
             ),
         )
+
+    async def owns_feedback_outfit(
+        self, outfit_id: uuid.UUID, user_id: uuid.UUID, *, lock: bool = False,
+    ) -> bool:
+        stmt = select(Outfit.id).where(Outfit.id == outfit_id, Outfit.user_id == user_id)
+        if lock:
+            # Serialize feedback writers without blocking FK reads of this
+            # outfit (for example a concurrent ordinary feedback event).
+            stmt = stmt.with_for_update(key_share=True)
+        return await self.session.scalar(stmt) is not None
+
+    async def get_wear_feedback_for_user(self, outfit_id: uuid.UUID, user_id: uuid.UUID) -> OutfitFeedback | None:
+        return await self.session.scalar(select(OutfitFeedback).where(
+            OutfitFeedback.outfit_id == outfit_id,
+            OutfitFeedback.user_id == user_id,
+            OutfitFeedback.feedback_type == WEAR_FEEDBACK_TYPE,
+        ))
+
+    async def list_design_wear_feedback(
+        self, user_id: uuid.UUID, conversation_id: uuid.UUID,
+    ) -> list[tuple[int, OutfitFeedback]]:
+        # Adopting a draft reuses the immutable outfit, so keep its original
+        # revision number and include the experience just once.
+        revisions = (
+            select(AskStylingRevision.outfit_id, func.min(AskStylingRevision.revision).label("revision"))
+            .where(AskStylingRevision.user_id == user_id, AskStylingRevision.conversation_id == conversation_id)
+            .group_by(AskStylingRevision.outfit_id)
+            .subquery()
+        )
+        rows = await self.session.execute(
+            select(revisions.c.revision, OutfitFeedback)
+            .select_from(revisions)
+            .join(OutfitFeedback, OutfitFeedback.outfit_id == revisions.c.outfit_id)
+            .where(OutfitFeedback.user_id == user_id, OutfitFeedback.feedback_type == WEAR_FEEDBACK_TYPE)
+            .order_by(
+                OutfitFeedback.reason_tags["updated_at"].astext.desc().nulls_last(),
+                revisions.c.revision.desc(),
+            )
+            .limit(_DESIGN_WEAR_FEEDBACK_LIMIT)
+        )
+        return [(revision, feedback) for revision, feedback in rows]
 
     async def get_outfit_history(
         self,
@@ -568,7 +613,11 @@ class SqlAlchemyRecommendationRepository:
             .join(Outfit, Outfit.id == WearHistory.outfit_id)
             .outerjoin(
                 OutfitFeedback,
-                (OutfitFeedback.outfit_id == Outfit.id) & (OutfitFeedback.user_id == user_id),
+                and_(
+                    OutfitFeedback.outfit_id == Outfit.id,
+                    OutfitFeedback.user_id == user_id,
+                    OutfitFeedback.feedback_type != WEAR_FEEDBACK_TYPE,
+                ),
             )
             .where(WearHistory.user_id == user_id)
             .order_by(WearHistory.worn_date.desc(), WearHistory.selected_at.desc())
@@ -722,6 +771,7 @@ class SqlAlchemyRecommendationRepository:
             select(OutfitFeedback).where(
                 OutfitFeedback.user_id == user_id,
                 OutfitFeedback.created_at >= since,
+                OutfitFeedback.feedback_type != WEAR_FEEDBACK_TYPE,
             )
         )
         return list(result)

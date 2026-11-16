@@ -18,6 +18,7 @@ from app.common.exceptions import FriendlyException
 from app.config.settings import get_settings
 from app.infrastructure.persistence.models.recommendation import Outfit, OutfitFeedback, WearHistory
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
+from app.infrastructure.persistence.repositories.recommendation_repo import WEAR_FEEDBACK_TYPE
 from app.infrastructure.persistence.session import get_db_session as get_db
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import wardrobe_image_urls
@@ -64,6 +65,7 @@ async def _build_entries(
         select(OutfitFeedback).where(
             OutfitFeedback.outfit_id.in_(outfit_ids),
             OutfitFeedback.user_id == user_id,
+            OutfitFeedback.feedback_type != WEAR_FEEDBACK_TYPE,
         )
     )
     feedbacks_by_outfit = {fb.outfit_id: fb for fb in fb_result.scalars().all()}

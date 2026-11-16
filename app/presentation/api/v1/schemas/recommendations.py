@@ -199,6 +199,16 @@ class FeedbackResponse(BaseModel):
     success: bool
 
 
+class WearFeedbackRecord(BaseModel):
+    feedback_type: Literal["like", "dislike"]
+    reason_tags: list[str] = Field(default_factory=list, max_length=12)
+    note: str | None = Field(default=None, max_length=300)
+
+
+class WearFeedbackSnapshot(BaseModel):
+    feedback: WearFeedbackRecord | None
+
+
 class RecommendationEventRequest(BaseModel):
     """BE#81 — general passive-learning event ingestion. Append-only capture;
     it never mutates explicit preferences (OutfitFeedback / FitFeedback)."""

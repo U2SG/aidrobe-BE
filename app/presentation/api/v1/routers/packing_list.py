@@ -68,6 +68,7 @@ def render_packing_list(packing_list: PackingList) -> PackingListResponse:
         status=packing_list.status,
         conversation_id=packing_list.conversation_id,
         styling_revision_id=packing_list.styling_revision_id,
+        created_at=packing_list.created_at,
         plan=plan,
     )
 
