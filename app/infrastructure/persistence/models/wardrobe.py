@@ -43,7 +43,7 @@ class WardrobeItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     color_secondary: Mapped[str | None] = mapped_column(String(32), nullable=True)
     material: Mapped[str | None] = mapped_column(String(64), nullable=True)
     season_tags: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
-    style_tags: Mapped[JsonDict | None] = mapped_column(JSONB, nullable=True)
+    style_tags: Mapped[JsonDict | list[str] | None] = mapped_column(JSONB, nullable=True)
     formality_score: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     time_cost_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # V3 M12 insights fields

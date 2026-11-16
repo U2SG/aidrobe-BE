@@ -15,6 +15,8 @@ async def test_queued_inspiration_uses_visual_palette_to_save_and_restore_a_draf
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, user_id, items, model, _ = await _setup(db_session, monkeypatch)
+    items[0].style_tags = {"tags": ["casual"]}
+    items[4].style_tags = ["minimal"]
     source = UserStyleProfile(
         user_id=user_id, source_type="inspiration_image", learn_status="queued",
         image_url="https://cdn.example.com/reference.jpg",

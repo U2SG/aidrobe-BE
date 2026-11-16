@@ -23,6 +23,7 @@ from app.application.recommendations.engine import BUSINESS_FORMALITY, CASUAL_FO
 from app.application.recommendations.feasibility import has_first_outfit_core, missing_first_outfit_slots
 from app.common.enums import Category, FitScene, FitStatus, WardrobeItemStatus
 from app.common.season import SeasonName, current_season, in_season, season_tags_of
+from app.common.style_tags import normalize_style_tags
 from app.infrastructure.llm.sanitizer import sanitize_for_llm, sanitize_llm_text
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.preference_memory_repo import SqlAlchemyPreferenceMemoryRepository
@@ -159,12 +160,7 @@ def pick_inspiration_outfit(
         if locked:
             buckets[category] = locked
 
-    def style_matches(item: WardrobeItem) -> int:
-        raw = (item.style_tags or {}).get("tags")
-        tags = {tag.lower() for tag in raw if isinstance(tag, str)} if isinstance(raw, list) else set()
-        return len(tags & styles)
-
-    matches = {item.id: style_matches(item) for item in items}
+    matches = {item.id: len(styles.intersection(normalize_style_tags(item.style_tags))) for item in items}
     colors_by_id = {item.id: item.color_main.lower() for item in items}
     outerwear = buckets[Category.OUTERWEAR]
     layers: list[WardrobeItem | None] = [*outerwear, None]
@@ -208,8 +204,8 @@ def _search_fields(item: WardrobeItem) -> dict[str, Any]:
         key: sanitize_llm_text(value, max_len=64) if isinstance(value, str) else value
         for key, value in fields.items()
         if value is not None
-    } | {"style_tags": [sanitize_llm_text(str(tag), max_len=50)
-                       for tag in (item.style_tags or {}).get("tags", [])[:8]]}
+    } | {"style_tags": [sanitize_llm_text(tag, max_len=50)
+                       for tag in normalize_style_tags(item.style_tags)[:8]]}
 
 
 class AskButler:
@@ -455,7 +451,10 @@ class AskButler:
                 WardrobeItem.sub_category.icontains(term, autoescape=True),
             ))
         if args.style:
-            query = query.where(WardrobeItem.style_tags.contains({"tags": [args.style]}))
+            query = query.where(or_(
+                WardrobeItem.style_tags.contains({"tags": [args.style]}),
+                WardrobeItem.style_tags.contains([args.style]),
+            ))
         exploring = self.design_constraints is not None and self.design_constraints.exploration
         async with self._tool_read_session() as tool_session:
             rows = list(await tool_session.scalars(
@@ -475,7 +474,7 @@ class AskButler:
                 penalty = sum(1 for pref in negatives if attributes.get(str(pref.get("type")))
                               and str(getattr(item, attributes[str(pref["type"])], "")).casefold()
                               == str(pref.get("value", "")).casefold())
-                tags = [str(tag).casefold() for tag in (item.style_tags or {}).get("tags", [])]
+                tags = [tag.casefold() for tag in normalize_style_tags(item.style_tags)]
                 return penalty, -int(bool(desired_style) and desired_style in tags)
 
             rows.sort(key=rank)
