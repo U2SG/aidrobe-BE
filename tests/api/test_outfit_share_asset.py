@@ -193,8 +193,9 @@ async def test_share_asset_hides_foreign_and_missing_outfits(db_session: AsyncSe
     assert await db_session.scalar(select(func.count()).select_from(AsyncJob)) == 0
 
 
+@pytest.mark.parametrize("layout_version", ["gpt-v1", "gpt-reviewed-v6", "gpt-reviewed-v9"])
 async def test_gpt_outfit_board_uses_a_separate_reusable_asset(
-    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, layout_version: str,
 ) -> None:
     monkeypatch.setattr(
         outfit_visual,
@@ -223,10 +224,10 @@ async def test_gpt_outfit_board_uses_a_separate_reusable_asset(
     db_session.add(
         AsyncJob(
             job_type="outfit_board",
-            idempotency_key=f"outfit_board:{outfit_id}:gpt-v1",
+            idempotency_key=f"outfit_board:{outfit_id}:{layout_version}",
             target_id=old_asset.id,
             user_id=user_id,
-            payload={"layout_version": "gpt-v1"},
+            payload={"layout_version": layout_version},
         )
     )
     await db_session.flush()
@@ -264,6 +265,116 @@ async def test_gpt_outfit_board_uses_a_separate_reusable_asset(
     asset = await db_session.get(OutfitVisualAsset, job.target_id)
     assert asset is not None and asset.input_snapshot["generate"] is True
 
+
+async def _seed_reviewed_board(
+    session: AsyncSession, user_id: uuid.UUID, outfit_id: uuid.UUID, layout_version: str,
+    *, generation_status: str = "completed",
+) -> OutfitVisualAsset:
+    outfit = await session.get(Outfit, outfit_id, options=[selectinload(Outfit.items)])
+    assert outfit is not None
+    asset = OutfitVisualAsset(
+        user_id=user_id, outfit_id=outfit_id, visual_type=VisualType.OUTFIT_BOARD.value,
+        generation_status=generation_status, image_url="https://storage.example/reviewed-board.png",
+        input_snapshot={"generate": True, "garment_slots": outfit_visual._outfit_signature(outfit.items)},
+    )
+    session.add(asset)
+    await session.flush()
+    session.add(AsyncJob(
+        job_type="outfit_board", idempotency_key=f"outfit_board:{outfit_id}:{layout_version}",
+        target_id=asset.id, user_id=user_id, status="succeeded", payload={"layout_version": layout_version},
+    ))
+    await session.flush()
+    return asset
+
+
+@pytest.mark.parametrize("replacement_outfit", [False, True])
+async def test_v7_board_remains_readable_but_new_generation_uses_v8(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, replacement_outfit: bool,
+) -> None:
+    monkeypatch.setattr(
+        outfit_visual, "get_settings",
+        lambda: Settings(
+            ENABLE_ITEM_CUTOUT=True, IMAGE_CUTOUT_PROVIDER="openai", OPENAI_API_KEY="test", QWEN_API_KEY="test",
+        ),
+    )
+
+    async def allow(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(outfit_visual, "assert_within_quota", allow)
+    user_id = uuid.uuid4()
+    outfit_id = await _seed_outfit(db_session, user_id)
+    saved = await _seed_reviewed_board(db_session, user_id, outfit_id, "gpt-reviewed-v7")
+    if replacement_outfit:
+        original = await db_session.get(Outfit, outfit_id, options=[selectinload(Outfit.items)])
+        assert original is not None
+        replacement = Outfit(
+            user_id=user_id, daily_recommendation_id=original.daily_recommendation_id,
+            outfit_type=original.outfit_type, title=original.title, reason_text=original.reason_text,
+            score_total=original.score_total, rank_order=original.rank_order, created_at=original.created_at,
+        )
+        db_session.add(replacement)
+        await db_session.flush()
+        db_session.add_all([
+            OutfitItem(outfit_id=replacement.id, item_id=slot.item_id, role=slot.role,
+                       display_order=slot.display_order, created_at=replacement.created_at)
+            for slot in original.items
+        ])
+        await db_session.flush()
+        outfit_id = replacement.id
+
+    headers = {"X-User-Id": str(user_id)}
+    path = f"/v1/outfits/{outfit_id}/share-asset"
+    async with AsyncClient(transport=ASGITransport(app=_app(db_session)), base_url="http://testserver") as client:
+        for read_path in (path, f"/v1/outfit-visual-assets/{saved.id}"):
+            legacy = await client.get(read_path, headers=headers)
+            assert legacy.status_code == 200, legacy.text
+            assert legacy.json()["asset_id"] == str(saved.id)
+            assert legacy.json()["generation_status"] == "completed"
+            assert legacy.json()["image_url"] == saved.image_url
+
+        generated = await client.post(path, headers=headers, params={"generate": "true"})
+        assert generated.status_code == 202, generated.text
+        new_id = uuid.UUID(generated.json()["asset_id"])
+        assert new_id != saved.id
+        job = (await db_session.scalars(select(AsyncJob).where(AsyncJob.target_id == new_id))).one()
+        assert job.payload["layout_version"] == "gpt-reviewed-v8"
+        assert job.idempotency_key == f"outfit_board:{outfit_id}:gpt-reviewed-v8"
+        lookup = await client.get(path, headers=headers)
+        replay = await client.post(path, headers=headers, params={"generate": "true"})
+        assert lookup.json()["asset_id"] == replay.json()["asset_id"] == str(new_id)
+        assert await db_session.scalar(select(func.count()).select_from(AsyncJob)) == 2
+
+        new_asset = await db_session.get(OutfitVisualAsset, new_id)
+        assert new_asset is not None
+        new_asset.generation_status = "completed"
+        new_asset.image_url = "https://storage.example/editorial-board.png"
+        await db_session.flush()
+        preferred = await client.get(path, headers=headers)
+        assert preferred.json()["asset_id"] == str(new_id)
+        assert preferred.json()["image_url"] == new_asset.image_url
+        legacy = await client.get(f"/v1/outfit-visual-assets/{saved.id}", headers=headers)
+        assert legacy.json()["generation_status"] == "completed"
+        assert legacy.json()["image_url"] == saved.image_url
+
+
+@pytest.mark.parametrize("layout_version", ["gpt-reviewed-v7", "gpt-reviewed-v8"])
+async def test_readable_board_version_does_not_expose_a_quality_rejected_image(
+    db_session: AsyncSession, layout_version: str,
+) -> None:
+    user_id = uuid.uuid4()
+    outfit_id = await _seed_outfit(db_session, user_id)
+    rejected = await _seed_reviewed_board(
+        db_session, user_id, outfit_id, layout_version, generation_status="rejected_by_quality_gate",
+    )
+    headers = {"X-User-Id": str(user_id)}
+    paths = (f"/v1/outfits/{outfit_id}/share-asset", f"/v1/outfit-visual-assets/{rejected.id}")
+    async with AsyncClient(transport=ASGITransport(app=_app(db_session)), base_url="http://testserver") as client:
+        for path in paths:
+            response = await client.get(path, headers=headers)
+            assert response.status_code == 200, response.text
+            assert response.json()["generation_status"] == "rejected_by_quality_gate"
+            assert response.json()["image_url"] is None
 
 
 async def test_generated_board_reviews_the_single_garment_crop(db_session: AsyncSession) -> None:
