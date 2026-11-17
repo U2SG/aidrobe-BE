@@ -40,6 +40,7 @@ _TEXTS: dict[str, dict[str, str]] = {
         "trip": "trip",
         "summary": "{days}-day {destination} packing plan ({scenes})",
         "suited": "suited to {occasion}",
+        "saved_design": "uses the saved outfit from your design",
         "layered_cold": "layered for the cold",
         "light_heat": "light enough for the heat",
         "holds_rain": "holds up in rain",
@@ -58,6 +59,7 @@ _TEXTS: dict[str, dict[str, str]] = {
         "trip": "出行",
         "summary": "{days}天{destination}行李清单（{scenes}）",
         "suited": "适合{occasion}",
+        "saved_design": "沿用设计对话里保存的搭配",
         "layered_cold": "叠穿保暖",
         "light_heat": "轻薄透气，适合炎热天气",
         "holds_rain": "雨天也能应对",
@@ -253,6 +255,7 @@ async def build_trip_plan(
     destination: str | None = None,
     daily_weather: list[WeatherInfo | None] | None = None,
     locale: str = "en-US",
+    saved_outfit: tuple[int, list[str]] | None = None,
 ) -> TripPlan:
     """Build a per-day outfit plan + packing list + missing-item warnings.
 
@@ -264,7 +267,8 @@ async def build_trip_plan(
     `daily_weather` (BE#118) carries real per-day destination forecasts, one
     entry per trip day (None where the provider had no data). Each day falls
     back to the trip-wide `weather` (the parsed hint); the rain/summary
-    heuristics use the wettest forecast day so a mid-trip storm still surfaces."""
+    heuristics use the wettest forecast day so a mid-trip storm still surfaces.
+    A saved design supplies the exact items for its matching trip day."""
 
     def weather_for(day: int) -> WeatherInfo | None:
         if daily_weather and 0 <= day - 1 < len(daily_weather) and daily_weather[day - 1] is not None:
@@ -294,32 +298,39 @@ async def build_trip_plan(
 
     for day in range(1, days + 1):
         occasion = occasions[(day - 1) % len(occasions)]
-        result = await engine.generate(
-            engine_items,
-            weather=weather_for(day),
-            disliked_colors=disliked_colors or set(),
-            relationship_edges=relationship_edges or [],
-            style_profile=style_profile or {},
-            fit_profile=fit_profile or {},
-            recent_worn_outfit_item_ids=[set(sig) for sig in prior_signatures],
-            avoid_exact_repeats=True,
-        )
-        if result.status != "ready" or not result.outfits:
-            # The wardrobe cannot dress the trip — stop here; missing_items + the
-            # (possibly empty) plan tell the user what to add.
-            break
-        top = result.outfits[0]
-        reuses = any(item_id in seen_items for item_id in top.item_ids)
+        if saved_outfit is not None and day == saved_outfit[0]:
+            selected = list(saved_outfit[1])
+            reasoning = [t["saved_design"]]
+        else:
+            result = await engine.generate(
+                engine_items,
+                weather=weather_for(day),
+                disliked_colors=disliked_colors or set(),
+                relationship_edges=relationship_edges or [],
+                style_profile=style_profile or {},
+                fit_profile=fit_profile or {},
+                recent_worn_outfit_item_ids=[set(sig) for sig in prior_signatures],
+                avoid_exact_repeats=True,
+            )
+            if result.status != "ready" or not result.outfits:
+                # Keep the saved design in the plan even if the wardrobe cannot
+                # dress an earlier day.
+                if saved_outfit is not None and day < saved_outfit[0]:
+                    continue
+                break
+            selected = list(result.outfits[0].item_ids)
+            reuses = any(item_id in seen_items for item_id in selected)
+            reasoning = _daily_reasoning(occasion, weather_for(day), reuses=reuses, locale=locale)
         daily_outfits.append(
             DailyOutfit(
                 day=day,
                 occasion=occasion,
-                item_ids=list(top.item_ids),
-                reasoning=_daily_reasoning(occasion, weather_for(day), reuses=reuses, locale=locale),
+                item_ids=selected,
+                reasoning=reasoning,
             )
         )
-        prior_signatures.append(set(top.item_ids))
-        for item_id in top.item_ids:
+        prior_signatures.append(set(selected))
+        for item_id in selected:
             item_use_count[item_id] = item_use_count.get(item_id, 0) + 1
             seen_items.add(item_id)
 

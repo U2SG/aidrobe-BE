@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
+from itertools import product
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.application.ask.design_types import PreferenceOverride, StylingConstraints
 from app.application.ask.tools import AskTool, ToolRegistry
+from app.application.llm_prompts.self_critique import negative_preference_violations
 from app.application.ports.llm import ToolResult, ToolSpec
 from app.application.ports.weather import WeatherInfo, WeatherPort
 from app.application.preferences.memory import read_preference_memory
@@ -22,6 +24,7 @@ from app.application.recommendations.engine import BUSINESS_FORMALITY, CASUAL_FO
 from app.application.recommendations.feasibility import has_first_outfit_core, missing_first_outfit_slots
 from app.common.enums import Category, FitScene, FitStatus, WardrobeItemStatus
 from app.common.season import SeasonName, current_season, in_season, season_tags_of
+from app.common.style_tags import normalize_style_tags
 from app.infrastructure.llm.sanitizer import sanitize_for_llm, sanitize_llm_text
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.preference_memory_repo import SqlAlchemyPreferenceMemoryRepository
@@ -133,6 +136,63 @@ def _outfit_issues(
     return {}
 
 
+def pick_inspiration_outfit(
+    items: list[WardrobeItem], constraints: StylingConstraints, *, target: date,
+    weather: WeatherInfo | None, palette: set[str], styles: set[str],
+    negative_preferences: list[dict[str, Any]],
+) -> list[WardrobeItem]:
+    """Rank complete wardrobe looks by the saved photo's visual signals."""
+    required = set(constraints.locked_item_ids)
+    excluded = set(constraints.excluded_item_ids)
+    buckets: dict[str, list[WardrobeItem]] = {category: [] for category in _CORE_CATEGORIES}
+    locked_extras: list[WardrobeItem] = []
+    season = current_season(target)
+    for item in items:
+        if (
+            item.id in excluded or item.status != WardrobeItemStatus.WEARABLE
+            or item.fit_status == FitStatus.NO_LONGER_FITS or not in_season(season_tags_of(item.season_tags), season)
+        ):
+            continue
+        if item.category in buckets:
+            buckets[item.category].append(item)
+        elif item.id in required:
+            locked_extras.append(item)
+    for category, choices in buckets.items():
+        locked = [item for item in choices if item.id in required]
+        if locked:
+            buckets[category] = locked
+
+    matches = {item.id: len(styles.intersection(normalize_style_tags(item.style_tags))) for item in items}
+    penalties = {
+        item.id: len(negative_preference_violations([{
+            "id": str(item.id), "color_main": item.color_main, "material": item.material,
+            "fit_status": item.fit_status, "sub_category": item.sub_category,
+        }], negative_preferences)) for item in items
+    }
+    colors_by_id = {item.id: item.color_main.lower() for item in items}
+    outerwear = buckets[Category.OUTERWEAR]
+    layers: list[WardrobeItem | None] = [*outerwear, None]
+    occasion = FitScene(constraints.scene) if constraints.scene else None
+    best: list[WardrobeItem] = []
+    best_score: tuple[int, int, int, int, int] | None = None
+    for core in ((Category.TOP, Category.BOTTOM, Category.SHOES), (Category.DRESS, Category.SHOES)):
+        for combo in product(*(buckets[category] for category in core), layers):
+            look = [item for item in combo if item is not None] + locked_extras
+            if len(look) > 8 or not required.issubset(item.id for item in look):
+                continue
+            colors = [colors_by_id[item.id] for item in look]
+            # A reference photo does not authorize ignoring the user's effective dislikes.
+            score = (
+                -sum(penalties[item.id] for item in look),
+                len(set(colors) & palette), sum(color in palette for color in colors),
+                sum(matches[item.id] for item in look), -len(look),
+            )
+            if (best_score is None or score > best_score) and not _outfit_issues(look, target, occasion, weather):
+                best = look
+                best_score = score
+    return best
+
+
 def _search_fields(item: WardrobeItem) -> dict[str, Any]:
     # Text search may match a user title, but the title and storage location
     # never leave the server. Model-visible item attributes stay bounded.
@@ -154,8 +214,8 @@ def _search_fields(item: WardrobeItem) -> dict[str, Any]:
         key: sanitize_llm_text(value, max_len=64) if isinstance(value, str) else value
         for key, value in fields.items()
         if value is not None
-    } | {"style_tags": [sanitize_llm_text(str(tag), max_len=50)
-                       for tag in (item.style_tags or {}).get("tags", [])[:8]]}
+    } | {"style_tags": [sanitize_llm_text(tag, max_len=50)
+                       for tag in normalize_style_tags(item.style_tags)[:8]]}
 
 
 class AskButler:
@@ -262,7 +322,7 @@ class AskButler:
             details += f" Requested occasion: {self.requested_occasion.value}."
         if self.design_constraints is not None:
             brief = self.design_constraints.model_dump(mode="json", exclude={
-                "locked_item_ids", "excluded_item_ids", "preference_overrides"
+                "inspiration_id", "locked_item_ids", "excluded_item_ids", "preference_overrides"
             })
             brief["goal"] = sanitize_llm_text(self.design_constraints.goal or "", max_len=600)
             brief["target_style"] = sanitize_llm_text(self.design_constraints.target_style or "", max_len=120)
@@ -401,7 +461,10 @@ class AskButler:
                 WardrobeItem.sub_category.icontains(term, autoescape=True),
             ))
         if args.style:
-            query = query.where(WardrobeItem.style_tags.contains({"tags": [args.style]}))
+            query = query.where(or_(
+                WardrobeItem.style_tags.contains({"tags": [args.style]}),
+                WardrobeItem.style_tags.contains([args.style]),
+            ))
         exploring = self.design_constraints is not None and self.design_constraints.exploration
         async with self._tool_read_session() as tool_session:
             rows = list(await tool_session.scalars(
@@ -421,7 +484,7 @@ class AskButler:
                 penalty = sum(1 for pref in negatives if attributes.get(str(pref.get("type")))
                               and str(getattr(item, attributes[str(pref["type"])], "")).casefold()
                               == str(pref.get("value", "")).casefold())
-                tags = [str(tag).casefold() for tag in (item.style_tags or {}).get("tags", [])]
+                tags = [tag.casefold() for tag in normalize_style_tags(item.style_tags)]
                 return penalty, -int(bool(desired_style) and desired_style in tags)
 
             rows.sort(key=rank)

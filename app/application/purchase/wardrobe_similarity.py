@@ -53,6 +53,7 @@ from typing import Any
 
 from app.application.purchase.candidate_normalizer import SCENE_TAGS, ParsedItem
 from app.common.enums import Category, FitScene
+from app.common.style_tags import normalize_style_tags
 
 # Bump when the emitted payload shape changes. Snapshots persisted by V3-007
 # carry it so a replay knows which reader to use (the
@@ -232,19 +233,6 @@ class ClosetEvidence:
             "coverage_scenarios": [c.as_payload() for c in self.coverage_scenarios],
             "scenarios_without_evidence": list(self.scenarios_without_evidence),
         }
-
-
-def normalize_style_tags(raw: Any) -> tuple[str, ...]:
-    """`wardrobe_items.style_tags` → lowercase tags.
-
-    The column is written as `{"tags": [...]}` by the style repo and the
-    style-learn worker but as a bare list elsewhere; `style_context.py` already
-    tolerates both and this mirrors it rather than picking a winner.
-    """
-    tags = raw.get("tags") if isinstance(raw, dict) else raw
-    if not isinstance(tags, list):
-        return ()
-    return tuple(t.strip().lower() for t in tags if isinstance(t, str) and t.strip())
 
 
 def _candidate_colors(parsed: ParsedItem) -> set[str]:

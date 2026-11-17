@@ -1,7 +1,7 @@
 import uuid
 from datetime import date
 
-from sqlalchemy import Date, ForeignKey, SmallInteger, String
+from sqlalchemy import Date, ForeignKey, Index, SmallInteger, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,9 +24,16 @@ class PackingList(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """
 
     __tablename__ = "packing_lists"
+    __table_args__ = (Index("ix_packing_lists_user_conversation", "user_id", "conversation_id"),)
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("ask_conversations.id", ondelete="SET NULL"), nullable=True
+    )
+    styling_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("ask_styling_revisions.id", ondelete="SET NULL"), nullable=True
     )
     destination: Mapped[str | None] = mapped_column(String(120), nullable=True)
     days: Mapped[int] = mapped_column(SmallInteger, nullable=False)

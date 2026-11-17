@@ -46,7 +46,7 @@ def _gate() -> None:
         )
 
 
-def _to_response(packing_list: PackingList) -> PackingListResponse:
+def render_packing_list(packing_list: PackingList) -> PackingListResponse:
     raw_items = cast(list[dict[str, object]], packing_list.items or [])
     raw_scenes = cast(list[str], packing_list.scenes or [])
     # BE#68 review: gate the persisted plan on the CURRENT flag so a plan saved
@@ -55,7 +55,7 @@ def _to_response(packing_list: PackingList) -> PackingListResponse:
     plan_json = cast("dict[str, object] | None", packing_list.plan_json)
     plan = (
         PackingPlan.model_validate(plan_json)
-        if plan_json and get_settings().ENABLE_PACKING_PLANNER
+        if plan_json and "summary" in plan_json and get_settings().ENABLE_PACKING_PLANNER
         else None
     )
     return PackingListResponse(
@@ -66,6 +66,9 @@ def _to_response(packing_list: PackingList) -> PackingListResponse:
         departure_date=packing_list.departure_date,
         items=[PackingItem.model_validate(item) for item in raw_items],
         status=packing_list.status,
+        conversation_id=packing_list.conversation_id,
+        styling_revision_id=packing_list.styling_revision_id,
+        created_at=packing_list.created_at,
         plan=plan,
     )
 
@@ -86,8 +89,11 @@ async def create_packing_list(
         payload.weather_hint,
         payload.departure_date,
         await resolve_user_locale(session, current_user.id),
+        conversation_id=payload.conversation_id,
+        expected_revision=payload.expected_revision,
+        request_id=payload.request_id,
     )
-    return _to_response(packing_list)
+    return render_packing_list(packing_list)
 
 
 @router.get("", response_model=list[PackingListResponse])
@@ -98,7 +104,7 @@ async def list_packing_lists(
     _gate()
     repo = SqlAlchemyPackingListRepository(session)
     lists = await ListPackingLists(repo).execute(current_user.id)
-    return [_to_response(pl) for pl in lists]
+    return [render_packing_list(pl) for pl in lists]
 
 
 @router.get("/{packing_list_id}", response_model=PackingListResponse)
@@ -110,7 +116,7 @@ async def get_packing_list(
     _gate()
     repo = SqlAlchemyPackingListRepository(session)
     packing_list = await GetPackingList(repo).execute(packing_list_id, current_user.id)
-    return _to_response(packing_list)
+    return render_packing_list(packing_list)
 
 
 @router.patch("/{packing_list_id}", response_model=PackingListResponse)
@@ -133,4 +139,4 @@ async def update_packing_list(
         items,
         payload.status,
     )
-    return _to_response(packing_list)
+    return render_packing_list(packing_list)

@@ -66,11 +66,14 @@ async def add_inspiration(
         image_url=payload.image_url,
         source_url=payload.source_url,
     )
-    background_tasks.add_task(learn_style_source, None, str(profile.id))
+    response = _inspiration_response(profile)
+    # The worker opens its own session before request-scoped dependencies exit.
+    await session.commit()
+    background_tasks.add_task(learn_style_source, None, str(response.id))
     background_tasks.add_task(
         invalidate_daily_recommendation_cache, redis_client, current_user.id
     )
-    return ResponseModel(data=_inspiration_response(profile))
+    return ResponseModel(data=response)
 
 
 @router.post(
@@ -87,13 +90,15 @@ async def batch_add_inspirations(
 ) -> ResponseModel[BatchInspirationResponse]:
     use_case = AddStyleInspirationBatch(SqlAlchemyStyleRepository(session))
     profiles = await use_case.execute(current_user.id, payload.urls)
-    for profile in profiles:
-        background_tasks.add_task(learn_style_source, None, str(profile.id))
+    items = [_inspiration_response(profile) for profile in profiles]
+    await session.commit()
+    for item in items:
+        background_tasks.add_task(learn_style_source, None, str(item.id))
     background_tasks.add_task(
         invalidate_daily_recommendation_cache, redis_client, current_user.id
     )
     return ResponseModel(
-        data=BatchInspirationResponse(items=[_inspiration_response(p) for p in profiles])
+        data=BatchInspirationResponse(items=items)
     )
 
 

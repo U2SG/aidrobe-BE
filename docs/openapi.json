@@ -2937,6 +2937,164 @@
         }
       }
     },
+    "/v1/recommendations/outfits/{outfit_id}/wear-feedback": {
+      "get": {
+        "tags": [
+          "recommendations"
+        ],
+        "summary": "Get Wear Feedback",
+        "operationId": "get_wear_feedback_v1_recommendations_outfits__outfit_id__wear_feedback_get",
+        "parameters": [
+          {
+            "name": "outfit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Outfit Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_WearFeedbackSnapshot_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "recommendations"
+        ],
+        "summary": "Put Wear Feedback",
+        "operationId": "put_wear_feedback_v1_recommendations_outfits__outfit_id__wear_feedback_put",
+        "parameters": [
+          {
+            "name": "outfit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Outfit Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WearFeedbackRecord"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_WearFeedbackSnapshot_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/recommendations/events": {
       "post": {
         "tags": [
@@ -8621,6 +8779,16 @@
               }
             ]
           },
+          "packing_list": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PackingListResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "messages": {
             "items": {
               "$ref": "#/components/schemas/AskConversationMessage"
@@ -8862,6 +9030,24 @@
               }
             ],
             "title": "Base Outfit Id"
+          },
+          "inspiration_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inspiration Id"
+          },
+          "inspiration_only": {
+            "type": "boolean",
+            "title": "Inspiration Only",
+            "description": "Start a draft directly from the saved image.",
+            "default": false
           },
           "constraints": {
             "anyOf": [
@@ -10514,6 +10700,42 @@
               }
             ],
             "title": "Departure Date"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
           }
         },
         "type": "object",
@@ -12517,6 +12739,42 @@
           "status": {
             "type": "string",
             "title": "Status"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "styling_revision_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Styling Revision Id"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
           },
           "plan": {
             "anyOf": [
@@ -14524,6 +14782,32 @@
         "type": "object",
         "title": "ResponseModel[WardrobeRecognitionResponse]"
       },
+      "ResponseModel_WearFeedbackSnapshot_": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WearFeedbackSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ResponseModel[WearFeedbackSnapshot]"
+      },
       "ResponseModel_WearOutfitResponse_": {
         "properties": {
           "code": {
@@ -15091,6 +15375,18 @@
       },
       "StylingConstraints": {
         "properties": {
+          "inspiration_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inspiration Id"
+          },
           "locked_item_ids": {
             "items": {
               "type": "string",
@@ -16764,6 +17060,62 @@
           "recommendation_adoption_rate"
         ],
         "title": "WardrobeReportResponse"
+      },
+      "WearFeedbackRecord": {
+        "properties": {
+          "feedback_type": {
+            "type": "string",
+            "enum": [
+              "like",
+              "dislike"
+            ],
+            "title": "Feedback Type"
+          },
+          "reason_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 12,
+            "title": "Reason Tags"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "feedback_type"
+        ],
+        "title": "WearFeedbackRecord"
+      },
+      "WearFeedbackSnapshot": {
+        "properties": {
+          "feedback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WearFeedbackRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "feedback"
+        ],
+        "title": "WearFeedbackSnapshot"
       },
       "WearHistoryEntry": {
         "properties": {

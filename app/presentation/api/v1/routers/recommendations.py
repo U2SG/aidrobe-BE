@@ -23,6 +23,7 @@ from app.application.outfits.prep import compute_prep
 from app.application.outfits.replacements import find_replacement_candidates
 from app.application.outfits.scoring.dynamic import compute_dynamic_scores
 from app.application.outfits.wear import WearOutfit
+from app.application.outfits.wear_feedback import WearFeedback, WearFeedbackDetails
 from app.application.recommendations.background import schedule_today_recompute
 from app.application.recommendations.context_override import resolve_constraints
 from app.application.recommendations.feedback_tags import get_tags_for_scene
@@ -97,6 +98,8 @@ from app.presentation.api.v1.schemas.recommendations import (
     StyleContextResponse,
     TodayContextResponse,
     TodayRecommendationResponse,
+    WearFeedbackRecord,
+    WearFeedbackSnapshot,
     WearOutfitRequest,
     WearOutfitResponse,
     WeatherContextResponse,
@@ -1006,6 +1009,31 @@ async def feedback_outfit(
         },
     )
     return ResponseModel(data=FeedbackResponse(success=True))
+
+
+@router.get("/outfits/{outfit_id}/wear-feedback", response_model=ResponseModel[WearFeedbackSnapshot])
+async def get_wear_feedback(
+    outfit_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[WearFeedbackSnapshot]:
+    details = await WearFeedback(SqlAlchemyRecommendationRepository(session)).read(outfit_id, current_user.id)
+    record = WearFeedbackRecord.model_validate(details, from_attributes=True) if details is not None else None
+    return ResponseModel(data=WearFeedbackSnapshot(feedback=record))
+
+
+@router.put("/outfits/{outfit_id}/wear-feedback", response_model=ResponseModel[WearFeedbackSnapshot])
+async def put_wear_feedback(
+    outfit_id: uuid.UUID,
+    payload: WearFeedbackRecord,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ResponseModel[WearFeedbackSnapshot]:
+    details = await WearFeedback(SqlAlchemyRecommendationRepository(session)).save(
+        outfit_id, current_user.id, WearFeedbackDetails(payload.feedback_type, payload.reason_tags, payload.note)
+    )
+    record = WearFeedbackRecord.model_validate(details, from_attributes=True)
+    return ResponseModel(data=WearFeedbackSnapshot(feedback=record))
 
 
 @router.post("/events", response_model=ResponseModel[RecommendationEventResponse])
