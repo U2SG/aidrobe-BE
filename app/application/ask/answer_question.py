@@ -1237,6 +1237,7 @@ async def answer_question(
                 logger.warning("ask.inspiration_weather_unavailable", reason=type(exc).__name__)
         inspired_outfit = pick_inspiration_outfit(
             items, design_constraints, target=target, weather=forecast, palette=palette, styles=set(inspiration_styles),
+            negative_preferences=preference_memory.get("negative", []),
         )
         if inspired_outfit:
             response = (
