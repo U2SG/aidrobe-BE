@@ -85,24 +85,28 @@ class SqlAlchemyAskConversationRepository:
         *,
         limit: int | None = None,
         after: datetime | None = None,
+        latest: bool = False,
     ) -> list[AskMessage]:
+        ordering = (
+            AskMessage.created_at, AskMessage.ask_session_id,
+            case((AskMessage.role == "user", 0), else_=1), AskMessage.id,
+        )
         stmt = (
             select(AskMessage)
             .where(
                 AskMessage.user_id == user_id,
                 AskMessage.conversation_id == conversation_id,
             )
-            .order_by(
-                AskMessage.created_at.asc(), AskMessage.ask_session_id.asc(),
-                case((AskMessage.role == "user", 0), else_=1), AskMessage.id.asc(),
-            )
+            .order_by(*(column.desc() if latest else column.asc() for column in ordering))
         )
         if after is not None:
             stmt = stmt.where(AskMessage.created_at > after)
         if limit is not None:
             stmt = stmt.limit(limit)
         result = await self.session.scalars(stmt)
-        return list(result)
+        messages = list(result)
+        # Select the newest bounded window, then restore conversational order.
+        return list(reversed(messages)) if latest else messages
 
     async def upsert_state(
         self,

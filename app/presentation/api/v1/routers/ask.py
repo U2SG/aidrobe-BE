@@ -54,6 +54,7 @@ from app.presentation.api.v1.schemas.ask import (
     AskItemRefSnapshot,
     AskRequest,
     AskResponse,
+    AskToolTrace,
     AskToolUse,
     AskTripIntent,
     CreateOutfitRevisionRequest,
@@ -164,6 +165,11 @@ async def ask(
         ),
         recommendation_id=recommendation_id,
         used=[AskToolUse(tool=u.tool, summary=u.summary) for u in result.used],
+        tool_trace=[AskToolTrace(
+            tool=entry.tool, arguments=entry.arguments, result=entry.result,
+            status=entry.status, duration_ms=entry.duration_ms,
+        ) for entry in result.tool_trace],
+        failure_reason=result.failure_reason,
         trip_intent=(
             AskTripIntent(
                 is_trip=result.trip_intent.is_trip,

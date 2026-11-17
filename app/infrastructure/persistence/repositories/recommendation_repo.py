@@ -372,6 +372,20 @@ class SqlAlchemyRecommendationRepository:
             ),
         )
 
+    async def list_favorited_outfits(
+        self, user_id: uuid.UUID, *, limit: int, offset: int
+    ) -> list[Outfit]:
+        result = await self.session.scalars(
+            select(Outfit)
+            .join(OutfitFavorite, OutfitFavorite.outfit_id == Outfit.id)
+            .options(selectinload(Outfit.items))
+            .where(OutfitFavorite.user_id == user_id, Outfit.user_id == user_id)
+            .order_by(OutfitFavorite.created_at.desc(), Outfit.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result)
+
     async def add_outfit_favorite(self, user_id: uuid.UUID, outfit_id: uuid.UUID) -> None:
         """Idempotently favorite an outfit for a user."""
         from sqlalchemy.dialects.postgresql import insert as pg_insert

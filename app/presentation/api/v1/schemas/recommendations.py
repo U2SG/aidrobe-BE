@@ -177,6 +177,13 @@ class FavoriteOutfitResponse(BaseModel):
     success: bool
 
 
+class FavoriteOutfitsResponse(BaseModel):
+    items: list[OutfitResponse]
+    limit: int
+    offset: int
+    has_more: bool
+
+
 class ReplacementCandidateResponse(BaseModel):
     item_id: UUID
     title: str

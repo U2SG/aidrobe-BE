@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import date as DateValue
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -133,6 +133,14 @@ class AskToolUse(BaseModel):
     summary: str
 
 
+class AskToolTrace(BaseModel):
+    tool: str
+    arguments: dict[str, Any]
+    result: dict[str, Any]
+    status: str
+    duration_ms: int
+
+
 class AskResponse(BaseModel):
     ask_session_id: uuid.UUID
     styling: StylingResponse | None = None
@@ -157,6 +165,8 @@ class AskResponse(BaseModel):
     trip_intent: AskTripIntent | None = None
     # What the answer looked at (butler tools). Empty when no tool was used.
     used: list[AskToolUse] = Field(default_factory=list)
+    tool_trace: list[AskToolTrace] = Field(default_factory=list)
+    failure_reason: str | None = None
 
 
 class AskHistoryItem(BaseModel):

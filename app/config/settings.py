@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     LLM_ASK_TIMEOUT_SECONDS: float = 12.0
     # Ask butler tools are available on the structured Qwen path.
     ENABLE_ASK_TOOLS: bool = False
-    ASK_TOOL_MAX_ROUNDS: int = 4
+    ASK_TOOL_MAX_ROUNDS: int = 5
     # Tool loop deadline, including model rounds and tool execution.
     ASK_TOOL_TOTAL_TIMEOUT_SECONDS: float = 12.0
     EMBEDDING_PROVIDER: str = "fake"

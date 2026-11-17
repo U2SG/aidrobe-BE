@@ -1,16 +1,33 @@
 import asyncio
 import json
 from collections.abc import Sequence
-from typing import Any
+from time import monotonic
+from typing import Any, NoReturn
 
 import httpx
 import structlog
 
-from app.application.ports.llm import LlmAnswer, ToolAskAnswer, ToolExecutor, ToolSpec, ToolUse
+from app.application.ports.llm import LlmAnswer, ToolAskAnswer, ToolExecutor, ToolResult, ToolSpec, ToolTrace, ToolUse
 from app.config.settings import Settings
 
 logger = structlog.get_logger(__name__)
 _MAX_TOOL_CALLS_PER_ROUND = 4
+_MAX_TRACE_TEXT = 12_000
+
+
+def _trace_payload(value: Any) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {"value": value}
+    try:
+        encoded = json.dumps(payload, ensure_ascii=False, default=str, allow_nan=False)
+    except ValueError:
+        return {"error": "tool payload is not finite JSON"}
+    if len(encoded) > _MAX_TRACE_TEXT:
+        return {"truncated": True, "preview": encoded[:_MAX_TRACE_TEXT]}
+    return dict(json.loads(encoded))
+
+
+def _reject_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"Invalid JSON constant: {value}")
 
 
 def _thinking_off(model: str) -> dict[str, Any]:
@@ -92,7 +109,7 @@ class QwenLlm:
         execute: ToolExecutor,
         *,
         json_mode: bool = False,
-        max_rounds: int = 4,
+        max_rounds: int = 5,
     ) -> ToolAskAnswer:
         """OpenAI-compatible tool loop. The model may call tools for up to
         `max_rounds - 1` rounds. The final round sets tool_choice=none.
@@ -112,8 +129,10 @@ class QwenLlm:
         ]
         headers = {"Authorization": f"Bearer {self.settings.QWEN_API_KEY}"}
         used: list[ToolUse] = []
+        trace: list[ToolTrace] = []
         tokens = 0
         rounds = 0
+        phase = "provider"
         try:
             async with (
                 asyncio.timeout(self.settings.ASK_TOOL_TOTAL_TIMEOUT_SECONDS),
@@ -141,7 +160,8 @@ class QwenLlm:
                     calls = message.get("tool_calls") or []
                     if final or not calls:
                         return ToolAskAnswer(
-                            text=str(message.get("content") or ""), tokens_used=tokens, used=used, rounds=rounds
+                            text=str(message.get("content") or ""), tokens_used=tokens, used=used,
+                            rounds=rounds, tool_trace=trace,
                         )
                     calls = calls[:_MAX_TOOL_CALLS_PER_ROUND]
                     messages.append(
@@ -150,23 +170,50 @@ class QwenLlm:
                     for call in calls:
                         function = call.get("function") or {}
                         name = str(function.get("name") or "")
+                        started = monotonic()
+                        result = ToolResult({"error": "tool execution interrupted"}, "")
                         try:
-                            arguments = json.loads(function.get("arguments") or "{}")
-                        except ValueError:
-                            arguments = {}
-                        result = await execute(name, arguments if isinstance(arguments, dict) else {})
-                        if result.summary:
+                            arguments = json.loads(
+                                function.get("arguments") or "{}", parse_constant=_reject_json_constant,
+                            )
+                        except (TypeError, ValueError):
+                            arguments = None
+                        try:
+                            if not isinstance(arguments, dict):
+                                result = ToolResult({"error": "tool arguments must be a JSON object"}, "")
+                            else:
+                                phase = "tool"
+                                result = await execute(name, arguments)
+                        finally:
+                            content = _trace_payload(result.content)
+                            failed = bool(content.get("error")) or (
+                                isinstance(result.content, dict) and result.content.get("valid") is False
+                            )
+                            trace.append(ToolTrace(
+                                tool=name[:80], arguments=_trace_payload(arguments), result=content,
+                                status="error" if failed else "success",
+                                duration_ms=max(0, round((monotonic() - started) * 1000)),
+                            ))
+                        if result.summary and not failed:
                             used.append(ToolUse(tool=name, summary=result.summary))
                         messages.append(
                             {
                                 "role": "tool",
                                 "tool_call_id": call.get("id", ""),
-                                "content": json.dumps(result.content, ensure_ascii=False, default=str),
+                                "content": json.dumps(result.content, ensure_ascii=False, default=str, allow_nan=False),
                             }
                         )
+                        phase = "provider"
         except Exception as exc:
-            logger.warning("qwen_llm_ask_with_tools_failed", error=repr(exc), rounds=rounds)
-            return ToolAskAnswer(text="", tokens_used=tokens, used=used, rounds=rounds)
+            logger.warning("qwen_llm_ask_with_tools_failed", error_type=type(exc).__name__, rounds=rounds)
+            reason = "provider_error" if phase == "provider" else "tool_error"
+            if isinstance(exc, TimeoutError):
+                reason = "deadline_exceeded"
+            elif isinstance(exc, httpx.TimeoutException):
+                reason = "provider_timeout" if phase == "provider" else "tool_timeout"
+            return ToolAskAnswer(
+                text="", tokens_used=tokens, used=used, rounds=rounds, tool_trace=trace, failure_reason=reason,
+            )
 
 
 def _extract_total_tokens(data: dict[str, Any]) -> int:
