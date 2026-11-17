@@ -358,6 +358,37 @@ async def test_v7_board_remains_readable_but_new_generation_uses_v8(
         assert legacy.json()["image_url"] == saved.image_url
 
 
+@pytest.mark.parametrize("generation_status", ["completed", "rejected_by_quality_gate"])
+async def test_v7_board_lookup_survives_its_original_outfit(
+    db_session: AsyncSession, generation_status: str,
+) -> None:
+    user_id, stranger_id = uuid.uuid4(), uuid.uuid4()
+    outfit_id = await _seed_outfit(db_session, user_id)
+    saved = await _seed_reviewed_board(
+        db_session, user_id, outfit_id, "gpt-reviewed-v7", generation_status=generation_status,
+    )
+    original = await db_session.get(Outfit, outfit_id, options=[selectinload(Outfit.items)])
+    assert original is not None
+    await db_session.delete(original)
+    db_session.add(User(id=stranger_id))
+    await db_session.flush()
+    assert await db_session.get(Outfit, outfit_id) is None
+
+    paths = (f"/v1/outfits/{outfit_id}/share-asset", f"/v1/outfit-visual-assets/{saved.id}")
+    async with AsyncClient(transport=ASGITransport(app=_app(db_session)), base_url="http://testserver") as client:
+        for path in paths:
+            response = await client.get(path, headers={"X-User-Id": str(user_id)})
+            assert response.status_code == 200, response.text
+            assert response.json()["asset_id"] == str(saved.id)
+            assert response.json()["generation_status"] == generation_status
+            assert response.json()["image_url"] == (
+                saved.image_url if generation_status == "completed" else None
+            )
+            foreign = await client.get(path, headers={"X-User-Id": str(stranger_id)})
+            assert foreign.status_code == 404
+    assert await db_session.scalar(select(func.count()).select_from(AsyncJob)) == 1
+
+
 @pytest.mark.parametrize("layout_version", ["gpt-reviewed-v7", "gpt-reviewed-v8"])
 async def test_readable_board_version_does_not_expose_a_quality_rejected_image(
     db_session: AsyncSession, layout_version: str,

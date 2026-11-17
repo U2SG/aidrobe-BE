@@ -335,7 +335,8 @@ async def get_generated_outfit_image(
         if outfit is None:
             outfit = await SqlAlchemyRecommendationRepository(db).get_outfit_for_user(outfit_id, current_user.id)
         if outfit is None:
-            break
+            # Saved boards outlive daily outfits; still check older approved versions.
+            continue
         if items is None:
             items = await _outfit_board_item_list(db, outfit_id=outfit_id, user_id=current_user.id, generate=True)
         reusable = await _reusable_generated_board(
