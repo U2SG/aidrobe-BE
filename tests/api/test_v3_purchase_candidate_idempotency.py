@@ -22,13 +22,13 @@ from app.infrastructure.persistence.repositories.purchase_decision_repo import (
 from app.infrastructure.vision.fake_vision import FakeVision
 from app.presentation.api.v1.routers import purchase_candidates
 from tests.api.test_v3_purchase_candidates import (
-    _StubLinkParser,
     _build_app,
     _client,
     _enable_flag,
     _key_for,
     _seed_user,
     _signer,
+    _StubLinkParser,
 )
 
 

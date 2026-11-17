@@ -203,13 +203,15 @@ async def test_context_validation_owner_and_feature_gates(
         assert (await client.post(path)).status_code == 200
         settings.ENABLE_DESIGNER_SESSIONS = True
         settings.ENABLE_V3_PURCHASE_DECISION = False
-        assert (await client.put(f"/v1/wardrobe-decisions/{purchase_id}/choice", json={"choice": "buy"})).status_code == 503
+        disabled = await client.put(f"/v1/wardrobe-decisions/{purchase_id}/choice", json={"choice": "buy"})
+        assert disabled.status_code == 503
         history = await client.get(f"/v1/ask/conversations/{request['conversation_id']}")
         assert history.json()["purchase_decisions"] == []
         settings.ENABLE_V3_PURCHASE_DECISION = True
     async with _client(app, stranger_id) as client:
         assert (await client.get(f"/v1/wardrobe-decisions/{purchase_id}")).status_code == 404
-        assert (await client.put(f"/v1/wardrobe-decisions/{purchase_id}/choice", json={"choice": "buy"})).status_code == 404
+        foreign = await client.put(f"/v1/wardrobe-decisions/{purchase_id}/choice", json={"choice": "buy"})
+        assert foreign.status_code == 404
         own_path = f"/v1/purchase-candidates/{foreign_candidate_id}/decision"
         assert (await client.post(own_path, json=request)).status_code == 404
 
@@ -339,7 +341,9 @@ async def test_source_or_choice_change_during_provider_cannot_save_a_stale_follo
         ) -> ToolAskAnswer:
             assert "Saved purchase evaluations" in system_prompt
             await asyncio.wait_for(mutate(), timeout=5)
-            return ToolAskAnswer(json.dumps({"answer": "A stale answer", "reply_kind": "general", "referenced_items": []}), 5)
+            return ToolAskAnswer(json.dumps({
+                "answer": "A stale answer", "reply_kind": "general", "referenced_items": [],
+            }), 5)
 
         monkeypatch.setattr(model, "ask_with_tools", changed_during_answer)
         response = await client.post("/v1/ask", json={
@@ -348,7 +352,9 @@ async def test_source_or_choice_change_during_provider_cannot_save_a_stale_follo
         })
         assert response.status_code == 409, response.text
         assert await db_session.scalar(select(func.count()).select_from(AskSession)) == 1
-        conversation = await db_session.get(AskConversation, uuid.UUID(request["conversation_id"]), populate_existing=True)
+        conversation = await db_session.get(
+            AskConversation, uuid.UUID(request["conversation_id"]), populate_existing=True,
+        )
         assert conversation is not None and conversation.styling_revision == 1
         choice = await db_session.get(WardrobeDecisionChoice, decision_id, populate_existing=True)
         assert (choice.choice if choice else None) == ("buy" if operation == "choice" else None)
@@ -372,7 +378,9 @@ async def test_purchase_choice_cannot_be_promoted_to_a_durable_preference(
         ) -> ToolAskAnswer:
             return ToolAskAnswer(json.dumps({
                 "answer": "知道了", "reply_kind": "general", "referenced_items": [],
-                "stated_preferences": [{"type": "color", "value": "red", "polarity": "positive", "evidence_text": evidence}],
+                "stated_preferences": [{
+                    "type": "color", "value": "red", "polarity": "positive", "evidence_text": evidence,
+                }],
             }, ensure_ascii=False), 5)
 
         monkeypatch.setattr(model, "ask_with_tools", inferred_memory)

@@ -1432,8 +1432,11 @@ async def answer_question(
     # the revision only now, under the same User -> conversation lock order as memory deletion.
     pref_repo = SqlAlchemyPreferenceMemoryRepository(session)
     locked_memory_user = await pref_repo.lock_user(user_id)
-    if ((reference_id is not None or purchase_context.decisions) and locked_memory_user.memory_context_reset_at is not None
-            and locked_memory_user.memory_context_reset_at > turn_started_at):
+    if (
+        (reference_id is not None or purchase_context.decisions)
+        and locked_memory_user.memory_context_reset_at is not None
+        and locked_memory_user.memory_context_reset_at > turn_started_at
+    ):
         raise conflict("The reference or memory changed while preparing this design. Please try again.")
     await validate_purchase_continuation(
         session, user_id, conversation.id, purchase_context, question, after=locked_memory_user.memory_context_reset_at,

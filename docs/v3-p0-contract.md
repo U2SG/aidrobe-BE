@@ -426,9 +426,10 @@ latest brief and ask the user to evaluate against the displayed conditions with
 a new assessment request ID; ordinary transport retries reuse the original ID.
 
 Migration `0058_link_purchase_decisions` uses immutable conversation lineage
-instead of a deleting/nullable conversation FK. A downgrade refuses multiple
-assessments for one candidate before changing the schema, rather than deleting
-history to restore the old global unique index.
+instead of a deleting/nullable conversation FK. A downgrade refuses any linked
+assessment, saved choice or candidate retry identity before changing the schema,
+rather than discarding those records to restore the old schema. Legacy data
+without the new records can still round-trip.
 
 ## 6. Static try-on preview contract
 

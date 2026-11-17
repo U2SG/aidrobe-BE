@@ -39,6 +39,7 @@ No provider call and no LLM: the decision is rules over evidence
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -196,6 +197,10 @@ class DecidePurchase:
             uncertainty=outcome.uncertainty,
             visual_need=outcome.visual_need,
         )
+        if design is not None:
+            # now() in Postgres is the transaction start, which may precede a
+            # forget operation we waited for. Use the actual frozen-context time.
+            decision.created_at = datetime.fromisoformat(design.snapshot["captured_at"])
         return await self._add_or_replay(decision, candidate.id, user_id)
 
     async def _add_or_replay(

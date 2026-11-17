@@ -7,12 +7,12 @@ from types import ModuleType
 
 import pytest
 import sqlalchemy as sa
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from app.infrastructure.persistence.models import Base
 from app.infrastructure.persistence.models.purchase_decision import (
     PurchaseCandidate,
@@ -78,6 +78,14 @@ async def test_upgrade_preserves_legacy_and_downgrade_refuses_to_delete_linked_h
         )
         with pytest.raises(IntegrityError), connection.begin_nested():
             connection.execute(sa.text(base_insert), {**params, "id": uuid.uuid4()})
+        connection.execute(sa.text("""
+            INSERT INTO wardrobe_decision_choices (decision_id,user_id,choice,source,updated_at)
+            VALUES (:id,:user_id,'buy','button',now())
+        """), {"id": legacy_id, "user_id": user_id})
+        with pytest.raises(DBAPIError, match="linked purchase history"), connection.begin_nested():
+            linked.downgrade()
+        assert connection.scalar(sa.text("SELECT choice FROM wardrobe_decision_choices")) == "buy"
+        connection.execute(sa.text("DELETE FROM wardrobe_decision_choices"))
         linked_insert = """
             INSERT INTO wardrobe_decisions
                 (id,user_id,candidate_id,decision_type,snapshot_version,context_snapshot,evidence_snapshot,
@@ -92,7 +100,7 @@ async def test_upgrade_preserves_legacy_and_downgrade_refuses_to_delete_linked_h
                                                    "request_id": uuid.uuid4()})
         with pytest.raises(IntegrityError), connection.begin_nested():
             connection.execute(sa.text(linked_insert), {**first, "id": uuid.uuid4()})
-        with pytest.raises(DBAPIError, match="multiple evaluations per candidate"), connection.begin_nested():
+        with pytest.raises(DBAPIError, match="linked purchase history"), connection.begin_nested():
             linked.downgrade()
         assert connection.scalar(sa.text("SELECT count(*) FROM wardrobe_decisions")) == 3
         assert "wardrobe_decision_choices" in sa.inspect(connection).get_table_names()

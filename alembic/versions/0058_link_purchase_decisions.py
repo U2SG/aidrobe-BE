@@ -57,13 +57,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # A destructive deduplication would erase immutable user history. Refuse the
-    # rollback before changing any schema when the old invariant cannot hold.
+    # Refuse before changing schema: even one linked result or saved choice
+    # contains provenance the previous schema cannot preserve. Flag rollback
+    # remains available without dropping the user's history.
     op.execute("""
         DO $$ BEGIN
-          IF EXISTS (SELECT 1 FROM wardrobe_decisions WHERE candidate_id IS NOT NULL
-                     GROUP BY candidate_id HAVING count(*) > 1) THEN
-            RAISE EXCEPTION 'Cannot downgrade 0058: multiple evaluations per candidate; preserve history first';
+          IF EXISTS (SELECT 1 FROM wardrobe_decisions WHERE request_id IS NOT NULL)
+             OR EXISTS (SELECT 1 FROM wardrobe_decision_choices)
+             OR EXISTS (SELECT 1 FROM purchase_candidates WHERE client_request_id IS NOT NULL) THEN
+            RAISE EXCEPTION 'Cannot downgrade 0058: linked purchase history or retry identities exist; preserve data first';
           END IF;
         END $$;
     """)

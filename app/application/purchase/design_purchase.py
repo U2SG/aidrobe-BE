@@ -149,8 +149,10 @@ async def contextualize_purchase(
                                else "先确认适合这次场景，再决定是否添置。"),
                 next_actions=("skip", "style_with_existing"),
             )
-        text = ("There is no recorded evidence that this candidate and its supporting pieces suit the requested occasion."
-                if english else "候选信息和搭配衣物都还没有支持这次场景的记录，不能确认场景适用。")
+        text = (
+            "There is no recorded evidence that this candidate and its supporting pieces suit the requested occasion."
+            if english else "候选信息和搭配衣物都还没有支持这次场景的记录，不能确认场景适用。"
+        )
         reasons = [reason for reason in reasons if reason.kind != "scene_coverage"]
         reasons.insert(0, DecisionReason(kind="scene_coverage", text=text))
     if styles and not style_matches:
