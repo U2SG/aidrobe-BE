@@ -39,22 +39,27 @@ No provider call and no LLM: the decision is rules over evidence
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ask.styling import StylingService, conflict, fingerprint, lock_request
 from app.application.purchase.candidate_normalizer import ParsedItem
 from app.application.purchase.compose_outfit_evidence import compose_outfit_evidence
 from app.application.purchase.compute_similarity_evidence import compute_similarity_evidence
+from app.application.purchase.design_purchase import PurchaseDesign, contextualize_purchase, resolve_purchase_design
 from app.application.purchase.purchase_decision_rules import (
     CONCERN_NONE,
     PurchaseDecisionOutcome,
     decide,
     replay_decision,
 )
+from app.common import error_codes
 from app.common.enums import WardrobeDecisionType
+from app.common.exceptions import FriendlyException
 from app.common.locale import resolve_locale
 from app.infrastructure.persistence.models.purchase_decision import (
     DECISION_SNAPSHOT_VERSION,
@@ -115,22 +120,57 @@ class DecidePurchase:
         candidate: PurchaseCandidate,
         *,
         concern: str = CONCERN_NONE,
+        conversation_id: uuid.UUID | None = None,
+        expected_revision: int | None = None,
+        request_id: uuid.UUID | None = None,
     ) -> WardrobeDecision:
         """The existing decision for this candidate, or a newly frozen one."""
-        existing = await self.decisions.get_for_candidate(candidate.id, user_id)
+        if candidate.user_id != user_id:
+            raise FriendlyException(error_codes.NOT_FOUND, "Purchase candidate not found", 404)
+        context_values = (conversation_id, expected_revision, request_id)
+        if any(value is not None for value in context_values) and any(value is None for value in context_values):
+            raise FriendlyException(error_codes.VALIDATION_ERROR, "Incomplete design context", 422)
+        design: PurchaseDesign | None = None
+        request_hash: str | None = None
+        if request_id is not None:
+            await lock_request(self.session, user_id, request_id)
+            request_hash = fingerprint(
+                "purchase", candidate_id=candidate.id, concern=concern,
+                conversation_id=conversation_id, expected_revision=expected_revision,
+            )
+            existing = await self.decisions.get_for_request(user_id, request_id)
+            if existing is not None and existing.request_fingerprint != request_hash:
+                raise conflict("request_id was already used for a different action")
+        else:
+            existing = await self.decisions.get_for_candidate(candidate.id, user_id)
         if existing is not None:
             return existing
+        if request_id is not None and conversation_id is not None and expected_revision is not None:
+            await StylingService(self.session, user_id).replay(request_id, request_hash or "")
+            design = await resolve_purchase_design(self.session, user_id, conversation_id, expected_revision)
 
         parsed = parsed_item_from_snapshot(candidate.parsed_item)
         locale = await self._locale(user_id)
         closet = await compute_similarity_evidence(self.session, user_id, parsed)
-        outfit = await compose_outfit_evidence(self.session, user_id, parsed, closet)
+        outfit = (
+            await compose_outfit_evidence(self.session, user_id, parsed, closet, constraints=design.composition)
+            if design is not None else await compose_outfit_evidence(self.session, user_id, parsed, closet)
+        )
         outcome = decide(parsed, closet, outfit, concern=concern, locale=locale)
+        design_evidence: dict[str, Any] | None = None
+        if design is not None:
+            outcome, design_evidence = await contextualize_purchase(
+                self.session, user_id, design, parsed, outfit, outcome, locale,
+            )
 
         decision = WardrobeDecision(
             user_id=user_id,
             decision_type=WardrobeDecisionType.PURCHASE.value,
             candidate_id=candidate.id,
+            conversation_id=conversation_id,
+            design_revision=expected_revision,
+            request_id=request_id,
+            request_fingerprint=request_hash,
             snapshot_version=DECISION_SNAPSHOT_VERSION,
             context_snapshot={
                 "concern": concern,
@@ -138,16 +178,29 @@ class DecidePurchase:
                 "candidate_status": candidate.status,
                 "source_type": candidate.source_type,
                 "locale": locale,
+                **({
+                    "design_context": design.snapshot,
+                    "candidate_source": {
+                        "source_type": candidate.source_type, "source_url": candidate.source_url,
+                        "source_object_key": candidate.source_object_key,
+                        "created_at": candidate.created_at.isoformat(),
+                    },
+                } if design is not None else {}),
             },
             evidence_snapshot={
                 "closet_evidence": closet.as_payload(),
                 "outfit_evidence": outfit.as_payload(),
                 "decision": outcome.as_payload(),
+                **({"design_evidence": design_evidence} if design_evidence is not None else {}),
             },
             decision=outcome.decision,
             uncertainty=outcome.uncertainty,
             visual_need=outcome.visual_need,
         )
+        if design is not None:
+            # now() in Postgres is the transaction start, which may precede a
+            # forget operation we waited for. Use the actual frozen-context time.
+            decision.created_at = datetime.fromisoformat(design.snapshot["captured_at"])
         return await self._add_or_replay(decision, candidate.id, user_id)
 
     async def _add_or_replay(
@@ -166,11 +219,16 @@ class DecidePurchase:
             async with self.session.begin_nested():
                 await self.decisions.add(decision)
         except IntegrityError:
-            winner = await self.decisions.get_for_candidate(candidate_id, user_id)
+            winner = (
+                await self.decisions.get_for_request(user_id, decision.request_id) if decision.request_id is not None
+                else await self.decisions.get_for_candidate(candidate_id, user_id)
+            )
             if winner is None:
                 # The unique index was not what rejected the row — do not
                 # swallow a real integrity problem behind an empty read.
                 raise
+            if winner.request_fingerprint != decision.request_fingerprint:
+                raise conflict("request_id was already used for a different action") from None
             return winner
         return decision
 

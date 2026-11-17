@@ -30,6 +30,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.ask.butler import AskButler, pick_inspiration_outfit
 from app.application.ask.design_types import DesignBrief, StylingConstraints
 from app.application.ask.packing_answer import read_saved_packing_answer
+from app.application.ask.purchase_context import (
+    PurchaseContinuation,
+    explicit_purchase_choice,
+    has_independent_preference_evidence,
+    load_purchase_continuation,
+    validate_purchase_continuation,
+)
 from app.application.ask.styling import StylingService, conflict, fingerprint, lock_request
 from app.application.ask.wardrobe_context import (
     WardrobeContext,
@@ -55,6 +62,7 @@ from app.application.preferences.memory import (
     read_preference_memory,
     record_preference,
 )
+from app.application.purchase.choose_purchase import choose_purchase
 from app.application.safety.copy_guard import find_forbidden_terms, sanitize_generated_copy
 from app.application.style.inspiration_analysis import apply_visual_style, learn_from_image
 from app.common import error_codes
@@ -72,6 +80,7 @@ from app.infrastructure.persistence.models.ask_conversation import (
 )
 from app.infrastructure.persistence.models.ask_session import AskSession
 from app.infrastructure.persistence.models.async_job import AsyncJob
+from app.infrastructure.persistence.models.purchase_decision import WardrobeDecision
 from app.infrastructure.persistence.models.recommendation import DailyRecommendation
 from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
@@ -698,7 +707,8 @@ def _message_for_prompt(message: AskMessage, *, max_len: int) -> dict[str, str] 
     reference_id = constraints.get("inspiration_id") if isinstance(constraints, dict) else None
     # Re-read revocable sources; old messages also identify the photo through their saved brief.
     if message.role == "assistant" and (
-        metadata.get("wear_feedback_used") or metadata.get("reference_context_used") or reference_id
+        metadata.get("wear_feedback_used") or metadata.get("reference_context_used")
+        or metadata.get("purchase_context_used") or reference_id
     ):
         return None
     content = sanitize_llm_text(message.content, max_len=max_len)
@@ -862,6 +872,11 @@ async def answer_question(
             AskStylingRevision.user_id == user_id, AskStylingRevision.request_id == request_id
         ))
         if collision is not None:
+            raise conflict("request_id was already used for a different action")
+        purchase_collision = await session.scalar(select(WardrobeDecision.id).where(
+            WardrobeDecision.user_id == user_id, WardrobeDecision.request_id == request_id,
+        ))
+        if purchase_collision is not None:
             raise conflict("request_id was already used for a different action")
     # Validate the focused item before any quota/LLM work. Per repo convention
     # a non-owned (or soft-deleted) resource returns 404 — never reveal that
@@ -1110,6 +1125,7 @@ async def answer_question(
     # persisted settings locale (then the zh-CN default) so the answer
     # language tracks the user's UI choice.
     recent_messages: list[AskMessage] = []
+    memory_reset_at = None
     if conversations_enabled:
         memory_reset_at = await session.scalar(select(User.memory_context_reset_at).where(User.id == user_id))
         recent_messages = await conversation_repo.list_messages(
@@ -1117,6 +1133,10 @@ async def answer_question(
         )
     conversation_context = (
         _conversation_state_for_prompt(conversation_state, items, recent_messages) if conversations_enabled else {}
+    )
+    purchase_context = (
+        await load_purchase_continuation(session, user_id, conversation.id, question, after=memory_reset_at)
+        if designing and settings.ENABLE_V3_PURCHASE_DECISION else PurchaseContinuation()
     )
     if reference_id is not None:
         # Older replies could turn photo observations into unattributed conditions; the saved brief is authoritative.
@@ -1173,6 +1193,7 @@ async def answer_question(
         recent_ref_positions=recent_positions,
         butler=butler is not None,
     )
+    system_prompt += purchase_context.prompt()
     wear_feedback_revisions: list[int] = []
     if designing and current_styling is not None and packing_answer is None:
         saved_feedback = await SqlAlchemyRecommendationRepository(session).list_design_wear_feedback(
@@ -1412,9 +1433,15 @@ async def answer_question(
     # the revision only now, under the same User -> conversation lock order as memory deletion.
     pref_repo = SqlAlchemyPreferenceMemoryRepository(session)
     locked_memory_user = await pref_repo.lock_user(user_id)
-    if (reference_id is not None and locked_memory_user.memory_context_reset_at is not None
-            and locked_memory_user.memory_context_reset_at > turn_started_at):
+    if (
+        (reference_id is not None or purchase_context.decisions)
+        and locked_memory_user.memory_context_reset_at is not None
+        and locked_memory_user.memory_context_reset_at > turn_started_at
+    ):
         raise conflict("The reference or memory changed while preparing this design. Please try again.")
+    await validate_purchase_continuation(
+        session, user_id, conversation.id, purchase_context, question, after=locked_memory_user.memory_context_reset_at,
+    )
     if new_analysis is not None and reference_id is not None:
         source = await SqlAlchemyStyleRepository(session).get_by_id(reference_id, user_id)
         if source is None:
@@ -1473,6 +1500,8 @@ async def answer_question(
         persisted_context["design_brief"] = current_brief.model_dump(mode="json")
     if wear_feedback_revisions:
         persisted_context["wear_feedback_versions"] = wear_feedback_revisions
+    if purchase_context.decisions:
+        persisted_context["purchase_decision_ids"] = [str(row.id) for row in purchase_context.decisions]
     if trip_intent is not None:
         # BE#120 — persist the trip signal so history can re-offer the
         # packing-list handoff; only affirmative intents are stored.
@@ -1495,6 +1524,15 @@ async def answer_question(
     if designing:
         ask_row.client_request_id = request_id
         ask_row.request_fingerprint = request_hash
+    if purchase_context.pending is not None:
+        await choose_purchase(
+            session, user_id, purchase_context.pending.decision_id, purchase_context.pending.choice,
+            ask_session_id=ask_row.id,
+        )
+        persisted_context["purchase_choice"] = {
+            "decision_id": str(purchase_context.pending.decision_id), "choice": purchase_context.pending.choice,
+        }
+        ask_row.context = dict(persisted_context)
     session.add(
         AsyncJob(
             job_type=_JOB_TYPE,
@@ -1528,6 +1566,7 @@ async def answer_question(
             "item_refs": item_refs,
             **({"wear_feedback_used": True} if wear_feedback_revisions else {}),
             **({"reference_context_used": True} if reference_id is not None else {}),
+            **({"purchase_context_used": True} if purchase_context.decisions else {}),
             **({"styling_revision_id": str(current_styling.id)} if current_styling is not None and designing else {}),
             **(
                 {"design_brief": current_brief.model_dump(mode="json")}
@@ -1541,7 +1580,7 @@ async def answer_question(
     )
     active_constraints = _merge_unique(
         existing_constraints,
-        (heuristic_constraints if wear_feedback_revisions or reference_id is not None
+        (heuristic_constraints if wear_feedback_revisions or reference_id is not None or purchase_context.decisions
          else response_deltas.applied_constraints),
         limit=_MAX_CONSTRAINTS,
     )
@@ -1565,13 +1604,15 @@ async def answer_question(
         state=conversation_state,
         last_outfit={
             "item_refs": item_refs,
-            "answer": "" if reference_id is not None else sanitize_llm_text(answer_text, max_len=240),
+            "answer": "" if reference_id is not None or purchase_context.decisions
+            else sanitize_llm_text(answer_text, max_len=240),
         } if current_styling is None else {
             "item_refs": [
                 str(item.item_id) for item in (await styling_service.owned_outfit(current_styling.outfit_id)).items
             ],
             "outfit_id": str(current_styling.outfit_id), "revision": current_styling.revision,
-            "answer": "" if reference_id is not None else sanitize_llm_text(answer_text, max_len=240),
+            "answer": "" if reference_id is not None or purchase_context.decisions
+            else sanitize_llm_text(answer_text, max_len=240),
         },
         active_constraints=active_constraints,
         rejected_item_ids=rejected_item_ids,
@@ -1589,6 +1630,10 @@ async def answer_question(
         for pref in stated_preferences:
             evidence = pref.get("evidence_text")
             if not isinstance(evidence, str) or not evidence.strip() or evidence not in question:
+                continue
+            if (purchase_context.decisions or explicit_purchase_choice(question)) and (
+                not has_independent_preference_evidence(evidence)
+            ):
                 continue
             # BE#87 — drop any preference whose value contains forbidden copy
             # (body-shaming / age-anxiety language). Dropping is honest;

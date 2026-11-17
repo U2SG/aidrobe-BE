@@ -29,11 +29,13 @@ key, not the URL, goes in the row.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections.abc import Callable
 
 import httpx
 import structlog
+from sqlalchemy import select, text
 
 from app.application.ports.ocr import OcrPort
 from app.application.ports.vision import VisionPort, VisionResult
@@ -118,10 +120,37 @@ class IngestPurchaseCandidate:
         source_type: str,
         source_url: str | None = None,
         source_object_key: str | None = None,
+        request_id: uuid.UUID | None = None,
     ) -> PurchaseCandidate:
         self._validate_source(source_type, source_url, source_object_key)
         if source_object_key is not None:
             assert_owned_object_key(source_object_key, user_id)
+
+        if request_id is not None:
+            # Keep a lost-response retry from parsing/billing twice. The lock
+            # is scoped to this request, never the user row, and lasts until
+            # commit so a concurrent retry observes the persisted candidate.
+            digest = hashlib.sha256(f"purchase-candidate:{user_id}:{request_id}".encode()).digest()[:8]
+            await self.repository.session.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"),
+                {"key": int.from_bytes(digest, "big", signed=True)},
+            )
+            existing = await self.repository.session.scalar(
+                select(PurchaseCandidate).where(
+                    PurchaseCandidate.user_id == user_id,
+                    PurchaseCandidate.client_request_id == request_id,
+                )
+            )
+            if existing is not None:
+                if (existing.source_type, existing.source_url, existing.source_object_key) != (
+                    source_type, source_url, source_object_key,
+                ):
+                    raise FriendlyException(
+                        error_codes.STATE_CONFLICT,
+                        "request_id was already used for another candidate source",
+                        status_code=409,
+                    )
+                return existing
 
         parsed, parsed_ok = await self._parse(
             source_type=source_type,
@@ -143,6 +172,7 @@ class IngestPurchaseCandidate:
                 source_type=source_type,
                 source_url=source_url,
                 source_object_key=source_object_key,
+                client_request_id=request_id,
                 status=status.value,
                 parsed_item=parsed.as_payload(),
             )
