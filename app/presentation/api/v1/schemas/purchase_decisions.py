@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.application.ask.design_types import StylingConstraints
 
 Decision = Literal[
     "worth_adding",
@@ -39,6 +41,7 @@ Uncertainty = Literal["low", "medium", "high"]
 VisualNeed = Literal["none", "helpful", "recommended"]
 NextAction = Literal["add_to_candidates", "skip", "recheck_color", "style_with_existing"]
 Concern = Literal["volume", "color", "redundancy", "scene", "none"]
+PurchaseChoice = Literal["buy", "skip", "later"]
 
 
 class DecisionRequest(BaseModel):
@@ -52,6 +55,37 @@ class DecisionRequest(BaseModel):
             "answer); it never changes the decision itself."
         ),
     )
+    conversation_id: uuid.UUID | None = None
+    expected_revision: int | None = Field(default=None, ge=0)
+    request_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def complete_design_context(self) -> Self:
+        provided = (self.conversation_id, self.expected_revision, self.request_id)
+        if any(value is not None for value in provided) and any(value is None for value in provided):
+            raise ValueError("conversation_id, expected_revision and request_id must be provided together")
+        return self
+
+
+class PurchaseChoiceRequest(BaseModel):
+    choice: PurchaseChoice | None
+
+
+class PurchaseDesignContext(BaseModel):
+    """The accepted design used by this immutable evaluation, never the live brief."""
+
+    conversation_id: uuid.UUID
+    revision: int
+    constraints: StylingConstraints
+    styling_revision_id: uuid.UUID | None = None
+    source_message_id: uuid.UUID | None = None
+    source_message_created_at: datetime | None = None
+    inspiration_id: uuid.UUID | None = None
+    inspiration_created_at: datetime | None = None
+    inspiration_learned_at: datetime | None = None
+    captured_at: datetime
+    evaluated_dimensions: list[str] = Field(default_factory=list)
+    unverified_dimensions: list[str] = Field(default_factory=list)
 
 
 class DecisionReasonModel(BaseModel):
@@ -113,3 +147,6 @@ class WardrobeDecisionResponse(BaseModel):
     )
     next_actions: list[NextAction]
     created_at: datetime
+    design_context: PurchaseDesignContext | None = None
+    choice: PurchaseChoice | None = None
+    choice_updated_at: datetime | None = None

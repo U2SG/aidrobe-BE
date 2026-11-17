@@ -3581,6 +3581,8 @@ paths:
         '404':
           description: '`source_asset_id` is not an object key under the caller''s
             own prefix.'
+        '409':
+          description: request_id was already used for another candidate source.
         '503':
           description: '`ENABLE_V3_PURCHASE_DECISION` is off.'
         '422':
@@ -3629,6 +3631,9 @@ paths:
         '404':
           description: No such candidate for this user (a foreign candidate answers
             404, not 403).
+        '409':
+          description: The design changed, or request_id was already used for a different
+            action.
         '503':
           description: '`ENABLE_V3_PURCHASE_DECISION` is off.'
         '422':
@@ -3695,6 +3700,63 @@ paths:
                 $ref: '#/components/schemas/WardrobeDecisionResponse'
         '404':
           description: No such candidate for this user (a foreign candidate answers
+            404, not 403).
+        '409':
+          description: The design changed, or request_id was already used for a different
+            action.
+        '503':
+          description: '`ENABLE_V3_PURCHASE_DECISION` is off.'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/wardrobe-decisions/{decision_id}/choice:
+    put:
+      tags:
+      - wardrobe-decisions
+      summary: Set Purchase Choice
+      operationId: set_purchase_choice_v1_wardrobe_decisions__decision_id__choice_put
+      parameters:
+      - name: decision_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Decision Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseChoiceRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WardrobeDecisionResponse'
+        '404':
+          description: No such decision for this user (a foreign decision answers
             404, not 403).
         '503':
           description: '`ENABLE_V3_PURCHASE_DECISION` is off.'
@@ -5329,6 +5391,11 @@ components:
           anyOf:
           - $ref: '#/components/schemas/PackingListResponse'
           - type: 'null'
+        purchase_decisions:
+          items:
+            $ref: '#/components/schemas/WardrobeDecisionResponse'
+          type: array
+          title: Purchase Decisions
         messages:
           items:
             $ref: '#/components/schemas/AskConversationMessage'
@@ -6664,6 +6731,15 @@ components:
             NOT a UUID and NOT the TTL-bound `file_url`. This service has no generic
             asset table, so the object key IS the asset reference; it must be under
             the caller''s own `users/<user_id>/` prefix.'
+        request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Request Id
+          description: Stable client request ID for this candidate source. Retrying
+            the same source returns the existing candidate without parsing it again;
+            reusing it for another source returns 409.
       type: object
       required:
       - source_type
@@ -6771,6 +6847,24 @@ components:
             a visual preview is offered (`volume`/`color` are the two a static preview
             can answer); it never changes the decision itself.
           default: none
+        conversation_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Conversation Id
+        expected_revision:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Expected Revision
+        request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Request Id
       type: object
       title: DecisionRequest
       description: Contract §5.3 request body. Optional — an omitted body means `none`.
@@ -8427,6 +8521,91 @@ components:
         `parsed_item` still carries whatever partial attributes were recovered so
 
         the client can display and edit them.'
+    PurchaseChoiceRequest:
+      properties:
+        choice:
+          anyOf:
+          - type: string
+            enum:
+            - buy
+            - skip
+            - later
+          - type: 'null'
+          title: Choice
+      type: object
+      required:
+      - choice
+      title: PurchaseChoiceRequest
+    PurchaseDesignContext:
+      properties:
+        conversation_id:
+          type: string
+          format: uuid
+          title: Conversation Id
+        revision:
+          type: integer
+          title: Revision
+        constraints:
+          $ref: '#/components/schemas/StylingConstraints'
+        styling_revision_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Styling Revision Id
+        source_message_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Source Message Id
+        source_message_created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Source Message Created At
+        inspiration_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Inspiration Id
+        inspiration_created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Inspiration Created At
+        inspiration_learned_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Inspiration Learned At
+        captured_at:
+          type: string
+          format: date-time
+          title: Captured At
+        evaluated_dimensions:
+          items:
+            type: string
+          type: array
+          title: Evaluated Dimensions
+        unverified_dimensions:
+          items:
+            type: string
+          type: array
+          title: Unverified Dimensions
+      type: object
+      required:
+      - conversation_id
+      - revision
+      - constraints
+      - captured_at
+      title: PurchaseDesignContext
+      description: The accepted design used by this immutable evaluation, never the
+        live brief.
     PurchaseEvaluation:
       properties:
         confidence:
@@ -10449,6 +10628,25 @@ components:
           type: string
           format: date-time
           title: Created At
+        design_context:
+          anyOf:
+          - $ref: '#/components/schemas/PurchaseDesignContext'
+          - type: 'null'
+        choice:
+          anyOf:
+          - type: string
+            enum:
+            - buy
+            - skip
+            - later
+          - type: 'null'
+          title: Choice
+        choice_updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Choice Updated At
       type: object
       required:
       - id

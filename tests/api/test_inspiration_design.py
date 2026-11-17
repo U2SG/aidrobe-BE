@@ -5,10 +5,56 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.preferences.memory import record_preference
 from app.infrastructure.persistence.models.style import UserStyleProfile
 from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.repositories.preference_memory_repo import SqlAlchemyPreferenceMemoryRepository
 from app.presentation.api.v1.routers import ask
 from tests.api.test_designer_sessions import _setup
+
+
+@pytest.mark.parametrize(("memory_enabled", "overridden", "locked", "expected_top"), [
+    (True, False, False, 0),
+    (True, True, False, 4),
+    (False, False, False, 4),
+    (True, False, True, 4),
+])
+async def test_quick_inspiration_ranks_effective_preferences_before_photo_matches(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+    memory_enabled: bool, overridden: bool, locked: bool, expected_top: int,
+) -> None:
+    app, user_id, items, model, settings = await _setup(db_session, monkeypatch)
+    settings.ENABLE_PREFERENCE_MEMORY = memory_enabled
+    repository = SqlAlchemyPreferenceMemoryRepository(db_session)
+    await record_preference(
+        repository, user_id=user_id, preference_type="color", preference_value="red",
+        polarity="negative", confidence=0.9, source="explicit_user_statement",
+    )
+    source = UserStyleProfile(
+        user_id=user_id, source_type="inspiration_image", learn_status="learned",
+        learned_summary={"style_tags": [], "color_palette": ["red", "black"], "source": "vision"},
+    )
+    db_session.add(source)
+    await db_session.commit()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver",
+                           headers={"X-User-Id": str(user_id)}) as client:
+        response = await client.post("/v1/ask", json={
+            "question": "参考这张图，从我的衣橱里搭一套。",
+            "inspiration_id": str(source.id), "inspiration_only": True,
+            "request_id": str(uuid.uuid4()),
+            "constraints": {
+                "preference_overrides": [{"type": "color", "value": "red"}] if overridden else [],
+                "locked_item_ids": [str(items[4].id)] if locked else [],
+            },
+        })
+    assert response.status_code == 200, response.text
+    selected = {row["item_id"] for row in response.json()["styling"]["outfit"]["items"]}
+    assert str(items[expected_top].id) in selected
+    assert str(items[4 if expected_top == 0 else 0].id) not in selected
+    assert model.calls == 0
+    assert [(row.preference_value, row.polarity) for row in await repository.list_live(user_id)] == [
+        ("red", "negative"),
+    ]
 
 
 async def test_queued_inspiration_uses_visual_palette_to_save_and_restore_a_draft(

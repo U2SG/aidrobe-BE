@@ -26,6 +26,7 @@ from app.infrastructure.persistence.models.preview_feedback import StaticPreview
 from app.infrastructure.persistence.models.purchase_decision import (
     PurchaseCandidate,
     WardrobeDecision,
+    WardrobeDecisionChoice,
 )
 from app.infrastructure.persistence.models.recommendation import (
     DailyRecommendation,
@@ -79,6 +80,7 @@ __all__ = [
     "UserSettings",
     "UserStyleProfile",
     "WardrobeDecision",
+    "WardrobeDecisionChoice",
     "WardrobeItem",
     "WardrobeItemImage",
     "WardrobeItemRelationship",

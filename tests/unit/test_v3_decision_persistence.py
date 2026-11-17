@@ -103,6 +103,7 @@ async def test_candidate_persists_a_stable_reference_not_a_signed_url(
         "id",
         "user_id",
         "source_type",
+        "client_request_id",
         "source_url",
         "source_object_key",
         "status",
@@ -251,7 +252,14 @@ async def test_snapshot_survives_the_wardrobe_it_described(db_session: AsyncSess
 async def test_decision_table_and_repository_are_append_only() -> None:
     assert "updated_at" not in WardrobeDecision.__table__.columns
     public_methods = {name for name in vars(SqlAlchemyWardrobeDecisionRepository) if not name.startswith("_")}
-    assert public_methods == {"add", "get_for_user", "get_for_candidate"}
+    assert public_methods == {
+        "add",
+        "get_for_user",
+        "get_for_candidate",
+        "get_for_request",
+        "list_for_conversation",
+        "choices_for_user",
+    }
 
 
 async def test_one_decision_per_candidate(db_session: AsyncSession) -> None:

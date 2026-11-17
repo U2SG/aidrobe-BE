@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.application.ask.design_types import PreferenceOverride, StylingConstraints
 from app.application.ask.tools import AskTool, ToolRegistry
+from app.application.llm_prompts.self_critique import negative_preference_violations
 from app.application.ports.llm import ToolResult, ToolSpec
 from app.application.ports.weather import WeatherInfo, WeatherPort
 from app.application.preferences.memory import read_preference_memory
@@ -149,6 +150,7 @@ def _outfit_issues(
 def pick_inspiration_outfit(
     items: list[WardrobeItem], constraints: StylingConstraints, *, target: date,
     weather: WeatherInfo | None, palette: set[str], styles: set[str],
+    negative_preferences: list[dict[str, Any]],
 ) -> list[WardrobeItem]:
     """Rank complete wardrobe looks by the saved photo's visual signals."""
     required = set(constraints.locked_item_ids)
@@ -172,23 +174,31 @@ def pick_inspiration_outfit(
             buckets[category] = locked
 
     matches = {item.id: len(styles.intersection(normalize_style_tags(item.style_tags))) for item in items}
+    penalties = {
+        item.id: len(negative_preference_violations([{
+            "id": str(item.id), "color_main": item.color_main, "material": item.material,
+            "fit_status": item.fit_status, "sub_category": item.sub_category,
+        }], negative_preferences)) for item in items
+    }
     colors_by_id = {item.id: item.color_main.lower() for item in items}
     outerwear = buckets[Category.OUTERWEAR]
     layers: list[WardrobeItem | None] = [*outerwear, None]
     occasion = FitScene(constraints.scene) if constraints.scene else None
     best: list[WardrobeItem] = []
-    best_score = (-1, -1, -1, -1)
+    best_score: tuple[int, int, int, int, int] | None = None
     for core in ((Category.TOP, Category.BOTTOM, Category.SHOES), (Category.DRESS, Category.SHOES)):
         for combo in product(*(buckets[category] for category in core), layers):
             look = [item for item in combo if item is not None] + locked_extras
             if len(look) > 8 or not required.issubset(item.id for item in look):
                 continue
             colors = [colors_by_id[item.id] for item in look]
+            # A reference photo does not authorize ignoring the user's effective dislikes.
             score = (
+                -sum(penalties[item.id] for item in look),
                 len(set(colors) & palette), sum(color in palette for color in colors),
                 sum(matches[item.id] for item in look), -len(look),
             )
-            if score > best_score and not _outfit_issues(look, target, occasion, weather):
+            if (best_score is None or score > best_score) and not _outfit_issues(look, target, occasion, weather):
                 best = look
                 best_score = score
     return best
