@@ -1,9 +1,11 @@
 """Butler P0: the Qwen tool-calling loop and the tool registry."""
 
+import asyncio
 import json
 from typing import Any
 
 import httpx
+import pytest
 
 from app.application.ask.tools import AskTool, ToolRegistry
 from app.application.ports.llm import ToolResult, ToolSpec
@@ -65,6 +67,10 @@ async def test_tool_call_is_executed_and_fed_back(monkeypatch) -> None:
     assert tool_message["role"] == "tool" and tool_message["tool_call_id"] == "c1"
     assert json.loads(tool_message["content"])["condition"] == "小雨"
     assert seen[0]["enable_thinking"] is False and seen[0]["tool_choice"] == "auto"
+    assert answer.tool_trace[0].arguments == {"day": "tomorrow"}
+    assert answer.tool_trace[0].result == {"condition": "小雨", "temperature_c": 14}
+    assert answer.tool_trace[0].status == "success"
+    assert answer.tool_trace[0].duration_ms >= 0
 
 
 async def test_last_round_forces_an_answer(monkeypatch) -> None:
@@ -95,6 +101,7 @@ async def test_provider_error_returns_empty_text(monkeypatch) -> None:
 
     answer = await _llm().ask_with_tools("sys", "q", [WEATHER], execute)
     assert answer.text == ""
+    assert answer.failure_reason == "provider_error"
 
 
 async def test_registry_reports_unknown_and_failing_tools_to_the_model() -> None:
@@ -107,3 +114,86 @@ async def test_registry_reports_unknown_and_failing_tools_to_the_model() -> None
     assert (await registry.execute("get_weather", {})).content == {"error": "tool failed"}
     assert [s.name for s in registry.specs] == ["get_weather"]
     assert not ToolRegistry()
+
+
+async def test_default_budget_leaves_a_round_for_validation(monkeypatch) -> None:
+    names = ["get_weather", "update_design_brief", "search_wardrobe", "validate_outfit"]
+    specs = [ToolSpec(name, name, {"type": "object"}) for name in names]
+    final = json.dumps({"answer": "这套保留亮色上衣。", "reply_kind": "outfit", "referenced_items": [1, 2, 3]})
+    seen: list[dict[str, Any]] = []
+    _route(monkeypatch, [*[_reply(calls=[_call(name, {}, str(i))]) for i, name in enumerate(names)],
+                         _reply(final)], seen)
+    executed: list[str] = []
+
+    async def execute(name: str, args: dict[str, Any]) -> ToolResult:
+        executed.append(name)
+        return ToolResult({"valid": True, "positions": [1, 2, 3]}, name)
+
+    llm = _llm()
+    answer = await llm.ask_with_tools("sys", "按天气调整颜色", specs, execute,
+                                      max_rounds=llm.settings.ASK_TOOL_MAX_ROUNDS)
+    assert executed == names
+    assert answer.text == final and answer.tokens_used == 50
+    assert [payload["tool_choice"] for payload in seen] == ["auto", "auto", "auto", "auto", "none"]
+    assert len(answer.tool_trace) == 4 and answer.failure_reason is None
+
+
+@pytest.mark.parametrize("arguments", ['{bad json', '[]', 'null', '{"limit":NaN}', '{"limit":Infinity}'])
+async def test_invalid_arguments_are_traced_without_executing_defaults(monkeypatch, arguments: str) -> None:
+    seen: list[dict[str, Any]] = []
+    call = _call("get_weather", {})
+    call["function"]["arguments"] = arguments
+    _route(monkeypatch, [_reply(calls=[call]), _reply("请确认城市")], seen)
+
+    async def execute(name: str, args: dict[str, Any]) -> ToolResult:
+        raise AssertionError("invalid arguments must not execute a default lookup")
+
+    answer = await _llm().ask_with_tools("sys", "q", [WEATHER], execute)
+    assert answer.used == []
+    assert answer.tool_trace[0].status == "error"
+    assert answer.tool_trace[0].result == {"error": "tool arguments must be a JSON object"}
+    assert json.loads(seen[1]["messages"][-1]["content"])["error"]
+
+
+async def test_invalid_outfit_without_error_text_is_still_a_failed_trace(monkeypatch) -> None:
+    seen: list[dict[str, Any]] = []
+    _route(monkeypatch, [_reply(calls=[_call("validate_outfit", {"positions": [1, 2]})]), _reply("还缺鞋")], seen)
+
+    async def execute(name: str, args: dict[str, Any]) -> ToolResult:
+        return ToolResult({"valid": False, "missing_categories": ["shoes"]}, "")
+
+    answer = await _llm().ask_with_tools("sys", "q", [WEATHER], execute)
+    assert answer.used == []
+    assert answer.tool_trace[0].status == "error"
+    assert answer.tool_trace[0].result["missing_categories"] == ["shoes"]
+
+
+async def test_tool_deadline_preserves_interrupted_execution(monkeypatch) -> None:
+    seen: list[dict[str, Any]] = []
+    _route(monkeypatch, [_reply(calls=[_call("get_weather", {"day": "today"})])], seen)
+
+    async def execute(name: str, args: dict[str, Any]) -> ToolResult:
+        await asyncio.Event().wait()
+        raise AssertionError("deadline should interrupt the tool")
+
+    llm = _llm()
+    llm.settings.ASK_TOOL_TOTAL_TIMEOUT_SECONDS = 0.02
+    answer = await llm.ask_with_tools("sys", "q", [WEATHER], execute)
+    assert answer.text == "" and answer.used == []
+    assert answer.failure_reason == "deadline_exceeded"
+    assert answer.tool_trace[0].status == "error"
+    assert answer.tool_trace[0].result == {"error": "tool execution interrupted"}
+    assert answer.tokens_used == 10
+
+
+async def test_trace_is_bounded_without_losing_failed_status(monkeypatch) -> None:
+    seen: list[dict[str, Any]] = []
+    _route(monkeypatch, [_reply(calls=[_call("validate_outfit", {})]), _reply("无法核实")], seen)
+
+    async def execute(name: str, args: dict[str, Any]) -> ToolResult:
+        return ToolResult({"valid": False, "detail": "x" * 20_000}, "")
+
+    answer = await _llm().ask_with_tools("sys", "q", [WEATHER], execute)
+    assert answer.tool_trace[0].status == "error"
+    assert answer.tool_trace[0].result["truncated"] is True
+    assert len(answer.tool_trace[0].result["preview"]) == 12_000

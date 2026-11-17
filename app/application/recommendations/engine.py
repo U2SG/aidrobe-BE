@@ -50,7 +50,7 @@ LIGHT_SHOE_COLORS = {
     "yellow",
 }
 # BE#78 — non-neutral colors down-weighted under a "low key" (低调) override.
-_BRIGHT_COLORS = {
+BRIGHT_COLORS = {
     "red", "orange", "yellow", "pink", "hot pink", "fuchsia", "magenta",
     "purple", "green", "lime", "cyan", "gold",
 }
@@ -725,7 +725,7 @@ class RecommendationEngine:
             # Reward low-effort, easy-to-wear looks (time_cost already captures this).
             bonus += 0.10 * time_cost_score
         if LOW_KEY in constraints:
-            bright = sum(1 for item in combo if item.color_main.lower() in _BRIGHT_COLORS)
+            bright = sum(1 for item in combo if item.color_main.lower() in BRIGHT_COLORS)
             bonus -= 0.08 * bright
         if REDUCE_WEATHER in constraints:
             # Neutralize the weather term (weighted 0.15 in the profile branch) so

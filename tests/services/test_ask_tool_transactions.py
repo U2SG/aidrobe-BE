@@ -76,5 +76,8 @@ async def test_tool_database_timeout_does_not_cancel_the_request_transaction(
     )
     assert query_cancelled and tool_pid != parent_pid
     assert await db_session.scalar(text("SELECT pg_backend_pid()")) == parent_pid
-    assert result.answer == "还需要确认场景。" and result.item_refs == []
+    assert "没能核实穿搭建议" in result.answer and result.item_refs == []
+    assert result.failure_reason == "deadline_exceeded"
+    assert result.tool_trace[0].tool == "search_wardrobe"
+    assert result.tool_trace[0].status == "error"
     assert await db_session.get(AskSession, result.ask_session_id) is not None

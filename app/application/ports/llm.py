@@ -53,9 +53,20 @@ class ToolUse:
 
 
 @dataclass(frozen=True)
+class ToolTrace:
+    tool: str
+    arguments: dict[str, Any]
+    result: dict[str, Any]
+    status: str
+    duration_ms: int
+
+
+@dataclass(frozen=True)
 class ToolAskAnswer(LlmAnswer):
     used: list[ToolUse] = field(default_factory=list)
     rounds: int = 1
+    tool_trace: list[ToolTrace] = field(default_factory=list)
+    failure_reason: str | None = None
 
 
 ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[ToolResult]]
@@ -73,7 +84,7 @@ class ToolCallingLlm(Protocol):
         execute: ToolExecutor,
         *,
         json_mode: bool = False,
-        max_rounds: int = 4,
+        max_rounds: int = 5,
     ) -> ToolAskAnswer:
         """Let the model call `tools` (executed by `execute`) for up to
         `max_rounds` model calls, then return its final answer. The last round

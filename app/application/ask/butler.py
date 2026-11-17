@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -20,7 +21,12 @@ from app.application.llm_prompts.self_critique import negative_preference_violat
 from app.application.ports.llm import ToolResult, ToolSpec
 from app.application.ports.weather import WeatherInfo, WeatherPort
 from app.application.preferences.memory import read_preference_memory
-from app.application.recommendations.engine import BUSINESS_FORMALITY, CASUAL_FORMALITY, COLD_FEELS_LIKE_C
+from app.application.recommendations.engine import (
+    BRIGHT_COLORS,
+    BUSINESS_FORMALITY,
+    CASUAL_FORMALITY,
+    COLD_FEELS_LIKE_C,
+)
 from app.application.recommendations.feasibility import has_first_outfit_core, missing_first_outfit_slots
 from app.common.enums import Category, FitScene, FitStatus, WardrobeItemStatus
 from app.common.season import SeasonName, current_season, in_season, season_tags_of
@@ -30,6 +36,11 @@ from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.preference_memory_repo import SqlAlchemyPreferenceMemoryRepository
 
 _CORE_CATEGORIES = frozenset(category.value for category in Category)
+_VIVID_STYLES = frozenset({"vivid", "bright", "colorful", "鲜艳", "亮色", "多彩"})
+
+
+def _style_terms(raw: str | None) -> set[str]:
+    return set(normalize_style_tags(re.split(r"[,，、;/；]+", raw or "")))
 
 
 class _ToolArgs(BaseModel):
@@ -50,7 +61,7 @@ class _SearchArgs(_ToolArgs):
     status: WardrobeItemStatus = WardrobeItemStatus.WEARABLE
     fit_status: FitStatus | None = None
     text: str | None = Field(default=None, min_length=1, max_length=120, description="Literal title or garment type")
-    style: str | None = Field(default=None, max_length=80, description="Desired style tag, if stated by the user")
+    style: str | None = Field(default=None, max_length=80, description="Desired style tags, comma-separated")
     limit: int = Field(default=12, ge=1, le=20)
 
 
@@ -236,6 +247,7 @@ class AskButler:
         current_outfit_ids: list[uuid.UUID] | None = None,
         question: str = "",
         preference_memory_enabled: bool = False,
+        reference_styles: set[str] | None = None,
     ) -> None:
         self.session = session
         self.user_id = user_id
@@ -249,6 +261,7 @@ class AskButler:
         self.preserved_ids = set(self.current_outfit_ids)
         self.question = question
         self.preference_memory_enabled = preference_memory_enabled
+        self.reference_styles = set(normalize_style_tags(list(reference_styles or ())))
         self.effective_preferences: dict[str, list[dict[str, Any]]] = {}
         self.brief_updated = False
         self.excluded_ids: set[uuid.UUID] = set()
@@ -276,6 +289,7 @@ class AskButler:
         self.item_ids = [item.id for item in items]
         self._known_positions = {item_id: pos for pos, item_id in enumerate(self.item_ids, start=1)}
         self._weather: dict[tuple[date, bool, str], tuple[WeatherInfo, bool] | None] = {}
+        self._weather_context: list[tuple[date, bool, str]] = []
         self._checked: dict[frozenset[int], _CheckedOutfit] = {}
         tools = [
             AskTool(
@@ -460,32 +474,43 @@ class AskButler:
                 WardrobeItem.canonical_name.icontains(term, autoescape=True),
                 WardrobeItem.sub_category.icontains(term, autoescape=True),
             ))
-        if args.style:
+        search_styles = _style_terms(args.style)
+        if tag_filters := search_styles - _VIVID_STYLES:
             query = query.where(or_(
-                WardrobeItem.style_tags.contains({"tags": [args.style]}),
-                WardrobeItem.style_tags.contains([args.style]),
+                *(clause for style in sorted(tag_filters) for clause in (
+                    WardrobeItem.style_tags.contains({"tags": [style]}),
+                    WardrobeItem.style_tags.contains([style]),
+                )),
             ))
         exploring = self.design_constraints is not None and self.design_constraints.exploration
+        rank_by_style = self.design_constraints is not None or bool(search_styles)
         async with self._tool_read_session() as tool_session:
             rows = list(await tool_session.scalars(
                 query.order_by(
                     WardrobeItem.wear_count.asc() if exploring else WardrobeItem.wear_count.desc(),
                     nulls_last(WardrobeItem.last_worn_at.desc()), WardrobeItem.id
-                ).limit(80 if self.design_constraints is not None else args.limit)
+                ).limit(80 if rank_by_style else args.limit)
             ))
-        if self.design_constraints is not None:
+        if rank_by_style:
             attributes = {
                 "color": "color_main", "material": "material", "fit": "fit_status", "footwear": "sub_category"
             }
             negatives = self.effective_preferences.get("negative", [])
-            desired_style = (self.design_constraints.target_style or "").casefold()
+            desired_styles = search_styles | _style_terms(
+                self.design_constraints.target_style if self.design_constraints is not None else None
+            )
+            if not desired_styles:
+                desired_styles = self.reference_styles
+            vivid = bool(desired_styles & _VIVID_STYLES)
 
-            def rank(item: WardrobeItem) -> tuple[int, int]:
+            def rank(item: WardrobeItem) -> tuple[int, int, int]:
                 penalty = sum(1 for pref in negatives if attributes.get(str(pref.get("type")))
                               and str(getattr(item, attributes[str(pref["type"])], "")).casefold()
                               == str(pref.get("value", "")).casefold())
-                tags = [tag.casefold() for tag in normalize_style_tags(item.style_tags)]
-                return penalty, -int(bool(desired_style) and desired_style in tags)
+                tags = set(normalize_style_tags(item.style_tags))
+                # shortcut: color names approximate vividness; use saturation when garment evidence supports it.
+                color_match = vivid and item.color_main.casefold() in BRIGHT_COLORS
+                return penalty, -int(color_match), -len(desired_styles & tags)
 
             rows.sort(key=rank)
             rows = rows[:args.limit]
@@ -505,6 +530,24 @@ class AskButler:
 
     def _weather_key(self, args: _WeatherArgs, day: date) -> tuple[date, bool, str]:
         return day, args.when == "now", (args.place or self.location or "").strip()
+
+    def _validation_weather_args(self, args: _OutfitArgs, day: date) -> _OutfitArgs:
+        contexts = [
+            key for key in reversed(self._weather_context)
+            if key[0] == day and (args.place is None or key[2] == args.place)
+        ]
+        if not contexts:
+            return args
+        latest = contexts[0]
+        resolved = args.model_copy(update={"place": latest[2] or None})
+        if args.when == "now":
+            for key in contexts:
+                reading = self._weather.get(key)
+                if key[2] == latest[2] and reading is not None and not reading[1]:
+                    return resolved.model_copy(update={"when": "now" if key[1] else day.isoformat()})
+            return resolved
+        # A failed city lookup must not fall back to another city's cached weather.
+        return resolved.model_copy(update={"when": "now" if latest[1] else day.isoformat()})
 
     def _checked_weather(self, args: _WeatherArgs, day: date) -> WeatherInfo | None:
         reading = self._weather.get(self._weather_key(args, day))
@@ -535,12 +578,18 @@ class AskButler:
         day = _args_date(args.when, self.today)
         if day is None or day < self.today:
             return ToolResult({"error": "date must be today or a future date"}, "")
-        if not (args.place or self.location):
+        key = self._weather_key(args, day)
+        self._weather_context.append(key)
+        place = key[2]
+        if not place:
             return ToolResult({"error": "no saved location; ask which city"}, "")
         result = await self._load_weather(args, day)
         if result is None:
-            return ToolResult({"error": "weather unavailable for this date"}, "")
+            return ToolResult(
+                {"error": "weather unavailable for this date", "date": day.isoformat(), "place": place}, ""
+            )
         info, forecast = result
+        place_label = sanitize_llm_text(info.location_name or place, max_len=120)
         condition = sanitize_llm_text(info.condition, max_len=40)
         label = f"{day.isoformat()} {'forecast' if forecast else 'now'}"
         if self.lang != "en":
@@ -548,13 +597,15 @@ class AskButler:
         return ToolResult(
             {
                 "date": day.isoformat(),
+                "place": place,
+                "location_name": place_label,
                 "kind": "daily_forecast" if forecast else "current",
                 "temperature_c": info.temperature_c,
                 "condition": condition,
                 "rain_probability": info.rain_probability,
                 **({} if forecast else {"feels_like_c": info.feels_like_c}),
             },
-            f"{label} · {condition + ' ' if condition else ''}{round(info.temperature_c)}°C",
+            f"{place_label} · {label} · {condition + ' ' if condition else ''}{round(info.temperature_c)}°C",
         )
 
     async def _fetch_wearable(
@@ -590,10 +641,13 @@ class AskButler:
         day = _args_date(args.when, self.today)
         if positions is None or day is None or day < self.today:
             return invalid
+        key = frozenset(positions)
+        self._checked.pop(key, None)
         if self.requested_date is not None and day != self.requested_date:
             return ToolResult({"valid": False, "error": "use the requested date"}, "")
         if self.requested_occasion is not None and args.occasion != self.requested_occasion:
             return ToolResult({"valid": False, "error": "use the requested occasion"}, "")
+        args = self._validation_weather_args(args, day)
         if not self._matches_weather(args, day):
             return ToolResult({"valid": False, "error": "use the date and place you looked up"}, "")
         async with self._tool_read_session() as tool_session:
@@ -606,9 +660,7 @@ class AskButler:
                 return ToolResult({"valid": False, "error": "retain unchanged and locked pieces"}, "")
         weather = self._checked_weather(args, day)
         issues = _outfit_issues(items, day, args.occasion, weather)
-        key = frozenset(positions)
         if issues:
-            self._checked.pop(key, None)
             return ToolResult({"valid": False, **issues}, "")
         self._checked[key] = _CheckedOutfit(args, day)
         return ToolResult(

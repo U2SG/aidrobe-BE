@@ -74,6 +74,7 @@ from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.recommendations import (
     AppliedContextResponse,
     FavoriteOutfitResponse,
+    FavoriteOutfitsResponse,
     FeedbackBundleRequest,
     FeedbackBundleResponse,
     FeedbackRequest,
@@ -796,6 +797,29 @@ async def refresh_today(
     )
     today_data.applied_context = applied_context
     return ResponseModel(data=today_data)
+
+
+@router.get("/outfits/favorites", response_model=ResponseModel[FavoriteOutfitsResponse])
+async def list_favorite_outfits(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> ResponseModel[FavoriteOutfitsResponse]:
+    outfits = await SqlAlchemyRecommendationRepository(session).list_favorited_outfits(
+        current_user.id, limit=limit + 1, offset=offset
+    )
+    user_settings = await SqlAlchemyUserRepository(session).get_or_create_settings(current_user.id)
+    local_today = local_datetime(
+        utc_now(), user_settings.timezone, get_settings().DEFAULT_TIMEZONE
+    ).date()
+    page = outfits[:limit]
+    enriched = await _enrich_outfits(
+        session, page, local_today, favorited_outfit_ids={outfit.id for outfit in page}
+    )
+    return ResponseModel(data=FavoriteOutfitsResponse(
+        items=enriched, limit=limit, offset=offset, has_more=len(outfits) > limit
+    ))
 
 
 @router.get("/outfits/{outfit_id}", response_model=ResponseModel[OutfitResponse])
