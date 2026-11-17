@@ -1,9 +1,19 @@
+import pytest
+
 from app.application.ask.answer_question import _conversation_state_for_prompt, _summarize_old_messages
 from app.infrastructure.persistence.models.ask_conversation import AskMessage
 
 
-def test_recent_context_keeps_roles_and_bounds_untrusted_history() -> None:
-    messages = [AskMessage(role="user", content=f"older-{index}") for index in range(8)]
+@pytest.mark.parametrize(("older_count", "expected_count", "first_content"), [
+    (0, 2, "Keep the trousers"),
+    (4, 6, "older-0"),
+    (8, 6, "older-4"),
+])
+def test_recent_context_keeps_roles_and_bounds_untrusted_history(
+    older_count: int, expected_count: int, first_content: str,
+) -> None:
+    assert _conversation_state_for_prompt(None, [], []) == {}
+    messages = [AskMessage(role="user", content=f"older-{index}") for index in range(older_count)]
     messages += [
         AskMessage(role="user", content="Keep the trousers\n\x00" + "x" * 1000),
         AskMessage(role="assistant", content="The shoes stay."),
@@ -11,8 +21,8 @@ def test_recent_context_keeps_roles_and_bounds_untrusted_history() -> None:
 
     context = _conversation_state_for_prompt(None, [], messages)
     recent = context["recent_messages"]
-    assert len(recent) == 6
-    assert recent[0] == {"role": "user", "content": "older-4"}
+    assert len(recent) == expected_count
+    assert recent[0]["role"] == "user" and recent[0]["content"].startswith(first_content)
     assert recent[-1] == {"role": "assistant", "content": "The shoes stay."}
     assert len(recent[-2]["content"]) == 600
     assert "\n" not in recent[-2]["content"] and "\x00" not in recent[-2]["content"]

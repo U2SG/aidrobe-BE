@@ -703,7 +703,7 @@ def _conversation_state_for_prompt(
     state: AskConversationState | None, items: list[WardrobeItem], recent_messages: list[AskMessage] | None = None,
 ) -> dict[str, Any]:
     block: dict[str, Any] = {}
-    recent = [entry for message in (recent_messages or [])[-_RECENT_MESSAGES_TO_KEEP]
+    recent = [entry for message in (recent_messages or [])[-_RECENT_MESSAGES_TO_KEEP:]
               if (entry := _message_for_prompt(message, max_len=_MAX_RECENT_MESSAGE_LEN)) is not None]
     if recent:
         block["recent_messages"] = recent
