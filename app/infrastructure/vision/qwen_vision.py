@@ -316,7 +316,7 @@ class QwenVision:
     async def matches_outfit_footwear(self, source: bytes, generated: bytes) -> bool:
         content = await self._request_content(
             _image_data_uri(source),
-            "Compare the actual shoe photo in image 1 with the shoes at the bottom of the outfit in image 2. "
+            "Compare the actual shoe photo in image 1 with the shoes wherever they appear in image 2. "
             "Ignore all other garments except where they occlude the shoes. Compare the two photos visually. "
             "Allow reconstruction of the photographed shoe's hidden areas, including its heel, collar and "
             "opening. Compare the same regions in both images, accounting for viewpoint. Check toe shape, "

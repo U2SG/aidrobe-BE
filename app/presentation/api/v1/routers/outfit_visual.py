@@ -43,7 +43,9 @@ logger = structlog.get_logger(__name__)
 _STALE_QUEUED_MINUTES = 15
 # v2: used slots are centred as a group (v1 left blank bands for missing roles).
 _OUTFIT_BOARD_LAYOUT_VERSION = "v2"
-_GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-reviewed-v7"
+_GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-reviewed-v8"
+# v7 passed garment review; changing the composition must not hide saved images.
+_READABLE_GENERATED_OUTFIT_LAYOUT_VERSIONS = (_GENERATED_OUTFIT_LAYOUT_VERSION, "gpt-reviewed-v7")
 _OUTFIT_RETRYABLE = {"failed", "rejected_by_quality_gate"}
 _IMAGE_TYPE_PRIORITY = ("cutout", "thumbnail", "standard", "crop", "original")
 
@@ -261,6 +263,7 @@ def _matches_item_id(references: set[str], item_id: str) -> bool:
 
 async def _reusable_generated_board(
     db: AsyncSession, *, user_id: uuid.UUID, slots: list[OutfitItem], items: list[dict[str, str]],
+    layout_version: str = _GENERATED_OUTFIT_LAYOUT_VERSION,
 ) -> OutfitVisualAsset | None:
     signature = _outfit_signature(slots)
     if not signature or len(items) != len(slots):
@@ -285,7 +288,7 @@ async def _reusable_generated_board(
             or_(OutfitVisualAsset.object_key.is_not(None), OutfitVisualAsset.image_url.is_not(None)),
             AsyncJob.job_type == "outfit_board",
             AsyncJob.user_id == user_id,
-            AsyncJob.payload["layout_version"].as_string() == _GENERATED_OUTFIT_LAYOUT_VERSION,
+            AsyncJob.payload["layout_version"].as_string() == layout_version,
             or_(*matching_snapshots),
         )
         .order_by(OutfitVisualAsset.created_at.desc(), OutfitVisualAsset.id.desc())
@@ -319,16 +322,28 @@ async def get_generated_outfit_image(
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> OutfitVisualAssetResponse:
     """Look up an existing generated image without creating any work."""
-    asset = await _existing_outfit_board_asset(
-        db, user_id=current_user.id, outfit_id=outfit_id, layout_version=_GENERATED_OUTFIT_LAYOUT_VERSION
-    )
-    if asset is None or asset.generation_status in _OUTFIT_RETRYABLE:
-        outfit = await SqlAlchemyRecommendationRepository(db).get_outfit_for_user(outfit_id, current_user.id)
-        if outfit is not None:
+    asset = None
+    outfit = None
+    items: list[dict[str, str]] | None = None
+    for layout_version in _READABLE_GENERATED_OUTFIT_LAYOUT_VERSIONS:
+        candidate = await _existing_outfit_board_asset(
+            db, user_id=current_user.id, outfit_id=outfit_id, layout_version=layout_version
+        )
+        if candidate is not None and candidate.generation_status not in _OUTFIT_RETRYABLE:
+            return await get_outfit_visual_asset(candidate.id, db, current_user)
+        asset = asset or candidate
+        if outfit is None:
+            outfit = await SqlAlchemyRecommendationRepository(db).get_outfit_for_user(outfit_id, current_user.id)
+        if outfit is None:
+            # Saved boards outlive daily outfits; still check older approved versions.
+            continue
+        if items is None:
             items = await _outfit_board_item_list(db, outfit_id=outfit_id, user_id=current_user.id, generate=True)
-            asset = await _reusable_generated_board(
-                db, user_id=current_user.id, slots=outfit.items, items=items,
-            ) or asset
+        reusable = await _reusable_generated_board(
+            db, user_id=current_user.id, slots=outfit.items, items=items, layout_version=layout_version,
+        )
+        if reusable is not None:
+            return await get_outfit_visual_asset(reusable.id, db, current_user)
     if asset is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Generated image not found", status_code=404)
     return await get_outfit_visual_asset(asset.id, db, current_user)
@@ -451,13 +466,12 @@ async def get_outfit_visual_asset(
     generation_status = asset.generation_status
     error_code = asset.error_code
 
-    # Generated assets from before the review was introduced remain available
-    # as records, but clients cannot display their unreviewed images.
+    # Only explicitly approved review versions may expose a generated image.
     if asset.visual_type == VisualType.OUTFIT_BOARD.value and (asset.input_snapshot or {}).get("generate") is True:
         job = await db.scalar(
             select(AsyncJob).where(AsyncJob.target_id == asset.id, AsyncJob.job_type == "outfit_board")
         )
-        if job is None or (job.payload or {}).get("layout_version") != _GENERATED_OUTFIT_LAYOUT_VERSION:
+        if job is None or (job.payload or {}).get("layout_version") not in _READABLE_GENERATED_OUTFIT_LAYOUT_VERSIONS:
             generation_status = "rejected_by_quality_gate"
 
     # `quality_check` is V3-018's §6.2 intermediate state: non-terminal, so a
