@@ -83,7 +83,14 @@ class OpenAIImageCutout:
         )
         return await self._edit(
             images,
-            "Create one cohesive fashion flat lay on a clean light neutral background. "
+            "Create one photorealistic editorial fashion flat lay of these exact garments. "
+            "Photograph from directly above on a seamless warm ivory matte surface. Use soft natural window "
+            "light from the upper left and subtle contact shadows, with neutral white balance so the garments "
+            "keep their true reference colors. Arrange the pieces with realistic relative scale, natural gravity, "
+            "relaxed sleeves and believable fabric folds. Give the outfit a clear visual hierarchy and generous "
+            "breathing room. Avoid a rigid grid, separate product-photo boxes, cut-and-paste borders and floating "
+            "garments. Use only restrained overlap that leaves every item identifiable and its visible "
+            "construction details and markings unobscured. "
             f"The numbered references show these garments: {pieces}. Show every listed garment and no extras. "
             "Match the actual color, fabric, cut, seams, fasteners and markings visible in each reference. "
             "Preserve which side each detail appears on. Do not mirror the garments. "
@@ -93,7 +100,7 @@ class OpenAIImageCutout:
             "for the unshown heel and opening. Show complete pairs. "
             "Treat the visible seam color and routing as construction details, even where the seam is thin. "
             f"{footwear}Leave background margin around the garments. "
-            "Remove people, phones, hangers and surroundings. Use no text or labels.",
+            "Remove people, phones, hangers and original surroundings. Use no props, mannequins, text or labels.",
         )
 
     async def _edit(self, images: list[bytes], prompt: str) -> bytes:
