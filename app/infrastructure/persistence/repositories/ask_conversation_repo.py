@@ -35,7 +35,7 @@ class SqlAlchemyAskConversationRepository:
                 select(AskConversation).where(
                     AskConversation.id == conversation_id,
                     AskConversation.user_id == user_id,
-                )
+                ).execution_options(populate_existing=True)
             ),
         )
 
@@ -48,7 +48,7 @@ class SqlAlchemyAskConversationRepository:
                 select(AskConversationState).where(
                     AskConversationState.conversation_id == conversation_id,
                     AskConversationState.user_id == user_id,
-                )
+                ).execution_options(populate_existing=True)
             ),
         )
 

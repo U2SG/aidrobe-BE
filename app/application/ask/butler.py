@@ -237,6 +237,7 @@ class AskButler:
         current_outfit_ids: list[uuid.UUID] | None = None,
         question: str = "",
         preference_memory_enabled: bool = False,
+        reference_styles: set[str] | None = None,
     ) -> None:
         self.session = session
         self.user_id = user_id
@@ -250,6 +251,7 @@ class AskButler:
         self.preserved_ids = set(self.current_outfit_ids)
         self.question = question
         self.preference_memory_enabled = preference_memory_enabled
+        self.reference_styles = set(normalize_style_tags(list(reference_styles or ())))
         self.effective_preferences: dict[str, list[dict[str, Any]]] = {}
         self.brief_updated = False
         self.excluded_ids: set[uuid.UUID] = set()
@@ -487,6 +489,8 @@ class AskButler:
             desired_styles = search_styles | _style_terms(
                 self.design_constraints.target_style if self.design_constraints is not None else None
             )
+            if not desired_styles:
+                desired_styles = self.reference_styles
             vivid = bool(desired_styles & _VIVID_STYLES)
 
             def rank(item: WardrobeItem) -> tuple[int, int, int]:

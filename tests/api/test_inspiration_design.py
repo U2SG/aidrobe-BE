@@ -50,7 +50,7 @@ async def test_queued_inspiration_uses_visual_palette_to_save_and_restore_a_draf
         assert {row["item_id"] for row in outfit["items"]} == {str(items[i].id) for i in (4, 1, 2)}
         assert draft["design_brief"]["constraints"]["inspiration_id"] == str(source.id)
         assert draft["design_brief"]["constraints"]["scene"] == "travel"
-        assert draft["design_brief"]["constraints"]["target_style"] == "minimal"
+        assert draft["design_brief"]["constraints"]["target_style"] is None
 
         replay = await client.post("/v1/ask", json=request)
         assert replay.json()["styling"]["outfit"]["outfit_id"] == outfit["outfit_id"]

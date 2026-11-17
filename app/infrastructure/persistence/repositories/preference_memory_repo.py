@@ -32,7 +32,7 @@ class SqlAlchemyPreferenceMemoryRepository:
             raise ValueError("Unknown preference owner")
         return user
 
-    async def _reset_context(self, user: User, at: datetime) -> None:
+    async def reset_context(self, user: User, at: datetime) -> None:
         user.memory_context_reset_at = at
         # Keep the user's messages, outfit and current factual constraints.
         # Unattributed prose is not safe to reuse after correcting a memory.
@@ -122,7 +122,7 @@ class SqlAlchemyPreferenceMemoryRepository:
                 )
             )
         if explicit and changed:
-            await self._reset_context(user, now)
+            await self.reset_context(user, now)
         assert row_id is not None
         row = await self.session.get(UserPreferenceMemory, row_id, populate_existing=True)
         assert row is not None
@@ -169,7 +169,7 @@ class SqlAlchemyPreferenceMemoryRepository:
         ))
         # Advance the watermark even when no rows exist: old events may not
         # have reached the learning threshold yet.
-        await self._reset_context(user, now)
+        await self.reset_context(user, now)
         await self.session.flush()
         return len(ids)
 
@@ -192,7 +192,7 @@ class SqlAlchemyPreferenceMemoryRepository:
             return False
         now = datetime.now(UTC)
         row.deleted_at = now
-        await self._reset_context(user, now)
+        await self.reset_context(user, now)
         await self.session.flush()
         return True
 
@@ -242,6 +242,6 @@ class SqlAlchemyPreferenceMemoryRepository:
                 ))
                 new_fence = True
         if ids or new_fence:
-            await self._reset_context(user, now)
+            await self.reset_context(user, now)
             await self.session.flush()
         return len(ids)
