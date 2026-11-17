@@ -171,7 +171,11 @@ async def test_a_decision_returns_every_frozen_field(
         "boundary_note",
         "next_actions",
         "created_at",
+        "design_context",
+        "choice",
+        "choice_updated_at",
     }
+    assert body["design_context"] is None and body["choice"] is None and body["choice_updated_at"] is None
     assert body["candidate_id"] == str(candidate.id)
     assert body["decision"] in {d.value for d in PurchaseDecision}
     assert body["uncertainty"] in {u.value for u in DecisionUncertainty}

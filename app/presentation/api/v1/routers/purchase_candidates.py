@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.ocr import OcrPort
 from app.application.ports.vision import VisionPort
+from app.application.purchase.choose_purchase import choose_purchase
 from app.application.purchase.decide_purchase import (
     DecidePurchase,
     load_item_thumbnails,
@@ -56,6 +57,7 @@ from app.presentation.api.v1.schemas.purchase_candidates import (
 )
 from app.presentation.api.v1.schemas.purchase_decisions import (
     DecisionRequest,
+    PurchaseChoiceRequest,
     WardrobeDecisionResponse,
 )
 
@@ -123,10 +125,12 @@ def _to_response(candidate: PurchaseCandidate) -> PurchaseCandidateResponse:
 _CREATE_ERRORS: dict[int | str, dict[str, str]] = {
     400: {"description": "`source_url` failed the SSRF safety check."},
     404: {"description": "`source_asset_id` is not an object key under the caller's own prefix."},
+    409: {"description": "request_id was already used for another candidate source."},
     503: {"description": "`ENABLE_V3_PURCHASE_DECISION` is off."},
 }
 _READ_ERRORS: dict[int | str, dict[str, str]] = {
     404: {"description": "No such candidate for this user (a foreign candidate answers 404, not 403)."},
+    409: {"description": "The design changed, or request_id was already used for a different action."},
     503: {"description": "`ENABLE_V3_PURCHASE_DECISION` is off."},
 }
 _DECISION_READ_ERRORS: dict[int | str, dict[str, str]] = {
@@ -166,6 +170,12 @@ def _emit_decision_completed(
 async def _to_decision_response(
     session: AsyncSession, decision: WardrobeDecision
 ) -> WardrobeDecisionResponse:
+    return (await render_purchase_decisions(session, [decision]))[0]
+
+
+async def render_purchase_decisions(
+    session: AsyncSession, decisions: list[WardrobeDecision],
+) -> list[WardrobeDecisionResponse]:
     """Render a stored decision, signing thumbnails at read time.
 
     The copy, the reasons and the compared item ids all come out of the frozen
@@ -174,15 +184,22 @@ async def _to_decision_response(
     `image_url` is materialized here, because a signed URL expires in 30
     minutes and must never live in a historical snapshot (V3_SPEC §13.5).
     """
-    shown = shown_decision(decision)
-    items = shown.closet_comparison.items
-    thumbnails = await load_item_thumbnails(session, decision.user_id, [i.item_id for i in items])
+    if not decisions:
+        return []
+    user_id = decisions[0].user_id
+    shown_decisions = [shown_decision(decision) for decision in decisions]
+    thumbnails = await load_item_thumbnails(
+        session, user_id, list({item.item_id for shown in shown_decisions for item in shown.closet_comparison.items}),
+    )
+    choices = await SqlAlchemyWardrobeDecisionRepository(session).choices_for_user(
+        user_id, [decision.id for decision in decisions],
+    )
     # Built as a mapping and validated rather than constructed field by field:
     # the snapshot is JSON, so its enum-shaped values are plain strings, and
     # letting Pydantic check them against the frozen literals turns a shrunken
     # vocabulary into a loud failure instead of a response that says something
     # the contract does not define.
-    return WardrobeDecisionResponse.model_validate(
+    return [WardrobeDecisionResponse.model_validate(
         {
             "id": decision.id,
             "candidate_id": decision.candidate_id,
@@ -197,7 +214,7 @@ async def _to_decision_response(
                         "image_url": resolve_render_url(*thumbnails.get(item.item_id, (None, None))),
                         "relation": item.relation,
                     }
-                    for item in items
+                    for item in shown.closet_comparison.items
                 ],
             },
             "uncertainty": shown.uncertainty,
@@ -205,8 +222,11 @@ async def _to_decision_response(
             "boundary_note": shown.boundary_note,
             "next_actions": list(shown.next_actions),
             "created_at": decision.created_at,
+            "design_context": decision.context_snapshot.get("design_context"),
+            "choice": choices[decision.id].choice if decision.id in choices else None,
+            "choice_updated_at": choices[decision.id].updated_at if decision.id in choices else None,
         }
-    )
+    ) for decision, shown in zip(decisions, shown_decisions, strict=True)]
 
 
 @router.post(
@@ -237,6 +257,7 @@ async def create_purchase_candidate(
         # Contract §5.2 calls this `source_asset_id`; the durable column is the
         # storage object key it actually carries (see the request schema).
         source_object_key=payload.source_asset_id,
+        request_id=payload.request_id,
     )
     return _to_response(candidate)
 
@@ -282,12 +303,29 @@ async def decide_purchase_candidate(
     )
     if candidate is None:
         raise FriendlyException(error_codes.NOT_FOUND, "Purchase candidate not found", status_code=404)
+    request = payload or DecisionRequest()
+    if request.conversation_id is not None and not get_settings().ENABLE_DESIGNER_SESSIONS:
+        raise FriendlyException(error_codes.FORBIDDEN, "Designer sessions are not enabled", 503)
     decision = await DecidePurchase(session).execute(
         current_user.id,
         candidate,
-        concern=(payload or DecisionRequest()).concern,
+        concern=request.concern, conversation_id=request.conversation_id,
+        expected_revision=request.expected_revision, request_id=request.request_id,
     )
     _emit_decision_completed(current_user.id, candidate, decision)
+    return await _to_decision_response(session, decision)
+
+
+@wardrobe_decisions_router.put(
+    "/{decision_id}/choice", response_model=WardrobeDecisionResponse, responses=_DECISION_READ_ERRORS,
+)
+async def set_purchase_choice(
+    decision_id: uuid.UUID,
+    payload: PurchaseChoiceRequest,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> WardrobeDecisionResponse:
+    decision = await choose_purchase(session, current_user.id, decision_id, payload.choice)
     return await _to_decision_response(session, decision)
 
 

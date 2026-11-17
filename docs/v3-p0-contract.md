@@ -214,6 +214,7 @@ Profile's avatar controls (V3-021) and the on-demand setup (V3-015) — read it.
 | `GET /v1/purchase-candidates/{id}` | Poll parsing state. |
 | `POST /v1/purchase-candidates/{id}/decision` | Produce (or return the existing) structured decision. |
 | `GET /v1/wardrobe-decisions/{id}` | Replay a decision from its immutable snapshots. |
+| `PUT /v1/wardrobe-decisions/{id}/choice` | Save or clear the user's purchase intention; keep the assessment unchanged. |
 
 ### 5.2 Candidate
 
@@ -223,7 +224,8 @@ Profile's avatar controls (V3-021) and the on-demand setup (V3-015) — read it.
 {
   "source_type": "share_link|screenshot|order_image|ask_link",
   "source_url": "https://…",     // for share_link / ask_link
-  "source_asset_id": "object_key" // for screenshot / order_image (presign upload)
+  "source_asset_id": "object_key", // for screenshot / order_image (presign upload)
+  "request_id": "uuid"           // optional stable ID for retries of this source
 }
 ```
 
@@ -235,6 +237,15 @@ column `purchase_candidates.source_object_key` persists (V3-003). The key must
 sit under the caller's own `users/<user_id>/` prefix; anything else answers 404,
 not 403, so the response cannot probe which keys exist (§3). Nothing signed is
 ever persisted.
+
+Revision 2026-11-17: optional `request_id` makes creation idempotent per user.
+The same ID and exact source type/link/object key replay the terminal candidate
+without another parser, OCR or vision call. Reusing the ID for another source
+answers 409. Source validation and upload ownership still apply on a retry.
+Clients retain the uploaded object key and request ID after an uncertain
+response; a new photo receives a new ID. Omission preserves independent
+candidate creation. This protects completed requests, not provider-side
+exactly-once delivery if a server transaction itself fails.
 
 Response / `GET` shape: `{"id", "status", "parsed_item"}` with
 `status: "submitted|parsed|parse_failed"` (frozen enum). Parsing may complete
@@ -330,7 +341,8 @@ As implemented in V3-007 (clarifications, no shape change):
   the first decision — a created-status would be wrong half the time (§3 allows
   200/202). The request body is **optional**: an omitted body means
   `concern: "none"`, and an unrecognized `concern` is a 422.
-- Idempotency is enforced by the unique index on `wardrobe_decisions.candidate_id`,
+- Legacy idempotency is enforced by the unique index on `wardrobe_decisions.candidate_id`
+  for decisions without design context (§5.4),
   so a repeated POST replays the stored snapshot and **ignores a new `concern`**.
   P0 never re-decides a candidate.
 - `reasons[].kind` may be any of the five frozen values, but P0 emits four:
@@ -344,6 +356,79 @@ As implemented in V3-007 (clarifications, no shape change):
   locale (`zh-CN` / `en-US`) and **frozen into the snapshot** at decision time,
   so a replayed decision keeps the wording — and the language — it was written
   with. There is no i18n key in this shape; the client renders the strings.
+
+### 5.4 Current-design purchase continuation (additive, 2026-11-17)
+
+The candidate-first flow above remains valid. To evaluate a candidate against
+an existing design, supply all three context fields together:
+
+```jsonc
+{
+  "concern": "none",
+  "conversation_id": "uuid",
+  "expected_revision": 3,
+  "request_id": "uuid"
+}
+```
+
+The server reads the conversation's current accepted **design brief**, including
+conditions accepted after the last completed outfit. Ownership is required;
+an outdated revision answers 409. Partial context answers 422. A request ID
+replays the same immutable assessment only when its candidate, concern,
+conversation and expected revision match; reusing it for another action
+answers 409. A new request at another design revision creates a separate
+assessment. A candidate can therefore have a legacy assessment and multiple
+linked assessments. Reading a previous decision never evaluates it again.
+
+The existing decision response gains these fields:
+
+| Field | Meaning |
+|---|---|
+| `design_context` | Nullable frozen context; absent/null for legacy assessments. |
+| `design_context.conversation_id`, `revision` | The original design and accepted brief revision. |
+| `design_context.constraints` | `StylingConstraints` used for that assessment, never the latest live brief. |
+| `styling_revision_id`, `source_message_id`, `source_message_created_at` within the context | Optional provenance; the outfit revision can predate pending brief conditions. |
+| `inspiration_id`, `inspiration_created_at`, `inspiration_learned_at` within the context | Optional source identity and version timestamps. |
+| `design_context.captured_at` | When the brief was captured for this assessment. |
+| `evaluated_dimensions`, `unverified_dimensions` within the context | Which evidence was used and which conditions remain unverified. |
+| `choice` | Nullable `buy`, `skip` or `later`; an intention about this purchase. |
+| `choice_updated_at` | Nullable server timestamp of the saved choice. |
+
+Locked pieces are pinned into the wardrobe evidence window and excluded pieces
+are removed before its limit. A candidate conflicting with a locked garment's
+slot cannot silently replace that garment. Scene evidence and existing garment
+style tags participate in composition. Carried conditions are not a claim that
+size/fit, budget, date-specific weather, candidate style, reference-image
+similarity, free-text goals or preference overrides have been verified. The
+response identifies these gaps and the client displays them.
+
+`PUT /v1/wardrobe-decisions/{id}/choice` takes `{"choice":"buy|skip|later"}`
+or `{"choice":null}` and returns the complete current decision response.
+It requires decision ownership (foreign IDs answer 404), is gated with the
+purchase feature, and stores the choice separately from the frozen assessment.
+Repeating the same choice preserves its timestamp and provenance. It neither
+adds the candidate to the wardrobe nor creates a lasting style preference.
+
+`GET /v1/ask/conversations/{id}` includes `purchase_decisions`, the latest
+100 linked assessments in chronological creation order. A restored timeline
+uses each exact decision ID. The latest bounded, still-valid purchase evidence
+and saved choices may inform a subsequent Ask turn. An unambiguous explicit
+purchase choice can also be saved from that turn; with several plausible
+candidates, the service does not guess its target. Choice-only evidence must
+not become long-term preference memory.
+
+Historical assessments remain readable after their source changes. Deleted or
+forgotten inspiration and unavailable wardrobe evidence are excluded from
+future prompts, including derived recent/summary/last-outfit text. A final
+ownership/context fence rejects a result if its source or choice changed during
+generation. On a stale-design 409, clients keep the image/candidate, fetch the
+latest brief and ask the user to evaluate against the displayed conditions with
+a new assessment request ID; ordinary transport retries reuse the original ID.
+
+Migration `0058_link_purchase_decisions` uses immutable conversation lineage
+instead of a deleting/nullable conversation FK. A downgrade refuses multiple
+assessments for one candidate before changing the schema, rather than deleting
+history to restore the old global unique index.
 
 ## 6. Static try-on preview contract
 

@@ -122,8 +122,8 @@ def _candidate(*, parsed: dict[str, Any] | None = None) -> PurchaseCandidate:
 @pytest.mark.parametrize("wardrobe_size", [2, 10, 300])
 async def test_query_count_is_constant_in_wardrobe_size(wardrobe_size: int) -> None:
     session = DecisionSession(_wardrobe(wardrobe_size))
-
-    decision = await DecidePurchase(session).execute(uuid.uuid4(), _candidate())  # type: ignore[arg-type]
+    candidate = _candidate()
+    decision = await DecidePurchase(session).execute(candidate.user_id, candidate)  # type: ignore[arg-type]
 
     assert session.calls.count("flush") == 1
     assert len(session.calls) == EXPECTED_CALLS
@@ -147,7 +147,8 @@ async def test_a_repeated_decision_costs_exactly_one_read() -> None:
     )
     session = DecisionSession(_wardrobe(20), existing=existing)
 
-    returned = await DecidePurchase(session).execute(uuid.uuid4(), _candidate())  # type: ignore[arg-type]
+    candidate = _candidate()
+    returned = await DecidePurchase(session).execute(candidate.user_id, candidate)  # type: ignore[arg-type]
 
     assert returned is existing
     assert session.calls == ["scalar"]
@@ -158,9 +159,9 @@ async def test_an_unparsed_candidate_still_costs_only_the_fixed_reads() -> None:
     """`parse_failed` degrades to `insufficient_information` without a wardrobe
     scan: neither evidence module queries when it has no category to look for."""
     session = DecisionSession(_wardrobe(20))
-
+    candidate = _candidate(parsed={})
     decision = await DecidePurchase(session).execute(  # type: ignore[arg-type]
-        uuid.uuid4(), _candidate(parsed={})
+        candidate.user_id, candidate,
     )
 
     assert session.calls == ["scalar", "scalar", "flush"]
@@ -169,8 +170,8 @@ async def test_an_unparsed_candidate_still_costs_only_the_fixed_reads() -> None:
 
 async def test_the_decision_is_written_once() -> None:
     session = DecisionSession(_wardrobe(6))
-
-    await DecidePurchase(session).execute(uuid.uuid4(), _candidate())  # type: ignore[arg-type]
+    candidate = _candidate()
+    await DecidePurchase(session).execute(candidate.user_id, candidate)  # type: ignore[arg-type]
 
     assert len(session.added) == 1
     assert isinstance(session.added[0], WardrobeDecision)

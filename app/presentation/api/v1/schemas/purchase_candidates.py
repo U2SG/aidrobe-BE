@@ -63,6 +63,13 @@ class CreatePurchaseCandidateRequest(BaseModel):
             "under the caller's own `users/<user_id>/` prefix."
         ),
     )
+    request_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "Stable client request ID for this candidate source. Retrying the same source returns "
+            "the existing candidate without parsing it again; reusing it for another source returns 409."
+        ),
+    )
 
 
 class PurchaseCandidateResponse(BaseModel):

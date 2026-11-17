@@ -36,6 +36,7 @@ from app.infrastructure.persistence.models.ask_session import AskSession
 from app.infrastructure.persistence.models.recommendation import RecommendationEvent
 from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.repositories.ask_conversation_repo import SqlAlchemyAskConversationRepository
+from app.infrastructure.persistence.repositories.purchase_decision_repo import SqlAlchemyWardrobeDecisionRepository
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
 )
@@ -44,6 +45,7 @@ from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url
 from app.presentation.api.v1.routers.packing_list import render_packing_list
+from app.presentation.api.v1.routers.purchase_candidates import render_purchase_decisions
 from app.presentation.api.v1.routers.recommendations import render_styling
 from app.presentation.api.v1.schemas.ask import (
     AdoptStylingRequest,
@@ -327,6 +329,11 @@ async def get_conversation(
     packing_list = None
     if settings.ENABLE_DESIGNER_SESSIONS and settings.ENABLE_PACKING_LIST:
         packing_list = await load_conversation_packing_list(session, current_user.id, conversation.id)
+    purchases = []
+    if settings.ENABLE_DESIGNER_SESSIONS and settings.ENABLE_V3_PURCHASE_DECISION:
+        purchases = await SqlAlchemyWardrobeDecisionRepository(session).list_for_conversation(
+            current_user.id, conversation.id,
+        )
     return AskConversationResponse(
         conversation_id=conversation.id, title=conversation.title,
         styling=(
@@ -334,6 +341,7 @@ async def get_conversation(
         ),
         design_brief=service.brief(conversation, current) if settings.ENABLE_DESIGNER_SESSIONS else None,
         packing_list=render_packing_list(packing_list) if packing_list is not None else None,
+        purchase_decisions=await render_purchase_decisions(session, purchases),
         messages=restored,
     )
 

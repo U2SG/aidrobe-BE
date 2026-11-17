@@ -22,6 +22,7 @@ from app.common.exceptions import FriendlyException
 from app.common.local_time import utc_now
 from app.infrastructure.persistence.models.ask_conversation import AskConversation, AskStylingRevision
 from app.infrastructure.persistence.models.ask_session import AskSession
+from app.infrastructure.persistence.models.purchase_decision import WardrobeDecision
 from app.infrastructure.persistence.models.recommendation import DailyRecommendation, Outfit, OutfitItem
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.ask_conversation_repo import SqlAlchemyAskConversationRepository
@@ -83,11 +84,10 @@ class StylingService:
             ),
         )
 
-    async def save_brief(
-        self, conversation: AskConversation, constraints: StylingConstraints,
-    ) -> None:
-        """Save accepted conditions even when a turn only asks a clarification."""
+    async def validate_constraints(self, constraints: StylingConstraints) -> list[WardrobeItem]:
+        """Resolve locks/exclusions to current owned garments without changing the brief."""
         ids = set(constraints.locked_item_ids) | set(constraints.excluded_item_ids)
+        items: list[WardrobeItem] = []
         if ids:
             items = list(await self.session.scalars(select(WardrobeItem).where(
                 WardrobeItem.user_id == self.user_id, WardrobeItem.id.in_(ids), WardrobeItem.deleted_at.is_(None),
@@ -98,6 +98,13 @@ class StylingService:
                 item.status != "wearable" or item.fit_status == "no_longer_fits"
             ) for item in items):
                 raise conflict("A locked piece is no longer wearable. Choose a replacement.")
+        return items
+
+    async def save_brief(
+        self, conversation: AskConversation, constraints: StylingConstraints,
+    ) -> None:
+        """Save accepted conditions even when a turn only asks a clarification."""
+        await self.validate_constraints(constraints)
         raw = constraints.model_dump(mode="json")
         if conversation.design_constraints != raw:
             current = await self.current(conversation.id)
@@ -128,6 +135,11 @@ class StylingService:
             AskSession.user_id == self.user_id, AskSession.client_request_id == request_id
         ))
         if previous_ask is not None:
+            raise conflict("request_id was already used for a different action")
+        previous_purchase = await self.session.scalar(select(WardrobeDecision.id).where(
+            WardrobeDecision.user_id == self.user_id, WardrobeDecision.request_id == request_id,
+        ))
+        if previous_purchase is not None:
             raise conflict("request_id was already used for a different action")
         return None
 

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.application.ask.design_types import DesignBrief, StylingConstraints
 from app.presentation.api.v1.schemas.packing_list import PackingListResponse
+from app.presentation.api.v1.schemas.purchase_decisions import WardrobeDecisionResponse
 from app.presentation.api.v1.schemas.recommendations import OutfitResponse
 
 
@@ -94,6 +95,7 @@ class AskConversationResponse(BaseModel):
     styling: StylingResponse | None = None
     design_brief: DesignBrief | None = None
     packing_list: PackingListResponse | None = None
+    purchase_decisions: list[WardrobeDecisionResponse] = Field(default_factory=list)
     messages: list[AskConversationMessage] = Field(default_factory=list)
 
 

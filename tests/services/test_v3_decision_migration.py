@@ -21,6 +21,12 @@ from app.infrastructure.persistence.models.purchase_decision import (
 )
 
 MIGRATION_PATH = Path("alembic/versions/0046_add_purchase_decision_persistence.py")
+# 0058 extends these tables; this file pins the original 0046 baseline.
+_LINK_COLUMNS = {"conversation_id", "design_revision", "request_id", "request_fingerprint"}
+_LINK_INDEXES = {
+    "uq_purchase_candidates_user_request", "uq_wardrobe_decisions_user_request",
+    "ix_wardrobe_decisions_user_conversation",
+}
 
 
 def _load_migration() -> ModuleType:
@@ -93,8 +99,12 @@ def test_upgrade_creates_both_tables_matching_the_models(monkeypatch: Any) -> No
     recorder = _run_upgrade(monkeypatch)
 
     assert set(recorder.created_tables) == {"purchase_candidates", "wardrobe_decisions"}
-    assert _columns(recorder, "purchase_candidates") == {column.name for column in PurchaseCandidate.__table__.columns}
-    assert _columns(recorder, "wardrobe_decisions") == {column.name for column in WardrobeDecision.__table__.columns}
+    assert _columns(recorder, "purchase_candidates") == {
+        column.name for column in PurchaseCandidate.__table__.columns
+    } - {"client_request_id"}
+    assert _columns(recorder, "wardrobe_decisions") == {
+        column.name for column in WardrobeDecision.__table__.columns
+    } - _LINK_COLUMNS
     # A decision row is written once and never revised — no updated_at anywhere.
     assert "updated_at" not in _columns(recorder, "wardrobe_decisions")
 
@@ -103,7 +113,9 @@ def test_check_constraints_match_the_models(monkeypatch: Any) -> None:
     recorder = _run_upgrade(monkeypatch)
 
     assert _checks(recorder.created_tables["purchase_candidates"]) == _model_checks(PurchaseCandidate.__table__)
-    assert _checks(recorder.created_tables["wardrobe_decisions"]) == _model_checks(WardrobeDecision.__table__)
+    assert _checks(recorder.created_tables["wardrobe_decisions"]) == {
+        value for value in _model_checks(WardrobeDecision.__table__) if "num_nonnulls" not in value
+    }
 
 
 def test_indexes_match_the_models(monkeypatch: Any) -> None:
@@ -111,9 +123,11 @@ def test_indexes_match_the_models(monkeypatch: Any) -> None:
 
     migrated = {(name, table, tuple(columns), unique) for name, table, columns, unique in recorder.created_indexes}
     modelled = {
-        (index.name, table.name, tuple(c.name for c in index.columns), bool(index.unique))
+        ("uq_wardrobe_decisions_candidate_id" if index.name == "uq_wardrobe_decisions_legacy_candidate" else index.name,
+         table.name, tuple(c.name for c in index.columns), bool(index.unique))
         for table in (PurchaseCandidate.__table__, WardrobeDecision.__table__)
         for index in table.indexes
+        if index.name not in _LINK_INDEXES
     }
     assert migrated == modelled
     # Idempotency of the decision itself rides on this one being unique.

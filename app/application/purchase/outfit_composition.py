@@ -122,6 +122,16 @@ _PENALTY_COLOR_CONFLICT = -4
 
 
 @dataclass(frozen=True)
+class CompositionConstraints:
+    """Accepted design conditions used to select actual supporting garments."""
+
+    locked_item_ids: tuple[uuid.UUID, ...] = ()
+    excluded_item_ids: tuple[uuid.UUID, ...] = ()
+    scene: str | None = None
+    style_tags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class OutfitSlot:
     """One filled slot: which owned item covers it, and as what."""
 
@@ -308,10 +318,15 @@ def _scene_weight(facts: OwnedItemFacts, scenes: tuple[str, ...]) -> int:
     return best
 
 
-def _pick_score(facts: OwnedItemFacts, parsed: ParsedItem) -> int:
+def _pick_score(
+    facts: OwnedItemFacts, parsed: ParsedItem, constraints: CompositionConstraints | None = None,
+) -> int:
     """Internal desirability weight. Never emitted — see the module docstring."""
     colors = _candidate_colors(parsed)
-    score = _scene_weight(facts, _candidate_scenes(parsed))
+    scenes = (constraints.scene,) if constraints is not None and constraints.scene else _candidate_scenes(parsed)
+    score = _scene_weight(facts, scenes)
+    if constraints is not None:
+        score += 3 * len(set(constraints.style_tags).intersection(facts.style_tags))
     if (facts.color_main or "").strip().lower() in NEUTRAL_COLORS:
         score += _WEIGHT_NEUTRAL
     if _conflicts_with(facts, colors):
@@ -336,6 +351,7 @@ def rank_for_slot(
     facts: list[OwnedItemFacts],
     slot: str,
     satisfied: frozenset[str],
+    constraints: CompositionConstraints | None = None,
 ) -> list[OwnedItemFacts]:
     """Candidates for one slot, most wearable-with-the-candidate first.
 
@@ -345,7 +361,7 @@ def rank_for_slot(
     `build_evidence` — input order is authoritative for ties.
     """
     eligible = [f for f in facts if _eligible(f, slot, satisfied)]
-    return sorted(eligible, key=lambda f: -_pick_score(f, parsed))
+    return sorted(eligible, key=lambda f: -_pick_score(f, parsed, constraints))
 
 
 def _outfit_scene(
@@ -375,6 +391,7 @@ def _compose_one(
     rank: int,
     prefilled: frozenset[str],
     anchor: OwnedItemFacts | None,
+    constraints: CompositionConstraints | None = None,
 ) -> tuple[GroundedOutfit | None, tuple[str, ...]]:
     """Fill the open slots once. Returns the outfit and the required slots it
     could not fill.
@@ -396,10 +413,26 @@ def _compose_one(
         for slot in CATEGORY_SLOTS.get(anchor.category, ()):
             slots.append(OutfitSlot(slot=slot, item_id=anchor.item_id, category=anchor.category))
 
+    by_id = {item.item_id: item for item in pool}
+    for item_id in constraints.locked_item_ids if constraints is not None else ():
+        if item_id in used:
+            continue
+        locked = by_id.get(item_id)
+        occupied = CATEGORY_SLOTS.get(locked.category, ()) if locked is not None else ()
+        if locked is None or not occupied or set(occupied).intersection(satisfied):
+            # A constraint conflict is not evidence of a wardrobe gap. In
+            # particular, a candidate may not silently replace a locked top.
+            return None, ()
+        used.add(item_id)
+        picks.append(locked)
+        satisfied.update(occupied)
+        slots.extend(OutfitSlot(slot=slot, item_id=item_id, category=locked.category) for slot in occupied)
+
     for slot in FILL_ORDER:
         if slot in satisfied:
             continue
-        ranked = [f for f in rank_for_slot(parsed, pool, slot, frozenset(satisfied)) if f.item_id not in used]
+        ranked = [f for f in rank_for_slot(parsed, pool, slot, frozenset(satisfied), constraints)
+                  if f.item_id not in used]
         if not ranked:
             if slot in REQUIRED_SLOTS:
                 missing.append(slot)
@@ -414,7 +447,8 @@ def _compose_one(
     if missing or not slots:
         return None, tuple(missing)
 
-    scene, scene_source = _outfit_scene(picks, _candidate_scenes(parsed))
+    scenes = (constraints.scene,) if constraints is not None and constraints.scene else _candidate_scenes(parsed)
+    scene, scene_source = _outfit_scene(picks, scenes)
     reasons = [REASON_COMPLETE_LOOK]
     if scene is not None:
         reasons.append(REASON_SHARED_SCENE)
@@ -478,6 +512,7 @@ def build_outfit_evidence(
     *,
     similar_item_ids: tuple[uuid.UUID, ...] = (),
     scan_truncated: bool = False,
+    constraints: CompositionConstraints | None = None,
 ) -> OutfitEvidence:
     """Compose grounded outfits from items the user owns and can wear today.
 
@@ -510,6 +545,8 @@ def build_outfit_evidence(
         # this is reachable. The honest answer is the same as an unparsed
         # candidate: we cannot place it.
         return unusable_candidate_evidence()
+    if constraints is not None:
+        available = [item for item in available if item.item_id not in constraints.excluded_item_ids]
     if not available:
         return OutfitEvidence(status=OUTFIT_STATUS_NO_AVAILABLE_ITEMS, scan_truncated=scan_truncated)
 
@@ -518,7 +555,9 @@ def build_outfit_evidence(
     composed: list[GroundedOutfit] = []
     gap_attempts: list[tuple[str, ...]] = []
     for rank in range(MAX_OUTFITS):
-        outfit, gaps = _compose_one(parsed, available, rank=rank, prefilled=prefilled, anchor=None)
+        outfit, gaps = _compose_one(
+            parsed, available, rank=rank, prefilled=prefilled, anchor=None, constraints=constraints,
+        )
         if outfit is None:
             # NOT necessarily a wardrobe gap: rank selects a different item per
             # slot, and a later rank can put a multi-slot item where a
@@ -541,7 +580,9 @@ def build_outfit_evidence(
         anchor = by_id.get(item_id)
         if anchor is None:
             continue
-        alternative, _ = _compose_one(parsed, available, rank=0, prefilled=frozenset(), anchor=anchor)
+        alternative, _ = _compose_one(
+            parsed, available, rank=0, prefilled=frozenset(), anchor=anchor, constraints=constraints,
+        )
         if alternative is not None:
             alternatives.append(alternative)
 

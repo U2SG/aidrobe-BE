@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -70,6 +70,7 @@ class PurchaseCandidate(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "user_id",
             "created_at",
         ),
+        Index("uq_purchase_candidates_user_request", "user_id", "client_request_id", unique=True),
         CheckConstraint(
             f"source_type IN ({_in_sql(PurchaseCandidateSource)})",
             name="source_type_enum",
@@ -89,6 +90,7 @@ class PurchaseCandidate(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    client_request_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     # Durable external product link (share_link / ask_link).
     source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     # Durable internal storage key (screenshot / order_image) — NOT a signed URL.
@@ -116,18 +118,17 @@ class WardrobeDecision(UUIDPrimaryKeyMixin, Base):
             "user_id",
             "created_at",
         ),
-        # One decision per candidate: contract §5.3 lets P0 always return the
-        # first decision for a candidate, so repeated POSTs are idempotent at
-        # the DB level and a race surfaces as 23505 (→ read the winner back)
-        # rather than as two paid evaluations. NULL candidate_id (a decision
-        # about an outfit rather than a purchase) is exempt — Postgres unique
-        # indexes allow many NULLs. Relaxing this later (if a materially
-        # changed wardrobe should be re-decidable) is a one-line reversible
-        # migration.
         Index(
-            "uq_wardrobe_decisions_candidate_id",
+            "uq_wardrobe_decisions_legacy_candidate",
             "candidate_id",
             unique=True,
+            postgresql_where=text("conversation_id IS NULL"),
+        ),
+        Index("uq_wardrobe_decisions_user_request", "user_id", "request_id", unique=True),
+        Index("ix_wardrobe_decisions_user_conversation", "user_id", "conversation_id", "created_at"),
+        CheckConstraint(
+            "num_nonnulls(conversation_id, design_revision, request_id, request_fingerprint) IN (0, 4)",
+            name="complete_design_context",
         ),
         CheckConstraint(
             f"decision IN ({_in_sql(PurchaseDecision)})",
@@ -152,6 +153,11 @@ class WardrobeDecision(UUIDPrimaryKeyMixin, Base):
     # decision may later be deleted, and that must not cascade the explanation
     # away. Same reasoning as `outfit_visual_assets.outfit_id`.
     outfit_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    # Historical lineage is retained if a source is later removed, just like outfit_id.
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    design_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    request_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     snapshot_version: Mapped[int] = mapped_column(Integer, nullable=False, default=DECISION_SNAPSHOT_VERSION)
     # What the decision was computed against: the concern asked, the candidate's
     # parsed attributes as of that moment, and the relevant wardrobe state.
@@ -165,3 +171,24 @@ class WardrobeDecision(UUIDPrimaryKeyMixin, Base):
     uncertainty: Mapped[str] = mapped_column(String(8), nullable=False)
     visual_need: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class WardrobeDecisionChoice(Base):
+    """The user's mutable intention is separate from the immutable evaluation."""
+
+    __tablename__ = "wardrobe_decision_choices"
+    __table_args__ = (
+        CheckConstraint("choice IS NULL OR choice IN ('buy', 'skip', 'later')", name="choice_enum"),
+        CheckConstraint("source IN ('button', 'ask')", name="source_enum"),
+    )
+
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wardrobe_decisions.id", ondelete="CASCADE"), primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    choice: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    source: Mapped[str] = mapped_column(String(8), nullable=False)
+    ask_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("ask_sessions.id", ondelete="SET NULL"), nullable=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

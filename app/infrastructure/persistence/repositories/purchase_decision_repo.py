@@ -8,6 +8,7 @@ returns None and the caller can answer 404 without leaking existence
 """
 
 import uuid
+from datetime import datetime
 from typing import cast
 
 from sqlalchemy import select
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.infrastructure.persistence.models.purchase_decision import (
     PurchaseCandidate,
     WardrobeDecision,
+    WardrobeDecisionChoice,
 )
 
 
@@ -80,6 +82,37 @@ class SqlAlchemyWardrobeDecisionRepository:
                 select(WardrobeDecision).where(
                     WardrobeDecision.candidate_id == candidate_id,
                     WardrobeDecision.user_id == user_id,
+                    WardrobeDecision.conversation_id.is_(None),
                 )
             ),
         )
+
+    async def get_for_request(self, user_id: uuid.UUID, request_id: uuid.UUID) -> WardrobeDecision | None:
+        return cast(WardrobeDecision | None, await self.session.scalar(select(WardrobeDecision).where(
+            WardrobeDecision.user_id == user_id, WardrobeDecision.request_id == request_id,
+        )))
+
+    async def list_for_conversation(
+        self, user_id: uuid.UUID, conversation_id: uuid.UUID, *, limit: int = 100,
+        after: datetime | None = None,
+    ) -> list[WardrobeDecision]:
+        stmt = select(WardrobeDecision).where(
+            WardrobeDecision.user_id == user_id, WardrobeDecision.conversation_id == conversation_id,
+        )
+        if after is not None:
+            stmt = stmt.where(WardrobeDecision.created_at > after)
+        rows = await self.session.scalars(stmt.order_by(
+            WardrobeDecision.created_at.desc(), WardrobeDecision.id.desc(),
+        ).limit(limit))
+        return list(reversed(list(rows)))
+
+    async def choices_for_user(
+        self, user_id: uuid.UUID, decision_ids: list[uuid.UUID],
+    ) -> dict[uuid.UUID, WardrobeDecisionChoice]:
+        if not decision_ids:
+            return {}
+        rows = await self.session.scalars(select(WardrobeDecisionChoice).where(
+            WardrobeDecisionChoice.user_id == user_id,
+            WardrobeDecisionChoice.decision_id.in_(decision_ids),
+        ).execution_options(populate_existing=True))
+        return {row.decision_id: row for row in rows}

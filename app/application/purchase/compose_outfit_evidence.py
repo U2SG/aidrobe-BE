@@ -53,6 +53,7 @@ from app.application.purchase.candidate_normalizer import ParsedItem
 from app.application.purchase.compute_similarity_evidence import load_wear_scenes
 from app.application.purchase.outfit_composition import (
     CATEGORY_SLOTS,
+    CompositionConstraints,
     OutfitEvidence,
     build_outfit_evidence,
     unusable_candidate_evidence,
@@ -83,6 +84,8 @@ async def compose_outfit_evidence(
     user_id: uuid.UUID,
     parsed: ParsedItem | None,
     closet_evidence: ClosetEvidence | None = None,
+    *,
+    constraints: CompositionConstraints | None = None,
 ) -> OutfitEvidence:
     """Grounded outfit evidence for one purchase candidate.
 
@@ -107,9 +110,13 @@ async def compose_outfit_evidence(
     similar_item_ids = _covering_item_ids(closet_evidence)
     categories = relevant_categories(category)
 
-    items = await _load_available_items(session, user_id, categories, similar_item_ids)
+    pinned_ids = tuple(dict.fromkeys((*similar_item_ids, *(constraints.locked_item_ids if constraints else ()))))
+    items = await _load_available_items(
+        session, user_id, categories, pinned_ids,
+        excluded_ids=constraints.excluded_item_ids if constraints else (),
+    )
     if not items:
-        return build_outfit_evidence(parsed, [], similar_item_ids=similar_item_ids)
+        return build_outfit_evidence(parsed, [], similar_item_ids=similar_item_ids, constraints=constraints)
 
     scenes = await load_wear_scenes(session, [item.id for item in items])
     facts = [
@@ -129,6 +136,7 @@ async def compose_outfit_evidence(
         facts,
         similar_item_ids=similar_item_ids,
         scan_truncated=_window_saturated(facts, categories),
+        constraints=constraints,
     )
 
 
@@ -165,6 +173,8 @@ def build_available_items_statement(
     user_id: uuid.UUID,
     categories: tuple[str, ...],
     pinned_ids: tuple[uuid.UUID, ...] = (),
+    *,
+    excluded_ids: tuple[uuid.UUID, ...] = (),
 ) -> Select[tuple[WardrobeItem]]:
     """One independently bounded window per category, plus the pinned ids.
 
@@ -187,12 +197,13 @@ def build_available_items_statement(
     """
 
     def _available(stmt: Select[tuple[WardrobeItem]]) -> Select[tuple[WardrobeItem]]:
-        return stmt.where(
+        filtered = stmt.where(
             WardrobeItem.user_id == user_id,
             WardrobeItem.status.in_(AVAILABLE_STATUSES),
             WardrobeItem.deleted_at.is_(None),
             WardrobeItem.fit_status != FitStatus.NO_LONGER_FITS.value,
         )
+        return filtered.where(WardrobeItem.id.not_in(excluded_ids)) if excluded_ids else filtered
 
     legs: list[Select[tuple[WardrobeItem]]] = [
         _available(select(WardrobeItem).where(WardrobeItem.category == category))
@@ -218,12 +229,16 @@ async def _load_available_items(
     user_id: uuid.UUID,
     categories: tuple[str, ...],
     pinned_ids: tuple[uuid.UUID, ...],
+    *,
+    excluded_ids: tuple[uuid.UUID, ...] = (),
 ) -> list[WardrobeItem]:
     """Query 1. De-duplicated, because a pinned item is usually also in its
     category window and `UNION ALL` (unlike `UNION`) keeps both copies —
     `UNION ALL` is still the right operator, since deduplicating in Postgres
     would mean sorting the whole scan to drop a handful of rows."""
-    rows = await session.scalars(build_available_items_statement(user_id, categories, pinned_ids))
+    rows = await session.scalars(build_available_items_statement(
+        user_id, categories, pinned_ids, excluded_ids=excluded_ids,
+    ))
     seen: set[uuid.UUID] = set()
     items: list[WardrobeItem] = []
     for item in rows:
