@@ -113,16 +113,22 @@ def _positions(raw: object, size: int, *, limit: int = 20) -> list[int] | None:
     return list(raw)
 
 
+_ISO_DATE = re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)")
+
+
 def _args_date(when: str, today: date) -> date | None:
     if when in {"now", "today"}:
         return today
     if when == "tomorrow":
         return today + timedelta(days=1)
+    # Models sometimes decorate the ISO date ("周五（2026-11-20）"); accept exactly one embedded date.
+    found = set(_ISO_DATE.findall(when))
+    if len(found) != 1:
+        return None
     try:
-        day = date.fromisoformat(when)
+        return date.fromisoformat(found.pop())
     except ValueError:
         return None
-    return day if day.isoformat() == when else None
 
 
 def _outfit_issues(
