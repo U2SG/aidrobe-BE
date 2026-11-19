@@ -250,7 +250,9 @@ async def request_wardrobe_product_image(
     if reference.crop is not None:
         source_key = f"users/{current_user.id}/wardrobe/verified-crops/{item_id}/{request_id}.jpg"
         try:
-            source_url = await object_storage().put_object(source_key, reference.crop, "image/jpeg")
+            source_url = await object_storage().put_object(
+                source_key, reference.cutout_source or reference.crop, "image/jpeg"
+            )
         except Exception as exc:
             logger.warning(
                 "wardrobe_product_reference_upload_failed", item_id=str(item_id), error_type=type(exc).__name__,

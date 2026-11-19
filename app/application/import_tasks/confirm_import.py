@@ -199,6 +199,10 @@ class ConfirmImageImportTask:
         elif is_legacy_garment_crop(crop_key or crop_url, task.user_id):
             crop_url, crop_key = None, None
         crop_key = _validated_source_key(crop_url, task, crop_key)
+        wide_url = candidate.get("cutout_source_image_url") if crop_url else None
+        wide_key = (
+            _validated_source_key(wide_url, task, candidate.get("cutout_source_object_key")) if wide_url else None
+        )
         cover_url = generated_url or crop_url or original_url
         cover_key = None if generated_url else (crop_key if crop_url else original_key)
         ai_title = candidate.get("display_name") or candidate.get("title")
@@ -254,6 +258,8 @@ class ConfirmImageImportTask:
             await prepare_item_derivatives(
                 self.wardrobe_repository.session, item,
                 source_key=real_key, source_url=real_url, source_version=source_version(real_key, real_url),
+                cutout_source_key=wide_key if real_url == crop_url else None,
+                cutout_source_url=wide_url if real_url == crop_url else None,
             )
         return item
 
@@ -277,6 +283,8 @@ async def apply_confirmed_crop(
     recognized_category: str,
     crop_url: str,
     crop_key: str,
+    cutout_source_url: str | None = None,
+    cutout_source_key: str | None = None,
 ) -> None:
     session = repository.session
     item = await session.scalar(
@@ -313,6 +321,7 @@ async def apply_confirmed_crop(
             standard.object_key = crop_key
     await prepare_item_derivatives(
         session, item, source_key=crop_key, source_url=crop_url, source_version=source_version(crop_key, crop_url),
+        cutout_source_key=cutout_source_key, cutout_source_url=cutout_source_url,
     )
 
 

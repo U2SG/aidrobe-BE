@@ -215,10 +215,17 @@ async def _assert_confirmed_sources(
                 red, _, blue = crop.convert("RGB").getpixel((crop.width // 2, crop.height // 2))
             assert (red > blue) == (candidate_id == "top")
 
-            for kind, payload_key in (("embedding", "image_key"), ("cutout", "source_key")):
+            # The product-image generator gets a wider crop of the same garment; everything else the tight one.
+            wide_key = crops[candidate_id]["cutout_source_object_key"]
+            with Image.open(io.BytesIO(store.objects[key])) as tight:
+                tight_area = tight.width * tight.height
+            with Image.open(io.BytesIO(store.objects[wide_key])) as wide:
+                assert wide.width * wide.height > tight_area
+            expected = (("embedding", "image_key", key), ("cutout", "source_key", wide_key))
+            for kind, payload_key, expected_key in expected:
                 job, = [job for job in jobs if job.target_id == item_id and job.job_type == kind]
                 assert job.status == JOB_STATUS_QUEUED
-                assert job.payload[payload_key] == key
+                assert job.payload[payload_key] == expected_key
                 assert job.payload["source_version"] == item.embedding_source_version
                 if kind == "cutout":
                     held, = [hold for hold in holds if hold.job_id == job.id]

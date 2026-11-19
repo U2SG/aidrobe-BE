@@ -60,4 +60,6 @@ async def test_outfit_photo_is_sent_to_vision_inline_not_by_storage_url(
 
     assert len(sent) == 1 and sent[0].startswith("data:image/jpeg;base64,")
     assert reference.url == original
-    assert reference.crop
+    assert reference.crop and reference.cutout_source
+    with Image.open(io.BytesIO(reference.crop)) as tight, Image.open(io.BytesIO(reference.cutout_source)) as wide:
+        assert wide.width > tight.width and wide.height > tight.height

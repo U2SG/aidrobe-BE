@@ -43,6 +43,8 @@ from app.infrastructure.workers.job_runtime import (
     enqueue,
 )
 
+_CROP_FIELDS = {"crop_object_key", "crop_image_url", "cutout_source_object_key", "cutout_source_image_url"}
+
 
 @pytest_asyncio.fixture
 async def patched_session_factory(
@@ -347,7 +349,7 @@ async def test_abandoned_crop_lease_recovers_without_repeating_recognition(
         assert task.candidate_payload is not None
         final = task.candidate_payload["candidate_items"]
         assert [
-            {key: value for key, value in candidate.items() if key not in {"crop_object_key", "crop_image_url"}}
+            {key: value for key, value in candidate.items() if key not in _CROP_FIELDS}
             for candidate in final
         ] == initial
         assert len({candidate["crop_object_key"] for candidate in final}) == 2
@@ -763,8 +765,10 @@ async def test_stale_crop_upload_cannot_replace_adopted_image(
         candidate = next(
             c for c in task.candidate_payload["candidate_items"] if c["temp_item_id"] == payload["candidate_id"]
         )
-        assert candidate["crop_object_key"] == written[0]
-        assert written[0].endswith("/2.jpg") and written[1].endswith("/1.jpg")
+        tight = [key for key in written if not key.endswith("-wide.jpg")]
+        assert candidate["crop_object_key"] == tight[0]
+        assert tight[0].endswith("/2.jpg") and tight[1].endswith("/1.jpg")
+        assert candidate["cutout_source_object_key"] == tight[0].removesuffix(".jpg") + "-wide.jpg"
         job = await session.get(AsyncJob, old.id)
         assert job.status == JOB_STATUS_SUCCEEDED and job.attempts == 2
 

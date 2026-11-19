@@ -17,7 +17,7 @@ from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.storage.object_key import is_legacy_garment_crop, is_owned_object_key, trusted_item_image_key
 from app.infrastructure.storage.source_image import image_data_uri, load_source_bytes, resolve_import_source_key
-from app.infrastructure.workers.garment_crops import crop_regions
+from app.infrastructure.workers.garment_crops import CUTOUT_SOURCE_PADDING, crop_regions
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,8 @@ class ItemReference:
     url: str
     key: str | None
     crop: bytes | None = None
+    # Wider crop of the same garment for the product-image generator.
+    cutout_source: bytes | None = None
 
 
 async def item_reference(
@@ -91,5 +93,6 @@ async def item_reference(
     if len(selected) == 1:
         crop = (await asyncio.to_thread(crop_regions, raw, [selected[0].bbox]))[0]
         if crop and await vision.review_garment_crops([crop], selected) == [True]:
-            return ItemReference(original, key, crop)
+            wide = await asyncio.to_thread(crop_regions, raw, [selected[0].bbox], padding=CUTOUT_SOURCE_PADDING)
+            return ItemReference(original, key, crop, wide[0] or crop)
     raise FriendlyException(error_codes.VALIDATION_ERROR, "原照里无法单独确认这件衣物", status_code=422)
