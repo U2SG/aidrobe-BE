@@ -81,6 +81,23 @@ async def test_date_validation_reuses_current_weather_city_and_checks_temperatur
     assert complete.content["valid"] is True and complete.content["weather_checked"] is True
 
 
+async def test_validation_accepts_the_display_name_of_the_saved_location(db_session: AsyncSession) -> None:
+    # A GPS location is stored as coordinates; get_weather shows the district name and
+    # models pass that name back. It must resolve to the same reading, not be rejected.
+    weather = Weather()
+    weather.forecasts["Home", TODAY] = reading("Huangpu", 4)
+    butler = await build_butler(db_session, weather)
+    observed = await butler.get_weather({"when": "today"})
+    assert (observed.content["place"], observed.content["location_name"]) == ("Home", "Huangpu")
+
+    cold = await butler.validate_outfit({"positions": [1, 2, 3], "place": "Huangpu"})
+    assert cold.content == {"valid": False, "missing_categories": ["outerwear"]}
+    complete = await butler.validate_outfit({"positions": [1, 2, 3, 4], "place": "Huangpu"})
+    assert complete.content["valid"] is True and complete.content["weather_checked"] is True
+    approved = await butler.resolve_reply("outfit", [1, 2, 3, 4], tools_completed=True, focus_rejected=False)
+    assert approved is not None
+
+
 async def test_latest_current_weather_takes_precedence_over_earlier_warm_forecast(
     db_session: AsyncSession,
 ) -> None:
