@@ -364,6 +364,27 @@ def test_drain_constants_are_sane() -> None:
     assert cutout_worker.JOB_TYPE == "cutout"
 
 
+async def test_hidden_layer_gets_embedding_but_no_generated_product_image(
+    patched_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings().model_copy(update={"ENABLE_ITEM_CUTOUT": True})
+    monkeypatch.setattr(prepare_derivatives, "get_settings", lambda: settings)
+    user_id, _ = await _seed_item(patched_session_factory)
+    async with patched_session_factory() as s:
+        item = WardrobeItem(user_id=user_id, category="top", title="Inner top", color_main="white")
+        s.add(item)
+        await s.flush()
+        await prepare_derivatives.prepare_item_derivatives(
+            s, item, source_key=f"users/{user_id}/wardrobe/verified-crops/inner.jpg", source_url=None,
+            source_version="inner", generate_cutout=False,
+        )
+        await s.commit()
+        jobs = (await s.scalars(select(AsyncJob).where(AsyncJob.target_id == item.id))).all()
+        assert [job.job_type for job in jobs] == ["embedding"]
+        assert item.cutout_status == CutoutStatus.SKIPPED.value
+
+
 async def test_concurrent_admission_holds_queued_and_legacy_budget(
     patched_session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,

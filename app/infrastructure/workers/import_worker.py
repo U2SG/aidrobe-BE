@@ -10,7 +10,7 @@ import structlog
 from sqlalchemy import String, cast, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.import_tasks.candidates import SINGLE_CANDIDATE_ID, store_candidates
+from app.application.import_tasks.candidates import PARTIALLY_HIDDEN, SINGLE_CANDIDATE_ID, store_candidates
 from app.application.import_tasks.failures import ImportFailure, public_error_message
 from app.application.import_tasks.source import source_version, upload_key
 from app.application.ports.vision import VisionResult
@@ -73,6 +73,28 @@ def _candidate(result: VisionResult, url: str, candidate_id: str) -> dict[str, A
         "should_import": True,
         "bbox": list(result.bbox) if result.bbox else None,
     }
+
+
+#: Share of a top's box that must sit inside an outer layer's box for the top to count as hidden.
+_HIDDEN_LAYER_COVERAGE = 0.8
+
+
+def _hidden_by_outer_layer(result: VisionResult, results: list[VisionResult]) -> bool:
+    """A top boxed almost entirely inside a jacket/coat shows only a strip; its product image would be invented."""
+    if result.category != "top" or result.bbox is None:
+        return False
+    x1, y1, x2, y2 = result.bbox
+    area = (x2 - x1) * (y2 - y1)
+    if area <= 0:
+        return False
+    for outer in results:
+        if outer.category != "outerwear" or outer.bbox is None:
+            continue
+        ox1, oy1, ox2, oy2 = outer.bbox
+        overlap = max(0.0, min(x2, ox2) - max(x1, ox1)) * max(0.0, min(y2, oy2) - max(y1, oy1))
+        if overlap / area >= _HIDDEN_LAYER_COVERAGE:
+            return True
+    return False
 
 
 def _is_unverified_layer(result: VisionResult, *, has_located_upper_garment: bool) -> bool:
@@ -263,6 +285,9 @@ async def _recognize(
                 _candidate(result, url, uuid.uuid5(task_id, str(index)).hex)
                 for index, result in enumerate(results)
             ]
+            for candidate, garment in zip(candidates, results, strict=True):
+                if _hidden_by_outer_layer(garment, results):
+                    candidate["visibility"] = PARTIALLY_HIDDEN
     except Exception as exc:
         raise _classify(exc, stage) from None
 
