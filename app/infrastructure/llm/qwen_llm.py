@@ -112,16 +112,16 @@ class QwenLlm:
         max_rounds: int = 5,
     ) -> ToolAskAnswer:
         """OpenAI-compatible tool loop. The model may call tools for up to
-        `max_rounds - 1` rounds. Staged tools get the setup and last tool
-        rounds. The final round sets tool_choice=none.
-        The turn deadline includes provider requests and tool execution."""
+        `max_rounds - 1` rounds, with one repair round for a rejected design.
+        The final round sets tool_choice=none. After design verification it
+        has its own provider deadline."""
         if not self.settings.QWEN_API_KEY:
             return ToolAskAnswer(text="", tokens_used=0)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": question},
         ]
-        tool_defs = [
+        tool_defs: list[dict[str, Any]] = [
             {
                 "type": "function",
                 "function": {"name": t.name, "description": t.description, "parameters": dict(t.parameters)},
@@ -141,12 +141,14 @@ class QwenLlm:
         phase = "provider"
         try:
             async with (
-                asyncio.timeout(self.settings.ASK_TOOL_TOTAL_TIMEOUT_SECONDS),
+                asyncio.timeout(self.settings.ASK_TOOL_TOTAL_TIMEOUT_SECONDS) as deadline,
                 httpx.AsyncClient(timeout=self.settings.LLM_ASK_TIMEOUT_SECONDS) as client,
             ):
                 while True:
                     rounds += 1
                     final = rounds >= round_limit or not tool_defs or verified
+                    if verified:
+                        deadline.reschedule(asyncio.get_running_loop().time() + self.settings.LLM_ASK_TIMEOUT_SECONDS)
                     required_tool = None
                     if not final:
                         if not setup_done:
