@@ -164,7 +164,12 @@ class QwenLlm:
                             [tool for tool in tool_defs if tool["function"]["name"] == required_tool]
                             if required_tool is not None else tool_defs
                         )
-                        payload["tool_choice"] = "none" if final else "auto"
+                        if final:
+                            payload["tool_choice"] = "none"
+                        elif required_tool is not None and required_tool == verification_tool:
+                            payload["tool_choice"] = {"type": "function", "function": {"name": required_tool}}
+                        else:
+                            payload["tool_choice"] = "auto"
                     if json_mode:
                         payload["response_format"] = {"type": "json_object"}
                     response = await client.post(self.settings.QWEN_LLM_BASE_URL, headers=headers, json=payload)

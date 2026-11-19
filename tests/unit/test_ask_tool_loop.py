@@ -159,7 +159,8 @@ async def test_default_budget_reserves_a_round_for_design_validation(monkeypatch
                                       max_rounds=llm.settings.ASK_TOOL_MAX_ROUNDS)
     assert executed == names
     assert answer.text == final and answer.tokens_used == 50
-    assert [payload["tool_choice"] for payload in seen] == ["auto", "auto", "auto", "auto", "none"]
+    validation_choice = {"type": "function", "function": {"name": "validate_outfit"}}
+    assert [payload["tool_choice"] for payload in seen] == ["auto", "auto", "auto", validation_choice, "none"]
     assert _offered_names(seen[0]) == {"update_design_brief"}
     assert _offered_names(seen[1]) == {tool.name for tool in DESIGN_TOOLS}
     assert _offered_names(seen[3]) == {"validate_outfit"}
@@ -254,7 +255,9 @@ async def test_reserved_validation_failure_gets_one_bounded_repair_round(monkeyp
 
     assert checks == [[1, 2, 3], [1, 2, 4]]
     assert _offered_names(seen[3]) == _offered_names(seen[4]) == {"validate_outfit"}
-    assert seen[4]["tool_choice"] == "auto" and seen[5]["tool_choice"] == "none"
+    validation_choice = {"type": "function", "function": {"name": "validate_outfit"}}
+    assert seen[3]["tool_choice"] == seen[4]["tool_choice"] == validation_choice
+    assert seen[5]["tool_choice"] == "none"
     assert answer.tool_trace[3].status == "error"
     assert answer.tool_trace[4].status == ("success" if retry_valid else "error")
     assert answer.text == final and answer.rounds == len(seen) == 6
