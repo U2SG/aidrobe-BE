@@ -543,6 +543,73 @@ async def test_generated_outfit_keeps_review_signals_when_it_passes(monkeypatch:
     assert len(storage.put_calls) == 1
 
 
+@pytest.mark.parametrize(("crop_side", "expected_reference"), [(300, "crop"), (130, "cutout")])
+async def test_generated_outfit_drops_shoe_crop_too_small_to_show_details(
+    monkeypatch: pytest.MonkeyPatch, crop_side: int, expected_reference: str
+) -> None:
+    def image_bytes(size: tuple[int, int], color: tuple[int, int, int]) -> bytes:
+        buf = io.BytesIO()
+        Image.new("RGB", size, color).save(buf, format="PNG")
+        return buf.getvalue()
+
+    objects = {
+        "generated-shoes.png": image_bytes((600, 500), (255, 255, 255)),
+        "original-shoes.jpg": image_bytes((crop_side, crop_side), (0, 0, 0)),
+    }
+
+    class SizedStorage(_RenderStorage):
+        async def get_object(self, key: str) -> bytes:
+            return objects[key]
+
+    _patch_storage(monkeypatch, SizedStorage())
+    settings = outfit_board_worker.get_settings().model_copy(
+        update={"ENABLE_ITEM_CUTOUT": True, "IMAGE_CUTOUT_PROVIDER": "openai"}
+    )
+    monkeypatch.setattr(outfit_board_worker, "get_settings", lambda: settings)
+    seen: dict[str, bytes] = {}
+
+    async def generate(images: list[bytes], garments: list[str], *, emphasize_shoe_details: bool) -> bytes:
+        seen["generation"] = images[0]
+        return _png_bytes()
+
+    async def check_outfit(sources: list[bytes], generated: bytes, *, garments: list[str]) -> dict[str, object]:
+        return {"accepted": True, "minor_differences": []}
+
+    async def check_footwear(source: bytes, generated: bytes) -> dict[str, object]:
+        seen["footwear"] = source
+        return {"accepted": True, "minor_differences": []}
+
+    class FakeProvider:
+        render_outfit = staticmethod(generate)
+        matches_outfit_photo = staticmethod(check_outfit)
+        matches_outfit_footwear = staticmethod(check_footwear)
+
+    monkeypatch.setattr(outfit_board_worker, "OpenAIImageCutout", lambda _: FakeProvider())
+    monkeypatch.setattr(outfit_board_worker, "QwenVision", lambda _: FakeProvider())
+    snapshot = _visual_asset_runtime.VisualAssetSnapshot(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        input_snapshot={
+            "generate": True,
+            "item_list": [
+                {
+                    "role": "shoes",
+                    "title": "White sneakers",
+                    "cutout_object_key": "generated-shoes.png",
+                    "review_object_key": "original-shoes.jpg",
+                },
+            ],
+        },
+    )
+
+    await outfit_board_worker._render_and_upload(snapshot)
+
+    # The crop is black and the cutout white, so the frame's colour says which one was sent.
+    for frame in (seen["generation"], seen["footwear"]):
+        corner = Image.open(io.BytesIO(frame)).convert("RGB").getpixel((0, 0))
+        assert (corner == (255, 255, 255)) == (expected_reference == "cutout"), corner
+
+
 async def test_download_image_rejects_unsafe_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.infrastructure.importers import external_http
 

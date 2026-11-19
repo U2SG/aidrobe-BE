@@ -192,6 +192,10 @@ def _draw_placeholder(canvas: Image.Image, box: tuple[int, int, int, int], label
     )
 
 
+# Short side, in pixels, below which a worn-photo crop is too small to check details against.
+_MIN_REVIEW_REFERENCE_SIDE = 256
+
+
 def _jpeg_reference(image: Image.Image) -> bytes:
     scale = min(1024 / max(image.size), max(1.0, 512 / max(image.size)))
     if scale != 1:
@@ -250,7 +254,10 @@ async def _render_and_upload(
                 )
                 if reference is None:
                     return QualityRejection({"reason": "missing_reference", "role": role})
-                review_frame = _jpeg_reference(reference)
+                # A thumbnail-sized crop of the worn photo carries no seams or trim; the
+                # generator then invents a generic garment and the reviewer rejects it.
+                if min(reference.size) >= _MIN_REVIEW_REFERENCE_SIDE:
+                    review_frame = _jpeg_reference(reference)
             shoes = role == "shoes" or item.get("category") == "shoes"
             generation_images.append(review_frame if shoes else frame)
             review_images.append(review_frame)
