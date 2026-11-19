@@ -130,6 +130,9 @@ class QwenLlm:
         ]
         setup_tool = next((tool.name for tool in tools if tool.stage == "setup"), None)
         verification_tool = next((tool.name for tool in tools if tool.stage == "verification"), None)
+        tool_timeout = self.settings.ASK_TOOL_TOTAL_TIMEOUT_SECONDS
+        if verification_tool is not None:
+            tool_timeout += self.settings.LLM_ASK_TIMEOUT_SECONDS
         setup_done = setup_tool is None
         verified = False
         headers = {"Authorization": f"Bearer {self.settings.QWEN_API_KEY}"}
@@ -141,7 +144,7 @@ class QwenLlm:
         phase = "provider"
         try:
             async with (
-                asyncio.timeout(self.settings.ASK_TOOL_TOTAL_TIMEOUT_SECONDS) as deadline,
+                asyncio.timeout(tool_timeout) as deadline,
                 httpx.AsyncClient(timeout=self.settings.LLM_ASK_TIMEOUT_SECONDS) as client,
             ):
                 while True:

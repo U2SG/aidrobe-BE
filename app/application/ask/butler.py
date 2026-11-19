@@ -353,7 +353,9 @@ class AskButler:
             ]
             details += "\nDesign session: " + json.dumps(brief, ensure_ascii=False)
             details += ("\nFor a design, call update_design_brief first, before weather, search or validation. "
-                        "Use a quote from the current user message. Preserve existing pieces except "
+                        "Use a quote from the current user message. Set when only if this turn requests a new date. "
+                        "Treat earlier trip dates as history and use the current design date for this outfit. "
+                        "Preserve existing pieces except "
                         "change_positions; never change a locked piece. Use the wardrobe positions already "
                         "provided and search only if they are insufficient. When validate_outfit is the only "
                         "offered tool, check the exact set now if you have a candidate. If validation rejects "
