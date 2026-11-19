@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.cost_guard import resolve_quota_limit
 from app.application.paid_generation_admission import attach, reserve
 from app.application.wardrobe.delete_item import DeleteWardrobeItem
-from app.application.wardrobe.item_photo import item_reference
+from app.application.wardrobe.item_photo import WIDE_CROP_SUFFIX, item_reference
 from app.application.wardrobe.list_items import ListWardrobeItems
 from app.application.wardrobe.update_item import UpdateWardrobeItem
 from app.bootstrap.container import object_storage, vision_rate_limiter, vision_service
@@ -246,10 +246,13 @@ async def request_wardrobe_product_image(
         raise FriendlyException(error_codes.STATE_CONFLICT, "衣物刚刚更新，请再试一次", status_code=409)
 
     request_id = uuid.uuid4()
-    source_url, source_key = reference.url, reference.key
+    source_url, source_key = reference.cutout_url or reference.url, reference.cutout_key or reference.key
     if reference.crop is not None:
-        source_key = f"users/{current_user.id}/wardrobe/verified-crops/{item_id}/{request_id}.jpg"
+        # Keep the reviewed tight crop beside the wide generation input so recognition never reads the wide one.
+        base = f"users/{current_user.id}/wardrobe/verified-crops/{item_id}/{request_id}"
+        source_key = base + WIDE_CROP_SUFFIX
         try:
+            await object_storage().put_object(base + ".jpg", reference.crop, "image/jpeg")
             source_url = await object_storage().put_object(
                 source_key, reference.cutout_source or reference.crop, "image/jpeg"
             )

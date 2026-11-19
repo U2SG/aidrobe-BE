@@ -63,3 +63,35 @@ async def test_outfit_photo_is_sent_to_vision_inline_not_by_storage_url(
     assert reference.crop and reference.cutout_source
     with Image.open(io.BytesIO(reference.crop)) as tight, Image.open(io.BytesIO(reference.cutout_source)) as wide:
         assert wide.width > tight.width and wide.height > tight.height
+
+
+async def test_saved_wide_product_source_keeps_recognition_on_its_tight_crop(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.infrastructure.persistence.models.async_job import AsyncJob
+
+    user_id = uuid.uuid4()
+    base = f"users/{user_id}/wardrobe/verified-crops/item/request"
+    wide_key, tight_key = f"{base}-wide.jpg", f"{base}.jpg"
+    wide_url = f"http://storage/{wide_key}?sig=1"
+    monkeypatch.setattr(item_photo, "trusted_item_image_key", lambda url, *_: url.split("?")[0].removeprefix("http://storage/"))
+
+    db_session.add(User(id=user_id))
+    await db_session.flush()
+    item = WardrobeItem(
+        user_id=user_id, title="内搭上衣", category="top", color_main="cream",
+        original_image_url=f"http://storage/users/{user_id}/wardrobe/outfit.jpg",
+    )
+    db_session.add(item)
+    await db_session.flush()
+    db_session.add(AsyncJob(
+        job_type="cutout", idempotency_key=f"cutout:{item.id}", user_id=user_id, target_id=item.id,
+        payload={"item_id": str(item.id), "source_key": wide_key, "source_url": wide_url},
+    ))
+    await db_session.flush()
+
+    reference = await item_photo.item_reference(db_session, item, object(), "zh-CN")  # type: ignore[arg-type]
+
+    assert (reference.key, reference.url) == (tight_key, f"http://storage/{tight_key}?sig=1")
+    assert (reference.cutout_key, reference.cutout_url) == (wide_key, wide_url)
+    assert reference.crop is None

@@ -27,6 +27,13 @@ class ItemReference:
     crop: bytes | None = None
     # Wider crop of the same garment for the product-image generator.
     cutout_source: bytes | None = None
+    # A wide crop saved by an earlier product-image request; `url`/`key` then name its tight sibling.
+    cutout_url: str | None = None
+    cutout_key: str | None = None
+
+
+#: Suffix of a crop stored only as product-image input; the same name without it is the reviewed tight crop.
+WIDE_CROP_SUFFIX = "-wide.jpg"
 
 
 async def item_reference(
@@ -66,7 +73,13 @@ async def item_reference(
             and trusted_item_image_key(saved_url, item.user_id, settings) == saved_key
             and not is_legacy_garment_crop(saved_key, item.user_id)
         ):
-            return ItemReference(saved_url, saved_key)
+            if not saved_key.endswith(WIDE_CROP_SUFFIX):
+                return ItemReference(saved_url, saved_key)
+            # Recognition stays on the reviewed tight crop; only generation reuses the wide one.
+            tight_key = saved_key.removesuffix(WIDE_CROP_SUFFIX) + ".jpg"
+            path, _, query = saved_url.partition("?")
+            tight_url = path.removesuffix(WIDE_CROP_SUFFIX) + ".jpg" + (f"?{query}" if query else "")
+            return ItemReference(tight_url, tight_key, cutout_url=saved_url, cutout_key=saved_key)
 
     key = resolve_import_source_key(original, item.user_id, settings)
     # Some older items kept only the full outfit photo. Locate the intended
