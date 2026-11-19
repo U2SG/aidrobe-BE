@@ -16,7 +16,7 @@ from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.storage.object_key import is_legacy_garment_crop, is_owned_object_key, trusted_item_image_key
-from app.infrastructure.storage.source_image import load_source_bytes, resolve_import_source_key
+from app.infrastructure.storage.source_image import image_data_uri, load_source_bytes, resolve_import_source_key
 from app.infrastructure.workers.garment_crops import crop_regions
 
 
@@ -77,8 +77,10 @@ async def item_reference(
     if outfit_import is None:
         return ItemReference(original, key)
 
+    # Read our own upload by key and inline it: vision must not fetch internal storage URLs.
+    raw = await load_source_bytes(original, key, user_id=item.user_id)
     candidates = [
-        result for result in await vision.analyze_outfit(original, locale)
+        result for result in await vision.analyze_outfit(image_data_uri(raw), locale)
         if result.category == item.category and result.bbox and not result.style_unverified
     ]
     kind = garment_type(item.title, item.canonical_name)
@@ -87,7 +89,6 @@ async def item_reference(
     ]
     selected = matches or candidates
     if len(selected) == 1:
-        raw = await load_source_bytes(original, key, user_id=item.user_id)
         crop = (await asyncio.to_thread(crop_regions, raw, [selected[0].bbox]))[0]
         if crop and await vision.review_garment_crops([crop], selected) == [True]:
             return ItemReference(original, key, crop)
