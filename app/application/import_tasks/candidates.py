@@ -6,6 +6,8 @@ from typing import Any
 from app.infrastructure.persistence.models.import_task import ImportTask
 
 SINGLE_CANDIDATE_ID = "__single__"
+#: Candidate `visibility`: mostly covered by an outer layer, so no product image is generated for it.
+PARTIALLY_HIDDEN = "partially_hidden"
 
 
 def normalize_candidates(task: ImportTask) -> list[dict[str, Any]]:

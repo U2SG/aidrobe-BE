@@ -6,7 +6,12 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.application.import_tasks.candidates import confirmed_item_ids, normalize_candidates, store_candidates
+from app.application.import_tasks.candidates import (
+    PARTIALLY_HIDDEN,
+    confirmed_item_ids,
+    normalize_candidates,
+    store_candidates,
+)
 from app.application.import_tasks.prepare_derivatives import prepare_item_derivatives
 from app.application.import_tasks.same_photo import existing_photo_item
 from app.application.import_tasks.source import source_version, upload_key
@@ -260,6 +265,7 @@ class ConfirmImageImportTask:
                 source_key=real_key, source_url=real_url, source_version=source_version(real_key, real_url),
                 cutout_source_key=wide_key if real_url == crop_url else None,
                 cutout_source_url=wide_url if real_url == crop_url else None,
+                generate_cutout=candidate.get("visibility") != PARTIALLY_HIDDEN,
             )
         return item
 
@@ -285,6 +291,7 @@ async def apply_confirmed_crop(
     crop_key: str,
     cutout_source_url: str | None = None,
     cutout_source_key: str | None = None,
+    generate_cutout: bool = True,
 ) -> None:
     session = repository.session
     item = await session.scalar(
@@ -321,7 +328,7 @@ async def apply_confirmed_crop(
             standard.object_key = crop_key
     await prepare_item_derivatives(
         session, item, source_key=crop_key, source_url=crop_url, source_version=source_version(crop_key, crop_url),
-        cutout_source_key=cutout_source_key, cutout_source_url=cutout_source_url,
+        cutout_source_key=cutout_source_key, cutout_source_url=cutout_source_url, generate_cutout=generate_cutout,
     )
 
 

@@ -24,6 +24,7 @@ async def prepare_item_derivatives(
     source_version: str,
     cutout_source_key: str | None = None,
     cutout_source_url: str | None = None,
+    generate_cutout: bool = True,
 ) -> None:
     """Publish the current true image and enqueue both consumers in this transaction.
 
@@ -46,7 +47,7 @@ async def prepare_item_derivatives(
         user_id=item.user_id,
     )
 
-    if not get_settings().ENABLE_ITEM_CUTOUT or item.cutout_status == CutoutStatus.READY.value:
+    if not generate_cutout or not get_settings().ENABLE_ITEM_CUTOUT or item.cutout_status == CutoutStatus.READY.value:
         return
     if not (cutout_source_key or cutout_source_url):
         cutout_source_key, cutout_source_url = source_key, source_url

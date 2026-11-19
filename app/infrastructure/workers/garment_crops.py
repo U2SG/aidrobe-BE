@@ -13,7 +13,12 @@ import structlog
 from PIL import Image, ImageOps
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.import_tasks.candidates import confirmed_item_ids, normalize_candidates, store_candidates
+from app.application.import_tasks.candidates import (
+    PARTIALLY_HIDDEN,
+    confirmed_item_ids,
+    normalize_candidates,
+    store_candidates,
+)
 from app.application.import_tasks.confirm_import import apply_confirmed_crop
 from app.application.ports.vision import VisionResult
 from app.common.enums import ImportStatus
@@ -177,6 +182,7 @@ async def _crop_one(session: AsyncSession, job: AsyncJob) -> None:
             SqlAlchemyWardrobeRepository(session), user_id=job.user_id, item_id=uuid.UUID(item_id),
             original_url=url, recognized_category=candidate["category"], crop_url=crop_url, crop_key=crop_key,
             cutout_source_url=wide_url, cutout_source_key=wide_key,
+            generate_cutout=candidate.get("visibility") != PARTIALLY_HIDDEN,
         )
     candidate["crop_object_key"] = crop_key
     candidate["crop_image_url"] = crop_url
