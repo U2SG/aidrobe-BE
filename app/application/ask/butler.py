@@ -292,6 +292,9 @@ class AskButler:
         self._known_positions = {item_id: pos for pos, item_id in enumerate(self.item_ids, start=1)}
         self._weather: dict[tuple[date, bool, str], tuple[WeatherInfo, bool] | None] = {}
         self._weather_context: list[tuple[date, bool, str]] = []
+        # get_weather shows a display name next to the lookup key (e.g. coordinates);
+        # models often echo the name back, so map it to the key it stands for.
+        self._place_names: dict[str, str] = {}
         self._checked: dict[frozenset[int], _CheckedOutfit] = {}
         tools = [
             AskTool(
@@ -543,6 +546,8 @@ class AskButler:
         return day, args.when == "now", (args.place or self.location or "").strip()
 
     def _validation_weather_args(self, args: _OutfitArgs, day: date) -> _OutfitArgs:
+        if args.place is not None:
+            args = args.model_copy(update={"place": self._place_names.get(args.place.strip(), args.place)})
         contexts = [
             key for key in reversed(self._weather_context)
             if key[0] == day and (args.place is None or key[2] == args.place)
@@ -601,6 +606,7 @@ class AskButler:
             )
         info, forecast = result
         place_label = sanitize_llm_text(info.location_name or place, max_len=120)
+        self._place_names.setdefault(place_label, place)
         condition = sanitize_llm_text(info.condition, max_len=40)
         label = f"{day.isoformat()} {'forecast' if forecast else 'now'}"
         if self.lang != "en":
