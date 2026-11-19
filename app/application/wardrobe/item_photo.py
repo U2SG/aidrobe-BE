@@ -17,7 +17,7 @@ from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.storage.object_key import is_legacy_garment_crop, is_owned_object_key, trusted_item_image_key
 from app.infrastructure.storage.source_image import image_data_uri, load_source_bytes, resolve_import_source_key
-from app.infrastructure.workers.garment_crops import crop_regions
+from app.infrastructure.workers.garment_crops import CUTOUT_SOURCE_PADDING, crop_regions
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,15 @@ class ItemReference:
     url: str
     key: str | None
     crop: bytes | None = None
+    # Wider crop of the same garment for the product-image generator.
+    cutout_source: bytes | None = None
+    # A wide crop saved by an earlier product-image request; `url`/`key` then name its tight sibling.
+    cutout_url: str | None = None
+    cutout_key: str | None = None
+
+
+#: Suffix of a crop stored only as product-image input; the same name without it is the reviewed tight crop.
+WIDE_CROP_SUFFIX = "-wide.jpg"
 
 
 async def item_reference(
@@ -64,7 +73,13 @@ async def item_reference(
             and trusted_item_image_key(saved_url, item.user_id, settings) == saved_key
             and not is_legacy_garment_crop(saved_key, item.user_id)
         ):
-            return ItemReference(saved_url, saved_key)
+            if not saved_key.endswith(WIDE_CROP_SUFFIX):
+                return ItemReference(saved_url, saved_key)
+            # Recognition stays on the reviewed tight crop; only generation reuses the wide one.
+            tight_key = saved_key.removesuffix(WIDE_CROP_SUFFIX) + ".jpg"
+            path, _, query = saved_url.partition("?")
+            tight_url = path.removesuffix(WIDE_CROP_SUFFIX) + ".jpg" + (f"?{query}" if query else "")
+            return ItemReference(tight_url, tight_key, cutout_url=saved_url, cutout_key=saved_key)
 
     key = resolve_import_source_key(original, item.user_id, settings)
     # Some older items kept only the full outfit photo. Locate the intended
@@ -91,5 +106,6 @@ async def item_reference(
     if len(selected) == 1:
         crop = (await asyncio.to_thread(crop_regions, raw, [selected[0].bbox]))[0]
         if crop and await vision.review_garment_crops([crop], selected) == [True]:
-            return ItemReference(original, key, crop)
+            wide = await asyncio.to_thread(crop_regions, raw, [selected[0].bbox], padding=CUTOUT_SOURCE_PADDING)
+            return ItemReference(original, key, crop, wide[0] or crop)
     raise FriendlyException(error_codes.VALIDATION_ERROR, "原照里无法单独确认这件衣物", status_code=422)

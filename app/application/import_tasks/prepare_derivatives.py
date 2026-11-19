@@ -22,6 +22,8 @@ async def prepare_item_derivatives(
     source_key: str | None,
     source_url: str | None,
     source_version: str,
+    cutout_source_key: str | None = None,
+    cutout_source_url: str | None = None,
 ) -> None:
     """Publish the current true image and enqueue both consumers in this transaction.
 
@@ -46,6 +48,10 @@ async def prepare_item_derivatives(
 
     if not get_settings().ENABLE_ITEM_CUTOUT or item.cutout_status == CutoutStatus.READY.value:
         return
+    if not (cutout_source_key or cutout_source_url):
+        cutout_source_key, cutout_source_url = source_key, source_url
+    elif cutout_source_key and cutout_source_url:
+        cutout_source_url = cutout_source_url.split("?", 1)[0].split("#", 1)[0]
     key = cutout_job_key(item.id)
     if await session.scalar(select(AsyncJob.id).where(AsyncJob.idempotency_key == key)) is not None:
         return
@@ -67,8 +73,8 @@ async def prepare_item_derivatives(
         session,
         item_id=item.id,
         user_id=item.user_id,
-        source_url=source_url,
-        source_key=source_key,
+        source_url=cutout_source_url,
+        source_key=cutout_source_key,
         source_version=source_version,
         expected_cover_url=item.cover_image_url,
         category=item.category,

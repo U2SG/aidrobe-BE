@@ -41,12 +41,17 @@ logger = structlog.get_logger(__name__)
 #: Breathing room around the model's box, as a fraction of the box size, so a
 #: slightly tight box does not clip a sleeve or a hem.
 CROP_PADDING = 0.06
+#: The product-image generator gets more of the photo than the review crop: on
+#: small garments a tight box hides sleeves and hems, so the model guesses them.
+CUTOUT_SOURCE_PADDING = 0.30
 CROP_JPEG_QUALITY = 90
 
 Box = tuple[float, float, float, float]
 
 
-def crop_regions(image_bytes: bytes, boxes: Sequence[Box | None]) -> list[bytes | None]:
+def crop_regions(
+    image_bytes: bytes, boxes: Sequence[Box | None], *, padding: float = CROP_PADDING
+) -> list[bytes | None]:
     """JPEG crops of `boxes` (fractions of width/height); None where no box."""
     with Image.open(io.BytesIO(image_bytes)) as opened:
         image = ImageOps.exif_transpose(opened).convert("RGB")
@@ -57,8 +62,8 @@ def crop_regions(image_bytes: bytes, boxes: Sequence[Box | None]) -> list[bytes 
             crops.append(None)
             continue
         x1, y1, x2, y2 = box
-        pad_x = (x2 - x1) * CROP_PADDING
-        pad_y = (y2 - y1) * CROP_PADDING
+        pad_x = (x2 - x1) * padding
+        pad_y = (y2 - y1) * padding
         left = max(0, int((x1 - pad_x) * width))
         top = max(0, int((y1 - pad_y) * height))
         right = min(width, int(round((x2 + pad_x) * width)))
@@ -152,6 +157,9 @@ async def _crop_one(session: AsyncSession, job: AsyncJob) -> None:
     # writes a different object, and only the current claim can adopt it.
     crop_key = garment_crop_object_key(job.user_id, job.target_id, f"{job.id}/{job.attempts}")
     crop_url = await object_storage().put_object(crop_key, crop, "image/jpeg")
+    wide = (await asyncio.to_thread(crop_regions, source, [box], padding=CUTOUT_SOURCE_PADDING))[0] or crop
+    wide_key = garment_crop_object_key(job.user_id, job.target_id, f"{job.id}/{job.attempts}-wide")
+    wide_url = await object_storage().put_object(wide_key, wide, "image/jpeg")
 
     task = await repository.get_for_user(job.target_id, job.user_id, for_update=True)
     if not await claim_is_current(session, job):
@@ -168,9 +176,12 @@ async def _crop_one(session: AsyncSession, job: AsyncJob) -> None:
         await apply_confirmed_crop(
             SqlAlchemyWardrobeRepository(session), user_id=job.user_id, item_id=uuid.UUID(item_id),
             original_url=url, recognized_category=candidate["category"], crop_url=crop_url, crop_key=crop_key,
+            cutout_source_url=wide_url, cutout_source_key=wide_key,
         )
     candidate["crop_object_key"] = crop_key
     candidate["crop_image_url"] = crop_url
+    candidate["cutout_source_object_key"] = wide_key
+    candidate["cutout_source_image_url"] = wide_url
     store_candidates(task, candidates)
     await mark_succeeded(session, job.id, claimed_attempt=job.attempts, result={"outcome": "cropped"})
     await session.commit()
