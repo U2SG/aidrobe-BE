@@ -17,6 +17,24 @@ WEATHER = ToolSpec(
     description="Weather for a day",
     parameters={"type": "object", "properties": {"day": {"type": "string"}}, "required": ["day"]},
 )
+BRIEF = ToolSpec(
+    name="update_design_brief",
+    description="Update the current design request",
+    parameters={"type": "object"},
+    stage="setup",
+)
+SEARCH = ToolSpec(
+    name="search_wardrobe",
+    description="Find wardrobe pieces",
+    parameters={"type": "object"},
+)
+VALIDATION = ToolSpec(
+    name="validate_outfit",
+    description="Check an exact outfit",
+    parameters={"type": "object"},
+    stage="verification",
+)
+DESIGN_TOOLS = [BRIEF, WEATHER, SEARCH, VALIDATION]
 
 
 def _llm() -> QwenLlm:
@@ -42,6 +60,10 @@ def _reply(content: str = "", calls: list[dict[str, Any]] | None = None, tokens:
 
 def _call(name: str, args: dict[str, Any], call_id: str = "c1") -> dict[str, Any]:
     return {"id": call_id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+
+
+def _offered_names(payload: dict[str, Any]) -> set[str]:
+    return {tool["function"]["name"] for tool in payload.get("tools", [])}
 
 
 async def test_tool_call_is_executed_and_fed_back(monkeypatch) -> None:
@@ -116,9 +138,8 @@ async def test_registry_reports_unknown_and_failing_tools_to_the_model() -> None
     assert not ToolRegistry()
 
 
-async def test_default_budget_leaves_a_round_for_validation(monkeypatch) -> None:
-    names = ["get_weather", "update_design_brief", "search_wardrobe", "validate_outfit"]
-    specs = [ToolSpec(name, name, {"type": "object"}) for name in names]
+async def test_default_budget_reserves_a_round_for_design_validation(monkeypatch) -> None:
+    names = ["update_design_brief", "get_weather", "search_wardrobe", "validate_outfit"]
     final = json.dumps({"answer": "这套保留亮色上衣。", "reply_kind": "outfit", "referenced_items": [1, 2, 3]})
     seen: list[dict[str, Any]] = []
     _route(monkeypatch, [*[_reply(calls=[_call(name, {}, str(i))]) for i, name in enumerate(names)],
@@ -127,15 +148,136 @@ async def test_default_budget_leaves_a_round_for_validation(monkeypatch) -> None
 
     async def execute(name: str, args: dict[str, Any]) -> ToolResult:
         executed.append(name)
-        return ToolResult({"valid": True, "positions": [1, 2, 3]}, name)
+        if name == "update_design_brief":
+            return ToolResult({"updated": True}, name)
+        if name == "validate_outfit":
+            return ToolResult({"valid": True, "positions": [1, 2, 3]}, name)
+        return ToolResult({"items": []}, name)
 
     llm = _llm()
-    answer = await llm.ask_with_tools("sys", "按天气调整颜色", specs, execute,
+    answer = await llm.ask_with_tools("sys", "按天气调整颜色", DESIGN_TOOLS, execute,
                                       max_rounds=llm.settings.ASK_TOOL_MAX_ROUNDS)
     assert executed == names
     assert answer.text == final and answer.tokens_used == 50
-    assert [payload["tool_choice"] for payload in seen] == ["auto", "auto", "auto", "auto", "none"]
+    validation_choice = {"type": "function", "function": {"name": "validate_outfit"}}
+    assert [payload["tool_choice"] for payload in seen] == ["auto", "auto", "auto", validation_choice, "none"]
+    assert _offered_names(seen[0]) == {"update_design_brief"}
+    assert _offered_names(seen[1]) == {tool.name for tool in DESIGN_TOOLS}
+    assert _offered_names(seen[3]) == {"validate_outfit"}
     assert len(answer.tool_trace) == 4 and answer.failure_reason is None
+
+
+async def test_design_rejects_validation_before_updating_the_brief(monkeypatch) -> None:
+    seen: list[dict[str, Any]] = []
+    final = json.dumps({
+        "answer": "保留毛衣，换一双鞋。", "reply_kind": "outfit", "referenced_items": [1, 2, 4],
+    })
+    _route(monkeypatch, [
+        _reply(calls=[_call("validate_outfit", {"positions": [1, 2, 3]})]),
+        _reply(calls=[_call("update_design_brief", {"change_positions": [3]})]),
+        _reply(calls=[_call("validate_outfit", {"positions": [1, 2, 4]})]),
+        _reply(final),
+    ], seen)
+    executed: list[str] = []
+
+    async def execute(name: str, args: dict[str, Any]) -> ToolResult:
+        executed.append(name)
+        if name == "update_design_brief":
+            return ToolResult({"updated": True}, name)
+        return ToolResult({"valid": True, "positions": args["positions"]}, name)
+
+    answer = await _llm().ask_with_tools("sys", "根据穿着感受换鞋", DESIGN_TOOLS, execute)
+
+    assert executed == ["update_design_brief", "validate_outfit"]
+    assert _offered_names(seen[0]) == _offered_names(seen[1]) == {"update_design_brief"}
+    assert answer.tool_trace[0].tool == "validate_outfit"
+    assert answer.tool_trace[0].status == "error"
+    assert answer.tool_trace[0].result["error"]
+    assert seen[-1]["tool_choice"] == "none"
+    assert answer.text == final and answer.rounds == 4
+
+
+async def test_reserved_validation_round_rejects_an_additional_wardrobe_search(monkeypatch) -> None:
+    seen: list[dict[str, Any]] = []
+    final = json.dumps({
+        "answer": "还没核实好新搭配，请再确认鞋子。", "reply_kind": "general", "referenced_items": [],
+    })
+    _route(monkeypatch, [
+        _reply(calls=[_call("update_design_brief", {})]),
+        _reply(calls=[_call("get_weather", {"place": "苏州"})]),
+        _reply(calls=[_call("search_wardrobe", {"category": "shoes"})]),
+        _reply(calls=[_call("search_wardrobe", {"category": "outerwear"})]),
+        _reply(final),
+    ], seen)
+    executed: list[tuple[str, dict[str, Any]]] = []
+
+    async def execute(name: str, args: dict[str, Any]) -> ToolResult:
+        executed.append((name, args))
+        return ToolResult({"updated": True} if name == "update_design_brief" else {"items": []}, name)
+
+    answer = await _llm().ask_with_tools("sys", "按苏州行程调整", DESIGN_TOOLS, execute)
+
+    assert [name for name, _ in executed] == ["update_design_brief", "get_weather", "search_wardrobe"]
+    assert _offered_names(seen[3]) == {"validate_outfit"}
+    assert answer.tool_trace[-1].tool == "search_wardrobe"
+    assert answer.tool_trace[-1].arguments == {"category": "outerwear"}
+    assert answer.tool_trace[-1].status == "error"
+    assert answer.tool_trace[-1].result["error"]
+    assert json.loads(seen[-1]["messages"][-1]["content"])["error"]
+    assert seen[-1]["tool_choice"] == "none"
+    assert answer.text == final and answer.rounds == 5
+
+
+@pytest.mark.parametrize("retry_valid", [True, False])
+async def test_reserved_validation_failure_gets_one_bounded_repair_round(monkeypatch, retry_valid: bool) -> None:
+    seen: list[dict[str, Any]] = []
+    final = "已核实调整后的搭配" if retry_valid else "这套仍偏正式，需要再调整"
+    _route(monkeypatch, [
+        _reply(calls=[_call("update_design_brief", {})]),
+        _reply(calls=[_call("get_weather", {"place": "苏州"})]),
+        _reply(calls=[_call("search_wardrobe", {"category": "shoes"})]),
+        _reply(calls=[_call("validate_outfit", {"positions": [1, 2, 3]})]),
+        _reply(calls=[_call("validate_outfit", {"positions": [1, 2, 4]})]),
+        _reply(final),
+    ], seen)
+    checks: list[list[int]] = []
+
+    async def execute(name: str, args: dict[str, Any]) -> ToolResult:
+        if name == "update_design_brief":
+            return ToolResult({"updated": True}, "")
+        if name == "validate_outfit":
+            checks.append(args["positions"])
+            valid = len(checks) == 2 and retry_valid
+            return ToolResult({"valid": True} if valid else {"valid": False, "error": "too formal"}, "")
+        return ToolResult({"items": []}, "")
+
+    answer = await _llm().ask_with_tools("sys", "按穿着感受重新设计", DESIGN_TOOLS, execute)
+
+    assert checks == [[1, 2, 3], [1, 2, 4]]
+    assert _offered_names(seen[3]) == _offered_names(seen[4]) == {"validate_outfit"}
+    validation_choice = {"type": "function", "function": {"name": "validate_outfit"}}
+    assert seen[3]["tool_choice"] == seen[4]["tool_choice"] == validation_choice
+    assert seen[5]["tool_choice"] == "none"
+    assert answer.tool_trace[3].status == "error"
+    assert answer.tool_trace[4].status == ("success" if retry_valid else "error")
+    assert answer.text == final and answer.rounds == len(seen) == 6
+
+
+async def test_design_can_ask_a_general_clarification_before_validation(monkeypatch) -> None:
+    seen: list[dict[str, Any]] = []
+    final = json.dumps({"answer": "这次要换鞋还是换外套？", "reply_kind": "general", "referenced_items": []})
+    _route(monkeypatch, [_reply(calls=[_call("update_design_brief", {})]), _reply(final)], seen)
+    executed: list[str] = []
+
+    async def execute(name: str, args: dict[str, Any]) -> ToolResult:
+        executed.append(name)
+        return ToolResult({"updated": True}, "")
+
+    answer = await _llm().ask_with_tools("sys", "想调整得更合适", DESIGN_TOOLS, execute)
+
+    assert executed == ["update_design_brief"]
+    assert answer.text == final and answer.rounds == 2
+    assert not any(entry.tool == "validate_outfit" for entry in answer.tool_trace)
 
 
 @pytest.mark.parametrize("arguments", ['{bad json', '[]', 'null', '{"limit":NaN}', '{"limit":Infinity}'])

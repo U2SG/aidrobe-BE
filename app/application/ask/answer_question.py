@@ -1215,6 +1215,9 @@ async def answer_question(
                 + json.dumps(wear_feedback, ensure_ascii=False)
                 + "\nUse it to explain and inform this design's garment choices. The latest saved record supersedes "
                 "anything an earlier answer inferred. Reconsider pieces chosen from superseded feedback. "
+                "When asked what feedback you read, explain every saved reason tag and note for the relevant "
+                "version in the answer language. Preserve the qualities the user liked and address the issue "
+                "with available pieces. Avoid claiming an item property that its wardrobe data does not establish. "
                 "Respect the current user request and explicitly locked items. Do not turn wear feedback into "
                 "design-brief goals, notes, constraints, or standing preferences. Only changes explicitly requested "
                 "in the current message belong in the design brief."
