@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
 from itertools import product
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 from sqlalchemy import Select, func, nulls_last, or_, select
@@ -97,8 +97,10 @@ class _CheckedOutfit:
 
 
 
-def _spec(name: str, description: str, args: type[_ToolArgs]) -> ToolSpec:
-    return ToolSpec(name=name, description=description, parameters=args.model_json_schema())
+def _spec(
+    name: str, description: str, args: type[_ToolArgs], *, stage: Literal["setup", "verification"] | None = None,
+) -> ToolSpec:
+    return ToolSpec(name=name, description=description, parameters=args.model_json_schema(), stage=stage)
 
 
 def _positions(raw: object, size: int, *, limit: int = 20) -> list[int] | None:
@@ -314,6 +316,7 @@ class AskButler:
                     "Check the exact proposed set before recommending it. Include top + bottom or a dress, and shoes. "
                     "Use the target date, the requested city, and the occasion (formal for an interview or meeting).",
                     _OutfitArgs,
+                    stage="verification" if design_constraints is not None else None,
                 ),
                 handler=self.validate_outfit,
             ),
@@ -322,7 +325,8 @@ class AskButler:
             tools.insert(0, AskTool(
                 spec=_spec("update_design_brief", "Apply this turn's explicit goal and temporary exceptions first. "
                            "When changing only certain pieces, list change_positions; all other current pieces stay. "
-                           "This never writes long-term memory. Quote only the CURRENT user message.", _BriefArgs),
+                           "This never writes long-term memory. Quote only the CURRENT user message.", _BriefArgs,
+                           stage="setup"),
                 handler=self.update_design_brief,
             ))
         self.registry = ToolRegistry(tools)
@@ -348,8 +352,11 @@ class AskButler:
                 if ident in self._known_positions
             ]
             details += "\nDesign session: " + json.dumps(brief, ensure_ascii=False)
-            details += ("\nCall update_design_brief before searching or validating. Use a quote from the current user "
-                        "message. Preserve existing pieces except change_positions; never change a locked piece. "
+            details += ("\nFor a design, call update_design_brief first, before weather, search or validation. "
+                        "Use a quote from the current user message. Preserve existing pieces except "
+                        "change_positions; never change a locked piece. Use the wardrobe positions already "
+                        "provided and search only if they are insufficient. When validate_outfit is the only "
+                        "offered tool, check the exact set now if you have a candidate. "
                         "Exploration describes a temporary experiment, not a durable preference. A style request "
                         "must shape the actual garment attributes and selection. If the wardrobe cannot achieve "
                         "it, explain the concrete gap. New complete results are drafts; do not claim adoption, "

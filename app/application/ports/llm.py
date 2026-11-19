@@ -1,6 +1,6 @@
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,7 @@ class ToolSpec:
     description: str
     # JSON Schema for the arguments object.
     parameters: Mapping[str, Any]
+    stage: Literal["setup", "verification"] | None = None
 
 
 @dataclass(frozen=True)

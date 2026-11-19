@@ -112,7 +112,8 @@ class QwenLlm:
         max_rounds: int = 5,
     ) -> ToolAskAnswer:
         """OpenAI-compatible tool loop. The model may call tools for up to
-        `max_rounds - 1` rounds. The final round sets tool_choice=none.
+        `max_rounds - 1` rounds. Staged tools get the setup and last tool
+        rounds. The final round sets tool_choice=none.
         The turn deadline includes provider requests and tool execution."""
         if not self.settings.QWEN_API_KEY:
             return ToolAskAnswer(text="", tokens_used=0)
@@ -127,6 +128,10 @@ class QwenLlm:
             }
             for t in tools
         ]
+        setup_tool = next((tool.name for tool in tools if tool.stage == "setup"), None)
+        verification_tool = next((tool.name for tool in tools if tool.stage == "verification"), None)
+        setup_done = setup_tool is None
+        verified = False
         headers = {"Authorization": f"Bearer {self.settings.QWEN_API_KEY}"}
         used: list[ToolUse] = []
         trace: list[ToolTrace] = []
@@ -140,7 +145,13 @@ class QwenLlm:
             ):
                 while True:
                     rounds += 1
-                    final = rounds >= max_rounds or not tool_defs
+                    final = rounds >= max_rounds or not tool_defs or verified
+                    required_tool = None
+                    if not final:
+                        if not setup_done:
+                            required_tool = setup_tool
+                        elif rounds == max_rounds - 1:
+                            required_tool = verification_tool
                     payload: dict[str, Any] = {
                         "model": self.settings.QWEN_LLM_MODEL,
                         "messages": messages,
@@ -148,7 +159,10 @@ class QwenLlm:
                         **_thinking_off(self.settings.QWEN_LLM_MODEL),
                     }
                     if tool_defs:
-                        payload["tools"] = tool_defs
+                        payload["tools"] = (
+                            [tool for tool in tool_defs if tool["function"]["name"] == required_tool]
+                            if required_tool is not None else tool_defs
+                        )
                         payload["tool_choice"] = "none" if final else "auto"
                     if json_mode:
                         payload["response_format"] = {"type": "json_object"}
@@ -181,6 +195,8 @@ class QwenLlm:
                         try:
                             if not isinstance(arguments, dict):
                                 result = ToolResult({"error": "tool arguments must be a JSON object"}, "")
+                            elif required_tool is not None and name != required_tool:
+                                result = ToolResult({"error": f"only {required_tool} is available now"}, "")
                             else:
                                 phase = "tool"
                                 result = await execute(name, arguments)
@@ -194,6 +210,12 @@ class QwenLlm:
                                 status="error" if failed else "success",
                                 duration_ms=max(0, round((monotonic() - started) * 1000)),
                             ))
+                        if not failed and isinstance(result.content, dict):
+                            if name == setup_tool and result.content.get("updated") is True:
+                                setup_done = True
+                                verified = False
+                            elif name == verification_tool and result.content.get("valid") is True:
+                                verified = True
                         if result.summary and not failed:
                             used.append(ToolUse(tool=name, summary=result.summary))
                         messages.append(
