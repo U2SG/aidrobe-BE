@@ -137,6 +137,7 @@ class QwenLlm:
         trace: list[ToolTrace] = []
         tokens = 0
         rounds = 0
+        round_limit = max_rounds
         phase = "provider"
         try:
             async with (
@@ -145,12 +146,12 @@ class QwenLlm:
             ):
                 while True:
                     rounds += 1
-                    final = rounds >= max_rounds or not tool_defs or verified
+                    final = rounds >= round_limit or not tool_defs or verified
                     required_tool = None
                     if not final:
                         if not setup_done:
                             required_tool = setup_tool
-                        elif rounds == max_rounds - 1:
+                        elif rounds == round_limit - 1:
                             required_tool = verification_tool
                     payload: dict[str, Any] = {
                         "model": self.settings.QWEN_LLM_MODEL,
@@ -181,6 +182,7 @@ class QwenLlm:
                     messages.append(
                         {"role": "assistant", "content": message.get("content") or "", "tool_calls": calls}
                     )
+                    validation_failed = False
                     for call in calls:
                         function = call.get("function") or {}
                         name = str(function.get("name") or "")
@@ -216,6 +218,8 @@ class QwenLlm:
                                 verified = False
                             elif name == verification_tool and result.content.get("valid") is True:
                                 verified = True
+                        elif name == verification_tool and isinstance(result.content, dict):
+                            validation_failed |= result.content.get("valid") is False
                         if result.summary and not failed:
                             used.append(ToolUse(tool=name, summary=result.summary))
                         messages.append(
@@ -226,6 +230,8 @@ class QwenLlm:
                             }
                         )
                         phase = "provider"
+                    if validation_failed and not verified and rounds == max_rounds - 1:
+                        round_limit += 1
         except Exception as exc:
             logger.warning("qwen_llm_ask_with_tools_failed", error_type=type(exc).__name__, rounds=rounds)
             reason = "provider_error" if phase == "provider" else "tool_error"

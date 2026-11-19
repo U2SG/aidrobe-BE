@@ -227,6 +227,39 @@ async def test_reserved_validation_round_rejects_an_additional_wardrobe_search(m
     assert answer.text == final and answer.rounds == 5
 
 
+@pytest.mark.parametrize("retry_valid", [True, False])
+async def test_reserved_validation_failure_gets_one_bounded_repair_round(monkeypatch, retry_valid: bool) -> None:
+    seen: list[dict[str, Any]] = []
+    final = "已核实调整后的搭配" if retry_valid else "这套仍偏正式，需要再调整"
+    _route(monkeypatch, [
+        _reply(calls=[_call("update_design_brief", {})]),
+        _reply(calls=[_call("get_weather", {"place": "苏州"})]),
+        _reply(calls=[_call("search_wardrobe", {"category": "shoes"})]),
+        _reply(calls=[_call("validate_outfit", {"positions": [1, 2, 3]})]),
+        _reply(calls=[_call("validate_outfit", {"positions": [1, 2, 4]})]),
+        _reply(final),
+    ], seen)
+    checks: list[list[int]] = []
+
+    async def execute(name: str, args: dict[str, Any]) -> ToolResult:
+        if name == "update_design_brief":
+            return ToolResult({"updated": True}, "")
+        if name == "validate_outfit":
+            checks.append(args["positions"])
+            valid = len(checks) == 2 and retry_valid
+            return ToolResult({"valid": True} if valid else {"valid": False, "error": "too formal"}, "")
+        return ToolResult({"items": []}, "")
+
+    answer = await _llm().ask_with_tools("sys", "按穿着感受重新设计", DESIGN_TOOLS, execute)
+
+    assert checks == [[1, 2, 3], [1, 2, 4]]
+    assert _offered_names(seen[3]) == _offered_names(seen[4]) == {"validate_outfit"}
+    assert seen[4]["tool_choice"] == "auto" and seen[5]["tool_choice"] == "none"
+    assert answer.tool_trace[3].status == "error"
+    assert answer.tool_trace[4].status == ("success" if retry_valid else "error")
+    assert answer.text == final and answer.rounds == len(seen) == 6
+
+
 async def test_design_can_ask_a_general_clarification_before_validation(monkeypatch) -> None:
     seen: list[dict[str, Any]] = []
     final = json.dumps({"answer": "这次要换鞋还是换外套？", "reply_kind": "general", "referenced_items": []})
