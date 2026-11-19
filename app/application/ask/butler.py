@@ -672,8 +672,21 @@ class AskButler:
         if issues:
             return ToolResult({"valid": False, **issues}, "")
         self._checked[key] = _CheckedOutfit(args, day)
+        result: dict[str, Any] = {
+            "valid": True, "positions": positions, "date": day.isoformat(), "weather_checked": weather is not None,
+        }
+        if self.design_constraints is not None:
+            result["reply_kind"] = "outfit"
+            result["referenced_items"] = positions
+            result["items"] = [
+                {"position": pos, **_search_fields(item)} for pos, item in zip(positions, items, strict=True)
+            ]
+            result["reply_instruction"] = (
+                "Copy reply_kind and referenced_items exactly into your final JSON. "
+                "Describe only these verified pieces, using their wardrobe attributes."
+            )
         return ToolResult(
-            {"valid": True, "positions": positions, "date": day.isoformat(), "weather_checked": weather is not None},
+            result,
             "Checked outfit" if self.lang == "en" else "检查了搭配",
         )
 

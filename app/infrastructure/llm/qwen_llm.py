@@ -158,7 +158,7 @@ class QwenLlm:
                     payload: dict[str, Any] = {
                         "model": self.settings.QWEN_LLM_MODEL,
                         "messages": messages,
-                        "temperature": 0.8,
+                        "temperature": 0.2 if verified else 0.8,
                         **_thinking_off(self.settings.QWEN_LLM_MODEL),
                     }
                     if tool_defs:
