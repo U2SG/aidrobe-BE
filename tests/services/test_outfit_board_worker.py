@@ -70,9 +70,9 @@ def _patch_renderer_to_skip_io(monkeypatch: pytest.MonkeyPatch, *, approved: boo
 
     async def _fake_render(
         snapshot: _visual_asset_runtime.VisualAssetSnapshot,
-    ) -> tuple[str, str] | None:
+    ) -> tuple[str, str] | _visual_asset_runtime.QualityRejection:
         if not approved:
-            return None
+            return _visual_asset_runtime.QualityRejection({"reason": "review_rejected"})
         from app.bootstrap.container import object_storage
 
         storage = object_storage()
@@ -204,6 +204,7 @@ async def test_drain_finalizes_reviewed_render(
             assert asset.generation_status == "rejected_by_quality_gate"
             assert asset.image_url is None
             assert asset.object_key is None
+            assert asset.quality_signals == {"reason": "review_rejected"}
 
 
 async def test_drain_marks_failed_and_keeps_asset_processing_until_dead(
@@ -447,15 +448,15 @@ async def test_generated_outfit_uses_original_shoe_reference_and_only_uploads_on
         assert garments == ["shoes: White sneakers (white)"]
         return _png_bytes()
 
-    async def check_outfit(sources: list[bytes], generated: bytes, *, garments: list[str]) -> bool:
+    async def check_outfit(sources: list[bytes], generated: bytes, *, garments: list[str]) -> dict[str, object]:
         expected = ["generated-shoes.png", "original-shoes.jpg"]
         assert storage.get_calls == expected
         assert len(sources) == 1
         assert generated == _png_bytes()
-        return True
+        return {"accepted": True, "minor_differences": []}
 
-    async def reject_footwear(source: bytes, generated: bytes) -> bool:
-        return False
+    async def reject_footwear(source: bytes, generated: bytes) -> dict[str, object]:
+        return {"accepted": False, "minor_differences": ["sole is grey"]}
 
     class FakeProvider:
         render_outfit = staticmethod(generate)
@@ -481,8 +482,65 @@ async def test_generated_outfit_uses_original_shoe_reference_and_only_uploads_on
         },
     )
 
-    assert await outfit_board_worker._render_and_upload(snapshot) is None
+    rejection = await outfit_board_worker._render_and_upload(snapshot)
+    assert isinstance(rejection, _visual_asset_runtime.QualityRejection)
+    assert rejection.signals["reason"] == "review_rejected"
+    reviews = rejection.signals["reviews"]
+    assert len(reviews) == 2  # the shoe-emphasis retry ran
+    assert reviews[0]["footwear"] == {"accepted": False, "minor_differences": ["sole is grey"]}
     assert storage.put_calls == []
+
+
+async def test_generated_outfit_keeps_review_signals_when_it_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = _RenderStorage()
+    _patch_storage(monkeypatch, storage)
+    settings = outfit_board_worker.get_settings().model_copy(
+        update={"ENABLE_ITEM_CUTOUT": True, "IMAGE_CUTOUT_PROVIDER": "openai"}
+    )
+    monkeypatch.setattr(outfit_board_worker, "get_settings", lambda: settings)
+    outfit_review = {"accepted": True, "minor_differences": ["pocket flap is narrower"]}
+    footwear_review = {"accepted": True, "minor_differences": []}
+
+    async def generate(images: list[bytes], garments: list[str], *, emphasize_shoe_details: bool) -> bytes:
+        return _png_bytes()
+
+    async def check_outfit(sources: list[bytes], generated: bytes, *, garments: list[str]) -> dict[str, object]:
+        return outfit_review
+
+    async def check_footwear(source: bytes, generated: bytes) -> dict[str, object]:
+        return footwear_review
+
+    class FakeProvider:
+        render_outfit = staticmethod(generate)
+        matches_outfit_photo = staticmethod(check_outfit)
+        matches_outfit_footwear = staticmethod(check_footwear)
+
+    monkeypatch.setattr(outfit_board_worker, "OpenAIImageCutout", lambda _: FakeProvider())
+    monkeypatch.setattr(outfit_board_worker, "QwenVision", lambda _: FakeProvider())
+    snapshot = _visual_asset_runtime.VisualAssetSnapshot(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        input_snapshot={
+            "generate": True,
+            "item_list": [
+                {
+                    "role": "shoes",
+                    "title": "White sneakers",
+                    "cutout_object_key": "generated-shoes.png",
+                    "review_object_key": "original-shoes.jpg",
+                },
+            ],
+        },
+    )
+
+    rendered = await outfit_board_worker._render_and_upload(snapshot)
+
+    assert isinstance(rendered, _visual_asset_runtime.ReviewedRender)
+    assert rendered.signals == {
+        "garments": ["shoes: White sneakers"],
+        "reviews": [{"outfit": outfit_review, "footwear": footwear_review}],
+    }
+    assert len(storage.put_calls) == 1
 
 
 async def test_download_image_rejects_unsafe_redirect(monkeypatch: pytest.MonkeyPatch) -> None:

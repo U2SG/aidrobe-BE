@@ -28,7 +28,25 @@ from app.infrastructure.workers.job_runtime import (
 
 logger = structlog.get_logger(__name__)
 
-RenderFn = Callable[["VisualAssetSnapshot"], Awaitable[tuple[str, str] | None]]
+@dataclass
+class QualityRejection:
+    """A render withheld by the quality review, with the review's verdicts."""
+
+    signals: dict[str, Any]
+
+
+@dataclass
+class ReviewedRender:
+    """An uploaded render plus the review verdicts that let it through."""
+
+    image_url: str
+    object_key: str
+    signals: dict[str, Any]
+
+
+RenderFn = Callable[
+    ["VisualAssetSnapshot"], Awaitable[tuple[str, str] | ReviewedRender | QualityRejection | None]
+]
 
 
 @dataclass
@@ -119,8 +137,20 @@ async def process_visual_asset_job(
         # `dead`), and the asset would race against the retry's own write.
         async with AsyncSessionLocal() as session:
             repo = SqlAlchemyOutfitVisualRepository(session)
-            if rendered is None:
-                await repo.update_status(asset_id, "rejected_by_quality_gate")
+            if rendered is None or isinstance(rendered, QualityRejection):
+                await repo.update_status(
+                    asset_id,
+                    "rejected_by_quality_gate",
+                    quality_signals=rendered.signals if rendered is not None else None,
+                )
+            elif isinstance(rendered, ReviewedRender):
+                await repo.update_status(
+                    asset_id,
+                    "completed",
+                    image_url=rendered.image_url,
+                    object_key=rendered.object_key,
+                    quality_signals=rendered.signals,
+                )
             else:
                 image_url, object_key = rendered
                 await repo.update_status(asset_id, "completed", image_url=image_url, object_key=object_key)
@@ -134,8 +164,12 @@ async def process_visual_asset_job(
                 )
                 return
             await session.commit()
-            if rendered is None:
-                logger.info(f"{log_prefix}_rejected_by_quality_gate", asset_id=str(asset_id))
+            if rendered is None or isinstance(rendered, QualityRejection):
+                logger.info(
+                    f"{log_prefix}_rejected_by_quality_gate",
+                    asset_id=str(asset_id),
+                    quality_signals=rendered.signals if rendered is not None else None,
+                )
             else:
                 logger.info(f"{log_prefix}_generated", asset_id=str(asset_id))
     finally:

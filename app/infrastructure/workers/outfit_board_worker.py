@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import uuid
+from typing import Any
 
 import structlog
 from PIL import Image, ImageDraw
@@ -34,6 +35,8 @@ from app.infrastructure.storage.source_image import download_external_source_ima
 from app.infrastructure.vision.openai_image_cutout import OpenAIImageCutout
 from app.infrastructure.vision.qwen_vision import QwenVision
 from app.infrastructure.workers._visual_asset_runtime import (
+    QualityRejection,
+    ReviewedRender,
     VisualAssetSnapshot,
     drain_visual_jobs,
     reconcile_dead_visual_assets,
@@ -199,7 +202,9 @@ def _jpeg_reference(image: Image.Image) -> bytes:
     return frame.getvalue()
 
 
-async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] | None:
+async def _render_and_upload(
+    snapshot: VisualAssetSnapshot,
+) -> tuple[str, str] | ReviewedRender | QualityRejection | None:
     """Render the board and upload it if its references support the result."""
     from app.bootstrap.container import object_storage
 
@@ -234,7 +239,7 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] |
 
         if generate:
             if img is None:
-                return None
+                return QualityRejection({"reason": "missing_reference", "role": role})
             frame = _jpeg_reference(img)
             review_frame = frame
             review_key = item.get("review_object_key")
@@ -244,7 +249,7 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] |
                     storage, object_key=review_key, fallback_url=review_url, user_id=snapshot.user_id,
                 )
                 if reference is None:
-                    return None
+                    return QualityRejection({"reason": "missing_reference", "role": role})
                 review_frame = _jpeg_reference(reference)
             shoes = role == "shoes" or item.get("category") == "shoes"
             generation_images.append(review_frame if shoes else frame)
@@ -253,7 +258,7 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] |
                 # Recommendations have one footwear slot. A board with
                 # multiple pairs cannot reliably assign them to references.
                 if footwear_reference is not None:
-                    return None
+                    return QualityRejection({"reason": "multiple_footwear"})
                 footwear_reference = review_frame
             title = item.get("title") or role
             color = item.get("color")
@@ -269,19 +274,24 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] |
         provider = OpenAIImageCutout(settings)
         reviewer = QwenVision(settings)
         attempts = (False, True) if footwear_reference is not None else (False,)
+        reviews: list[dict[str, Any]] = []
         for emphasize_visible_details in attempts:
             generated = await provider.render_outfit(
                 generation_images, garments, emphasize_shoe_details=emphasize_visible_details
             )
-            if not await reviewer.matches_outfit_photo(review_images, generated, garments=garments):
+            outfit_review = await reviewer.matches_outfit_photo(review_images, generated, garments=garments)
+            reviews.append({"outfit": outfit_review})
+            if not outfit_review["accepted"]:
                 continue
-            if footwear_reference is not None and not await reviewer.matches_outfit_footwear(
-                footwear_reference, generated
-            ):
-                continue
+            if footwear_reference is not None:
+                footwear_review = await reviewer.matches_outfit_footwear(footwear_reference, generated)
+                reviews[-1]["footwear"] = footwear_review
+                if not footwear_review["accepted"]:
+                    continue
             key = f"users/{snapshot.user_id}/outfit_boards/{snapshot.id}-{snapshot.attempt}.png"
-            return await storage.put_object(key, generated, "image/png"), key
-        return None
+            url = await storage.put_object(key, generated, "image/png")
+            return ReviewedRender(url, key, {"garments": garments, "reviews": reviews})
+        return QualityRejection({"reason": "review_rejected", "garments": garments, "reviews": reviews})
 
     rgb = canvas.convert("RGB")
     buf = io.BytesIO()
