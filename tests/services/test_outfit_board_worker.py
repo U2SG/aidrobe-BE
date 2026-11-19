@@ -70,9 +70,9 @@ def _patch_renderer_to_skip_io(monkeypatch: pytest.MonkeyPatch, *, approved: boo
 
     async def _fake_render(
         snapshot: _visual_asset_runtime.VisualAssetSnapshot,
-    ) -> tuple[str, str] | None:
+    ) -> tuple[str, str] | _visual_asset_runtime.QualityRejection:
         if not approved:
-            return None
+            return _visual_asset_runtime.QualityRejection({"reason": "review_rejected"})
         from app.bootstrap.container import object_storage
 
         storage = object_storage()
@@ -204,6 +204,7 @@ async def test_drain_finalizes_reviewed_render(
             assert asset.generation_status == "rejected_by_quality_gate"
             assert asset.image_url is None
             assert asset.object_key is None
+            assert asset.quality_signals == {"reason": "review_rejected"}
 
 
 async def test_drain_marks_failed_and_keeps_asset_processing_until_dead(
@@ -447,15 +448,15 @@ async def test_generated_outfit_uses_original_shoe_reference_and_only_uploads_on
         assert garments == ["shoes: White sneakers (white)"]
         return _png_bytes()
 
-    async def check_outfit(sources: list[bytes], generated: bytes, *, garments: list[str]) -> bool:
+    async def check_outfit(sources: list[bytes], generated: bytes, *, garments: list[str]) -> dict[str, object]:
         expected = ["generated-shoes.png", "original-shoes.jpg"]
         assert storage.get_calls == expected
         assert len(sources) == 1
         assert generated == _png_bytes()
-        return True
+        return {"accepted": True, "minor_differences": []}
 
-    async def reject_footwear(source: bytes, generated: bytes) -> bool:
-        return False
+    async def reject_footwear(source: bytes, generated: bytes) -> dict[str, object]:
+        return {"accepted": False, "minor_differences": ["sole is grey"]}
 
     class FakeProvider:
         render_outfit = staticmethod(generate)
@@ -481,7 +482,12 @@ async def test_generated_outfit_uses_original_shoe_reference_and_only_uploads_on
         },
     )
 
-    assert await outfit_board_worker._render_and_upload(snapshot) is None
+    rejection = await outfit_board_worker._render_and_upload(snapshot)
+    assert isinstance(rejection, _visual_asset_runtime.QualityRejection)
+    assert rejection.signals["reason"] == "review_rejected"
+    reviews = rejection.signals["reviews"]
+    assert len(reviews) == 2  # the shoe-emphasis retry ran
+    assert reviews[0]["footwear"] == {"accepted": False, "minor_differences": ["sole is grey"]}
     assert storage.put_calls == []
 
 
