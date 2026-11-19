@@ -98,18 +98,6 @@ async def test_validation_accepts_the_display_name_of_the_saved_location(db_sess
     assert approved is not None
 
 
-async def test_decorated_date_resolves_to_the_same_forecast(db_session: AsyncSession) -> None:
-    tomorrow = TODAY + timedelta(days=1)
-    weather = Weather()
-    weather.forecasts["City A", tomorrow] = reading("City A", 4)
-    butler = await build_butler(db_session, weather, requested_date=None)
-    observed = await butler.get_weather({"place": "City A", "when": f"Thursday ({tomorrow.isoformat()})"})
-    assert observed.content["date"] == tomorrow.isoformat()
-
-    result = await butler.validate_outfit({"place": "City A", "when": tomorrow.isoformat(), "positions": [1, 2, 3, 4]})
-    assert result.content["valid"] is True and result.content["weather_checked"] is True
-
-
 async def test_latest_current_weather_takes_precedence_over_earlier_warm_forecast(
     db_session: AsyncSession,
 ) -> None:

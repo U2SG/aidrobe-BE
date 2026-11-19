@@ -81,3 +81,20 @@ async def test_explicit_vivid_filter_uses_color_evidence_without_requiring_a_lit
     butler.design_constraints = None
     result = await butler.search_wardrobe({"category": "top", "style": style, "limit": 1})
     assert result.content["items"][0]["color_main"] == "yellow"
+
+
+async def test_decorated_target_date_sets_the_design_date(db_session: AsyncSession) -> None:
+    user_id = uuid.uuid4()
+    db_session.add(User(id=user_id))
+    await db_session.commit()
+    question = "周五面试穿什么"
+    butler = AskButler(
+        db_session, user_id, [], today=date(2026, 11, 19), location=None, weather=None, lang="zh",
+        focused_item_id=None, excluded_ids=set(), context=None,
+        design_constraints=StylingConstraints(), question=question,
+    )
+    updated = await butler.update_design_brief(
+        {"evidence_text": question, "when": "周五（2026-11-20）", "scene": "formal"}
+    )
+    assert updated.content["updated"] is True
+    assert butler.requested_date == date(2026, 11, 20)
