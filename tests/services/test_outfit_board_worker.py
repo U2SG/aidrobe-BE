@@ -491,6 +491,58 @@ async def test_generated_outfit_uses_original_shoe_reference_and_only_uploads_on
     assert storage.put_calls == []
 
 
+async def test_generated_outfit_keeps_review_signals_when_it_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = _RenderStorage()
+    _patch_storage(monkeypatch, storage)
+    settings = outfit_board_worker.get_settings().model_copy(
+        update={"ENABLE_ITEM_CUTOUT": True, "IMAGE_CUTOUT_PROVIDER": "openai"}
+    )
+    monkeypatch.setattr(outfit_board_worker, "get_settings", lambda: settings)
+    outfit_review = {"accepted": True, "minor_differences": ["pocket flap is narrower"]}
+    footwear_review = {"accepted": True, "minor_differences": []}
+
+    async def generate(images: list[bytes], garments: list[str], *, emphasize_shoe_details: bool) -> bytes:
+        return _png_bytes()
+
+    async def check_outfit(sources: list[bytes], generated: bytes, *, garments: list[str]) -> dict[str, object]:
+        return outfit_review
+
+    async def check_footwear(source: bytes, generated: bytes) -> dict[str, object]:
+        return footwear_review
+
+    class FakeProvider:
+        render_outfit = staticmethod(generate)
+        matches_outfit_photo = staticmethod(check_outfit)
+        matches_outfit_footwear = staticmethod(check_footwear)
+
+    monkeypatch.setattr(outfit_board_worker, "OpenAIImageCutout", lambda _: FakeProvider())
+    monkeypatch.setattr(outfit_board_worker, "QwenVision", lambda _: FakeProvider())
+    snapshot = _visual_asset_runtime.VisualAssetSnapshot(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        input_snapshot={
+            "generate": True,
+            "item_list": [
+                {
+                    "role": "shoes",
+                    "title": "White sneakers",
+                    "cutout_object_key": "generated-shoes.png",
+                    "review_object_key": "original-shoes.jpg",
+                },
+            ],
+        },
+    )
+
+    rendered = await outfit_board_worker._render_and_upload(snapshot)
+
+    assert isinstance(rendered, _visual_asset_runtime.ReviewedRender)
+    assert rendered.signals == {
+        "garments": ["shoes: White sneakers"],
+        "reviews": [{"outfit": outfit_review, "footwear": footwear_review}],
+    }
+    assert len(storage.put_calls) == 1
+
+
 async def test_download_image_rejects_unsafe_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.infrastructure.importers import external_http
 

@@ -281,23 +281,27 @@ class QwenVision:
     async def matches_outfit_photo(
         self, sources: list[bytes], generated: bytes, *, garments: list[str]
     ) -> dict[str, Any]:
-        """Hard-fail only on a missing, extra or clearly different garment.
+        """Hard-fail on a missing, extra or recognisably different garment.
 
-        Construction details (seams, pockets, small marks) are redrawn by any
-        generative render; they are reported as `minor_differences` for review
-        but do not reject. Shoe details are left to `matches_outfit_footwear`.
+        Type, colour, pattern, silhouette, material family, opening and
+        prominent graphics decide identity. Seams, small pockets and folds are
+        redrawn by any generative render; they are reported as
+        `minor_differences` but do not reject. Shoe details are left to
+        `matches_outfit_footwear`.
         """
         content = await self._request_content(
             _image_data_uri(generated),
             "Verify the outfit flat lay in image 1 using only the references that follow it. "
             "The names help identify the target in a reference and do not prove any feature is visible. "
             f"The reference garments in order are {json.dumps(garments, ensure_ascii=False)}. "
-            "For each target garment decide whether the flat lay shows the same garment: the same type, "
-            "the same main colors and pattern, and the same overall silhouette such as sleeve length, "
-            "collar type, length and leg width. Reject a garment only if it is missing or clearly different "
-            "in one of those. Do not reject for seams, stitching, pockets, fasteners, small logos or text, "
-            "fabric texture, folds, lighting, viewpoint, or completion of areas hidden in the references; "
-            "list such differences in minor_differences instead. For shoes check only type and main color. "
+            "For each target garment decide whether the flat lay shows the same garment. Reject a garment "
+            "if it is missing or differs in any of: type; main colors or pattern; overall silhouette such as "
+            "sleeve length, collar type, length and leg width; material family such as leather, suede, knit, "
+            "denim or woven fabric, including matte versus glossy surfaces; opening, such as cardigan versus "
+            "pullover or a zip or button placket added or removed; prominent text, logos or graphics added "
+            "or removed. Do not reject for seams, stitching, small pockets, small marks, folds, lighting, "
+            "viewpoint, or completion of areas hidden in the references; list such differences in "
+            "minor_differences instead. For shoes check only type and main color. "
             'Return JSON with "composition_matches" (boolean: every reference garment is present and '
             'there is no extra clothing item), "garment_matches" (array of one boolean per reference, '
             'in reference order) and "minor_differences" (array of short strings).',
@@ -326,8 +330,9 @@ class QwenVision:
             _image_data_uri(source),
             "Compare the actual shoe photo in image 1 with the shoes wherever they appear in image 2. "
             "Ignore all other garments except where they occlude the shoes. "
-            "Decide whether image 2 shows the same shoe design. Reject only a clearly different design: "
+            "Decide whether image 2 shows the same shoe design. Reject a different design: "
             "a different shoe type, a different main or sole color, a clearly different toe or sole shape, "
+            "a visible toe trim or edge seam that changes between dark and light against the upper, "
             "a prominent logo, pattern or decoration added or removed, or detached shoe fragments. "
             "Allow a new viewpoint and reconstruction of areas hidden in image 1, such as the heel, "
             "collar and opening. Do not reject for small differences in seams, stitching, perforations, "

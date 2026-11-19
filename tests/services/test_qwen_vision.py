@@ -63,7 +63,10 @@ async def test_outfit_review_rejects_only_on_garment_verdicts(monkeypatch: pytes
         "garment_matches": [True, True],
         "minor_differences": ["pocket stitching differs"],
     }
-    assert "uncertainty" not in prompts[0].lower()
+    prompt = prompts[0].lower()
+    assert "uncertainty" not in prompt
+    for identity_change in ("material family", "matte versus glossy", "cardigan versus pullover", "prominent text"):
+        assert identity_change in prompt
 
 
 async def test_footwear_review_reports_design_verdict(monkeypatch: pytest.MonkeyPatch) -> None:

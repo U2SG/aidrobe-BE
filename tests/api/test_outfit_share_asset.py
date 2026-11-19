@@ -193,7 +193,7 @@ async def test_share_asset_hides_foreign_and_missing_outfits(db_session: AsyncSe
     assert await db_session.scalar(select(func.count()).select_from(AsyncJob)) == 0
 
 
-@pytest.mark.parametrize("layout_version", ["gpt-v1", "gpt-reviewed-v6", "gpt-reviewed-v9"])
+@pytest.mark.parametrize("layout_version", ["gpt-v1", "gpt-reviewed-v6", "gpt-reviewed-v10"])
 async def test_gpt_outfit_board_uses_a_separate_reusable_asset(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, layout_version: str,
 ) -> None:
@@ -338,8 +338,8 @@ async def test_v7_board_remains_readable_but_new_generation_uses_v8(
         new_id = uuid.UUID(generated.json()["asset_id"])
         assert new_id != saved.id
         job = (await db_session.scalars(select(AsyncJob).where(AsyncJob.target_id == new_id))).one()
-        assert job.payload["layout_version"] == "gpt-reviewed-v8"
-        assert job.idempotency_key == f"outfit_board:{outfit_id}:gpt-reviewed-v8"
+        assert job.payload["layout_version"] == "gpt-reviewed-v9"
+        assert job.idempotency_key == f"outfit_board:{outfit_id}:gpt-reviewed-v9"
         lookup = await client.get(path, headers=headers)
         replay = await client.post(path, headers=headers, params={"generate": "true"})
         assert lookup.json()["asset_id"] == replay.json()["asset_id"] == str(new_id)
@@ -389,7 +389,7 @@ async def test_v7_board_lookup_survives_its_original_outfit(
     assert await db_session.scalar(select(func.count()).select_from(AsyncJob)) == 1
 
 
-@pytest.mark.parametrize("layout_version", ["gpt-reviewed-v7", "gpt-reviewed-v8"])
+@pytest.mark.parametrize("layout_version", ["gpt-reviewed-v7", "gpt-reviewed-v8", "gpt-reviewed-v9"])
 async def test_readable_board_version_does_not_expose_a_quality_rejected_image(
     db_session: AsyncSession, layout_version: str,
 ) -> None:

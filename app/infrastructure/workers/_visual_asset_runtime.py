@@ -35,7 +35,18 @@ class QualityRejection:
     signals: dict[str, Any]
 
 
-RenderFn = Callable[["VisualAssetSnapshot"], Awaitable[tuple[str, str] | QualityRejection | None]]
+@dataclass
+class ReviewedRender:
+    """An uploaded render plus the review verdicts that let it through."""
+
+    image_url: str
+    object_key: str
+    signals: dict[str, Any]
+
+
+RenderFn = Callable[
+    ["VisualAssetSnapshot"], Awaitable[tuple[str, str] | ReviewedRender | QualityRejection | None]
+]
 
 
 @dataclass
@@ -131,6 +142,14 @@ async def process_visual_asset_job(
                     asset_id,
                     "rejected_by_quality_gate",
                     quality_signals=rendered.signals if rendered is not None else None,
+                )
+            elif isinstance(rendered, ReviewedRender):
+                await repo.update_status(
+                    asset_id,
+                    "completed",
+                    image_url=rendered.image_url,
+                    object_key=rendered.object_key,
+                    quality_signals=rendered.signals,
                 )
             else:
                 image_url, object_key = rendered

@@ -43,9 +43,11 @@ logger = structlog.get_logger(__name__)
 _STALE_QUEUED_MINUTES = 15
 # v2: used slots are centred as a group (v1 left blank bands for missing roles).
 _OUTFIT_BOARD_LAYOUT_VERSION = "v2"
-_GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-reviewed-v8"
-# v7 passed garment review; changing the composition must not hide saved images.
-_READABLE_GENERATED_OUTFIT_LAYOUT_VERSIONS = (_GENERATED_OUTFIT_LAYOUT_VERSION, "gpt-reviewed-v7")
+# v9: garment review rejects identity changes only (type, colour, silhouette,
+# material, opening, prominent graphics); construction details are recorded.
+_GENERATED_OUTFIT_LAYOUT_VERSION = "gpt-reviewed-v9"
+# v7/v8 passed stricter reviews; changing the review must not hide saved images.
+_READABLE_GENERATED_OUTFIT_LAYOUT_VERSIONS = (_GENERATED_OUTFIT_LAYOUT_VERSION, "gpt-reviewed-v8", "gpt-reviewed-v7")
 _OUTFIT_RETRYABLE = {"failed", "rejected_by_quality_gate"}
 _IMAGE_TYPE_PRIORITY = ("cutout", "thumbnail", "standard", "crop", "original")
 

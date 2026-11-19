@@ -36,6 +36,7 @@ from app.infrastructure.vision.openai_image_cutout import OpenAIImageCutout
 from app.infrastructure.vision.qwen_vision import QwenVision
 from app.infrastructure.workers._visual_asset_runtime import (
     QualityRejection,
+    ReviewedRender,
     VisualAssetSnapshot,
     drain_visual_jobs,
     reconcile_dead_visual_assets,
@@ -201,7 +202,9 @@ def _jpeg_reference(image: Image.Image) -> bytes:
     return frame.getvalue()
 
 
-async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] | QualityRejection | None:
+async def _render_and_upload(
+    snapshot: VisualAssetSnapshot,
+) -> tuple[str, str] | ReviewedRender | QualityRejection | None:
     """Render the board and upload it if its references support the result."""
     from app.bootstrap.container import object_storage
 
@@ -286,7 +289,8 @@ async def _render_and_upload(snapshot: VisualAssetSnapshot) -> tuple[str, str] |
                 if not footwear_review["accepted"]:
                     continue
             key = f"users/{snapshot.user_id}/outfit_boards/{snapshot.id}-{snapshot.attempt}.png"
-            return await storage.put_object(key, generated, "image/png"), key
+            url = await storage.put_object(key, generated, "image/png")
+            return ReviewedRender(url, key, {"garments": garments, "reviews": reviews})
         return QualityRejection({"reason": "review_rejected", "garments": garments, "reviews": reviews})
 
     rgb = canvas.convert("RGB")
