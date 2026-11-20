@@ -174,3 +174,17 @@ async def test_patch_user_settings_rejects_invalid_time(db_session: AsyncSession
 
     assert response.status_code == 422
     assert response.json()["code"] == 4001
+
+
+async def test_track_item_costs_is_opt_in_and_persists(db_session: AsyncSession) -> None:
+    app = build_settings_app(db_session)
+    headers = {"X-User-Id": str(uuid.uuid4())}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        default = await client.get("/v1/user/settings", headers=headers)
+        enabled = await client.patch("/v1/user/settings", headers=headers, json={"track_item_costs": True})
+        untouched = await client.patch("/v1/user/settings", headers=headers, json={"location": "深圳"})
+
+    assert default.json()["data"]["track_item_costs"] is False
+    assert enabled.json()["data"]["track_item_costs"] is True
+    assert untouched.json()["data"]["track_item_costs"] is True

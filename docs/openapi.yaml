@@ -10350,6 +10350,11 @@ components:
             - less_outdoor
           - type: 'null'
           title: Commute Exposure
+        track_item_costs:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Track Item Costs
       type: object
       title: UpdateUserSettingsRequest
     UpdateWardrobeItemRequest:
@@ -10499,6 +10504,10 @@ components:
             - less_outdoor
           - type: 'null'
           title: Commute Exposure
+        track_item_costs:
+          type: boolean
+          title: Track Item Costs
+          default: false
       type: object
       title: UserSettingsResponse
     ValidationError:

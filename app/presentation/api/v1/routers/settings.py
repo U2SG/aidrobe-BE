@@ -29,6 +29,7 @@ def settings_response(settings: UserSettings) -> UserSettingsResponse:
         location=settings.location,
         locale=cast(LocaleSetting, settings.locale),
         commute_exposure=cast(CommuteExposure | None, settings.commute_exposure),
+        track_item_costs=settings.track_item_costs,
     )
 
 
@@ -69,5 +70,6 @@ async def update_user_settings(
         locale=payload.locale,
         commute_exposure=payload.commute_exposure,
         commute_exposure_set=payload.is_set("commute_exposure"),
+        track_item_costs=payload.track_item_costs,
     )
     return ResponseModel(data=settings_response(settings))

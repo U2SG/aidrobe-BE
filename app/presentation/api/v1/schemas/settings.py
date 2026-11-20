@@ -19,6 +19,7 @@ class UserSettingsResponse(BaseModel):
     # product default (zh-CN) at resolution time.
     locale: LocaleSetting | None = None
     commute_exposure: CommuteExposure | None = None
+    track_item_costs: bool = False
 
 
 class UpdateUserSettingsRequest(BaseModel):
@@ -29,6 +30,7 @@ class UpdateUserSettingsRequest(BaseModel):
     location: str | None = Field(default=None, max_length=120)
     locale: LocaleSetting | None = None
     commute_exposure: CommuteExposure | None = None
+    track_item_costs: bool | None = None
 
     def is_set(self, field: str) -> bool:
         return field in self.model_fields_set
