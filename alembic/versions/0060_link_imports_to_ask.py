@@ -1,15 +1,15 @@
 """Link import tasks to the Ask conversation the photos were attached in.
 
-Revision ID: 0059_link_imports_to_ask
-Revises: 0058_link_purchase_decisions
+Revision ID: 0060_link_imports_to_ask
+Revises: 0059_track_item_costs_setting
 """
 
 import sqlalchemy as sa
 
 from alembic import op
 
-revision = "0059_link_imports_to_ask"
-down_revision = "0058_link_purchase_decisions"
+revision = "0060_link_imports_to_ask"
+down_revision = "0059_track_item_costs_setting"
 branch_labels = None
 depends_on = None
 
