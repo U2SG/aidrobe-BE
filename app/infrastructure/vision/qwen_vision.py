@@ -7,6 +7,7 @@ from typing import Any, cast
 import httpx
 
 from app.application.ports.vision import StyleAnalysis, VisionResult
+from app.common.garment_materials import GARMENT_MATERIALS
 from app.common.locale import DEFAULT_LOCALE, resolve_locale
 from app.config.settings import Settings
 from app.infrastructure.storage.source_image import image_data_uri, load_source_bytes
@@ -37,16 +38,12 @@ _MAX_TAG_LEN = 24
 # WardrobeItem scale. Anything outside these vocabularies is dropped as unknown.
 _FORMALITY_LADDER = {1: 10, 2: 30, 3: 50, 4: 70, 5: 90}
 _SEASONS = ("spring", "summer", "autumn", "winter")
-_MATERIALS = (
-    "cotton", "denim", "linen", "wool", "cashmere", "knit", "silk", "leather",
-    "suede", "polyester", "nylon", "down", "fleece", "canvas", "synthetic",
-)
 _MAX_ITEM_STYLE_TAGS = 4
 _ATTRIBUTE_PROMPT = (
     "Also return: formality — an integer 1 to 5 (1 sportswear or loungewear, "
     "2 casual, 3 smart casual, 4 business, 5 formal or evening); seasons — an array "
     "drawn from spring, summer, autumn, winter (use [\"all_season\"] when it suits "
-    "every season); material — one word from " + ", ".join(_MATERIALS) + ", or null if "
+    "every season); material — one word from " + ", ".join(GARMENT_MATERIALS) + ", or null if "
     "unclear; style_tags — up to 4 words from: " + _STYLE_VOCABULARY + ". "
     "Judge only what is visible; use null or [] rather than guessing."
 )
@@ -459,7 +456,7 @@ def garment_attributes(data: dict[str, Any]) -> dict[str, Any]:
 
     raw_material = data.get("material")
     material = str(raw_material).strip().lower() if isinstance(raw_material, str) else None
-    if material not in _MATERIALS:
+    if material not in GARMENT_MATERIALS:
         material = None
 
     raw_styles = data.get("style_tags")

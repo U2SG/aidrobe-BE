@@ -8,6 +8,7 @@ from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.avatar.enqueue_candidate_detection import enqueue_candidate_detection
+from app.application.import_tasks.apply_note import apply_import_note
 from app.application.import_tasks.candidates import confirmed_item_ids, normalize_candidates
 from app.application.import_tasks.confirm_import import (
     ConfirmImageImportTask,
@@ -17,7 +18,9 @@ from app.application.import_tasks.create_import import CreateImageImportTask
 from app.application.import_tasks.failures import public_error_message
 from app.application.import_tasks.same_photo import existing_photo_item
 from app.application.import_tasks.source import upload_key
+from app.application.ports.llm import LlmPort
 from app.application.purchase.garment_type import garment_type
+from app.bootstrap.container import llm_service
 from app.common import error_codes
 from app.common.enums import AvatarSourceType, ImportStatus, InputType
 from app.common.exceptions import FriendlyException
@@ -49,6 +52,7 @@ from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url, wardrobe_image_urls
 from app.presentation.api.v1.schemas.common import ResponseModel
 from app.presentation.api.v1.schemas.import_tasks import (
+    ApplyImportNoteRequest,
     CandidateItem,
     ConfirmedItem,
     ConfirmItemsRequest,
@@ -238,6 +242,7 @@ async def create_import_task(
         source_url=payload.source_url,
         locale=payload.locale,
         idempotency_key=idempotency_key,
+        conversation_id=payload.conversation_id,
     )
     response = to_response(task)
     if not created:
@@ -355,6 +360,8 @@ async def confirm_import_items(
                 size_label=item.size_label,
                 fit_status=item.fit_status,
                 fit_intent=item.fit_intent.value if item.fit_intent else None,
+                purchase_price=item.purchase_price,
+                material=item.material,
             )
             for item in payload.items
         ],
@@ -441,7 +448,29 @@ async def get_import_task(
             "Import task not found",
             status_code=404,
         )
+    return ResponseModel(data=await render_import_task(session, task))
+
+
+@router.post("/{task_id}/apply-note", response_model=ResponseModel[ImportTaskResponse])
+async def apply_note_to_import_task(
+    task_id: uuid.UUID,
+    payload: ApplyImportNoteRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    llm: Annotated[LlmPort, Depends(llm_service)],
+) -> ResponseModel[ImportTaskResponse]:
+    """Prefill the waiting candidates from the user's note (include / title /
+    purchase_price / material). Nothing is added to the wardrobe."""
+    task = await apply_import_note(
+        SqlAlchemyImportTaskRepository(session), task_id=task_id, user_id=current_user.id,
+        note=payload.note, llm=llm,
+    )
+    return ResponseModel(data=await render_import_task(session, task))
+
+
+async def render_import_task(session: AsyncSession, task: ImportTask) -> ImportTaskResponse:
+    """The single-task read: signed images, plus duplicate hints while waiting."""
     result = to_response(task)
     if task.task_status == ImportStatus.WAITING_CONFIRM.value:
         await _attach_duplicates(result, session, task)
-    return ResponseModel(data=result)
+    return result

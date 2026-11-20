@@ -1110,6 +1110,92 @@
         }
       }
     },
+    "/v1/import-tasks/{task_id}/apply-note": {
+      "post": {
+        "tags": [
+          "import-tasks"
+        ],
+        "summary": "Apply Note To Import Task",
+        "description": "Prefill the waiting candidates from the user's note (include / title /\npurchase_price / material). Nothing is added to the wardrobe.",
+        "operationId": "apply_note_to_import_task_v1_import_tasks__task_id__apply_note_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-User-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-User-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyImportNoteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_ImportTaskResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/wardrobe-items": {
       "get": {
         "tags": [
@@ -8780,6 +8866,22 @@
         "title": "AppliedContextResponse",
         "description": "BE#78 — echoes the context override that shaped this refresh, so FE can\nexplain why the outfit changed."
       },
+      "ApplyImportNoteRequest": {
+        "properties": {
+          "note": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "note"
+        ],
+        "title": "ApplyImportNoteRequest",
+        "description": "The user's words about the photo (\"只要外套，399 买的，羊毛\"), applied to\nthe waiting candidates as prefilled include / title / price / material."
+      },
       "AskContext": {
         "properties": {
           "date": {
@@ -8983,6 +9085,13 @@
             },
             "type": "array",
             "title": "Purchase Decisions"
+          },
+          "import_tasks": {
+            "items": {
+              "$ref": "#/components/schemas/ImportTaskResponse"
+            },
+            "type": "array",
+            "title": "Import Tasks"
           },
           "messages": {
             "items": {
@@ -10484,6 +10593,35 @@
                 "type": "null"
               }
             ]
+          },
+          "purchase_price": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,8}|(?=[\\d.]{1,11}0*$)\\d{0,8}\\.\\d{0,2}0*$)"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purchase Price"
+          },
+          "material": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material"
           }
         },
         "type": "object",
@@ -10744,6 +10882,18 @@
               }
             ],
             "title": "Locale"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
           }
         },
         "type": "object",
