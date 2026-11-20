@@ -63,6 +63,10 @@ class VisionPort(Protocol):
 
     async def review_garment_crops(self, crops: list[bytes], garments: list[VisionResult]) -> list[bool]: ...
 
+    async def same_garment(self, crop_a: bytes, crop_b: bytes, garment: str) -> bool:
+        """Whether two garment photos show the same physical item (not just a look-alike)."""
+        ...
+
     async def analyze_style(
         self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
     ) -> StyleAnalysis: ...

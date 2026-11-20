@@ -1,4 +1,6 @@
+from datetime import date
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -22,6 +24,10 @@ class CreateImportTaskRequest(BaseModel):
     # Ask conversation the photo was attached in; must belong to the caller.
     # GET /v1/ask/conversations/{id} lists the linked tasks under `import_tasks`.
     conversation_id: UUID | None = None
+    # Album scan: client-chosen id grouping the photos of one scan, and the
+    # photo's capture date (EXIF, user's calendar day; never in the future).
+    batch_id: UUID | None = None
+    taken_at: date | None = None
 
 
 class ApplyImportNoteRequest(BaseModel):
@@ -120,3 +126,77 @@ class ImportTaskResponse(BaseModel):
     error_code: str | None = None
     error_message: str | None = None
     retryable: bool | None = None
+
+
+class ImportBatchMember(BaseModel):
+    task_id: UUID
+    temp_item_id: str
+    # Verified garment crop (signed, short-lived); null when none could be verified.
+    crop_url: str | None = None
+    # The whole photo, for members without a crop.
+    photo_url: str | None = None
+    taken_at: date | None = None
+
+
+class ImportBatchExistingItem(BaseModel):
+    item_id: UUID
+    title: str
+    image_url: str | None = None
+
+
+class ImportBatchGroup(BaseModel):
+    """One garment seen in one or more photos of the batch."""
+
+    group_id: UUID
+    # new: nothing like it in the wardrobe; existing: verified to be existing_item;
+    # uncertain: a look-alike (existing_item) or a garment that could not be verified.
+    kind: Literal["new", "existing", "uncertain"]
+    # pending: undecided; confirmed: in the wardrobe as existing_item; skipped: dismissed.
+    status: Literal["pending", "confirmed", "skipped"]
+    category: str
+    color_main: str
+    title: str
+    best_crop_url: str | None = None
+    members: list[ImportBatchMember]
+    existing_item: ImportBatchExistingItem | None = None
+    wear_dates: list[date] = Field(default_factory=list)
+
+
+class ImportBatchResponse(BaseModel):
+    batch_id: UUID
+    total_photos: int
+    # Photos still being recognised or cropped; poll until 0.
+    processing: int
+    failed: int
+    # False while photos are processing or garment comparisons are still outstanding:
+    # groups can still merge, so poll again.
+    complete: bool
+    groups: list[ImportBatchGroup]
+
+
+class ImportBatchGroupDecision(BaseModel):
+    group_id: UUID
+    action: Literal["create", "link", "skip"]
+    # create only: edited fields; default to the group's recognised values.
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    category: str | None = Field(default=None, min_length=1, max_length=32)
+    color_main: str | None = Field(default=None, min_length=1, max_length=32)
+    # Record a wear on every wear_date of the group (idempotent per day).
+    backfill_wear: bool = False
+
+
+class ConfirmImportBatchRequest(BaseModel):
+    groups: list[ImportBatchGroupDecision] = Field(min_length=1, max_length=200)
+
+
+class ImportBatchGroupResult(BaseModel):
+    group_id: UUID
+    action: Literal["create", "link", "skip"]
+    item_id: UUID | None = None
+    # False when the item already existed (linked, or replay of an earlier create).
+    created: bool = False
+    wears_recorded: int = 0
+
+
+class ConfirmImportBatchResponse(BaseModel):
+    groups: list[ImportBatchGroupResult]

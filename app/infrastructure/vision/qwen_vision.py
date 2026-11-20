@@ -98,6 +98,24 @@ def build_outfit_vision_prompt(locale: str) -> str:
     )
 
 
+def build_same_garment_prompt(garment: str) -> str:
+    return (
+        "Image 1 and image 2 are crops of clothing taken from two different photos of the same person, "
+        f"possibly on different days. Both are expected to show: {json.dumps(garment, ensure_ascii=False)}. "
+        "Decide whether they show the SAME physical item the person owns, not merely a similar item of "
+        "the same type and colour. Compare the exact colour and shade, pattern or print, fabric texture "
+        "and material, silhouette and cut (length, sleeve length, neckline or collar, leg width, fit), "
+        "and visible details such as buttons, zips, pockets, logos, text, graphics, trims, soles and laces. "
+        "Allow differences caused by lighting, white balance, wrinkles, pose, viewpoint, partial occlusion "
+        "and framing. A match in type and colour alone is insufficient: answer true only if at least one "
+        "specific detail (toe cap, trim, stitching, collar shape, buttons, logo, print, knit texture) is "
+        "visible in both images and agrees. Answer false if a detail visible in both images clearly differs, "
+        "if either image does not mainly show this kind of garment, or if either image is too small, dark "
+        "or blurred to see such details. "
+        'Return only JSON: {"same": boolean, "reason": "short reason"}.'
+    )
+
+
 def build_style_prompt() -> str:
     # Tags must be stable English (the recommendation template rules key on
     # English words), so — unlike the wardrobe prompt — this one is locale-free.
@@ -202,6 +220,15 @@ class QwenVision:
         if not isinstance(marks, list) or len(marks) != len(crops) or not all(isinstance(mark, bool) for mark in marks):
             raise ValueError("Invalid garment crop review response")
         return cast(list[bool], marks)
+
+    async def same_garment(self, crop_a: bytes, crop_b: bytes, garment: str) -> bool:
+        content = await self._request_content(
+            _image_data_uri(crop_a), build_same_garment_prompt(garment), _image_data_uri(crop_b), temperature=0,
+        )
+        result = json.loads(self._strip_json_fence(content))
+        if not isinstance(result, dict) or not isinstance(result.get("same"), bool):
+            raise ValueError("Invalid same-garment response")
+        return bool(result["same"])
 
     async def analyze_style(
         self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
@@ -346,12 +373,13 @@ class QwenVision:
         }
 
     async def _request_content(
-        self, image_url: str, prompt: str, *reference_urls: str, source_key: str | None = None
+        self, image_url: str, prompt: str, *reference_urls: str, source_key: str | None = None,
+        temperature: float | None = None,
     ) -> str:
         # Inline private wardrobe images instead of exposing signed URLs to the
         # third-party vision provider.
         image_payload_url = await self._to_data_uri(image_url, source_key)
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.settings.QWEN_VISION_MODEL,
             "messages": [
                 {
@@ -368,6 +396,8 @@ class QwenVision:
             ],
             "response_format": {"type": "json_object"},
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
         headers = {
             "Authorization": f"Bearer {self.settings.QWEN_API_KEY}",
             "Content-Type": "application/json",

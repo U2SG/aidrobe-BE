@@ -1,5 +1,6 @@
 import hashlib
 import uuid
+from datetime import date
 
 from sqlalchemy import select, text
 
@@ -32,6 +33,8 @@ class CreateImageImportTask:
         locale: str | None = None,
         idempotency_key: str | None = None,
         conversation_id: uuid.UUID | None = None,
+        batch_id: uuid.UUID | None = None,
+        taken_at: date | None = None,
     ) -> tuple[ImportTask, bool]:
         """Returns (task, created). With an `Idempotency-Key`, a retried request
         (double tap, flaky network) gets the task the first attempt created
@@ -69,6 +72,8 @@ class CreateImageImportTask:
                 task_status=ImportStatus.QUEUED.value,
                 input_payload=input_payload,
                 conversation_id=conversation_id,
+                batch_id=batch_id,
+                taken_at=taken_at,
             )
         )
         return task, True
