@@ -22,6 +22,7 @@ from app.application.recommendations.engine import (
     RelationshipEdge,
 )
 from app.application.recommendations.indoor_climate import IndoorClimateSignal, infer_indoor_climate
+from app.application.recommendations.warmth_rules import feels_like_c
 from app.common.enums import Category, RecommendationEventType
 from evals.recommendations.models import (
     AvailabilityMetric,
@@ -399,10 +400,11 @@ def _weather_suitability(
 ) -> WeatherSuitabilityMetric:
     violations: list[str] = []
     if weather is not None:
+        felt_c = feels_like_c(weather)  # the temperature the engine dresses for
         for rank, outfit in enumerate(outfits, start=1):
             items = [item_by_id[item_id] for item_id in outfit.item_ids]
             categories = {item.category for item in items}
-            if weather.temperature_c < 10 and Category.OUTERWEAR.value not in categories:
+            if felt_c is not None and felt_c < 10 and Category.OUTERWEAR.value not in categories:
                 violations.append(f"outfit {rank}: cold_without_outerwear")
             if weather.rain_probability > 0.5 and any(
                 item.category == Category.SHOES.value
