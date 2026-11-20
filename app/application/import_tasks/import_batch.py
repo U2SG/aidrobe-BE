@@ -428,7 +428,8 @@ async def _classify(
     if match is not None:
         return BatchGroup(group_id, "existing", status, members, best, match), False
     pending = any(verdict is None for verdict in verdicts)
-    if suggestion is not None:
+    if suggestion is not None or (pending and checked):
+        # An unanswered comparison hasn't ruled out an existing item: stay uncertain.
         return BatchGroup(group_id, "uncertain", status, members, best, suggestion), pending
     return BatchGroup(group_id, "new", status, members, best, None), pending
 
