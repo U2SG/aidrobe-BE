@@ -77,7 +77,7 @@ Every scenario reports separate values for:
 - `status_ready`: the engine could not construct a recommendation.
 - `slot_completeness`: the primary outfit matched none of the scenario's acceptable slot sets.
 - `available_items_only`: a laundry/unavailable item crossed the in-memory persistence boundary.
-- `weather_suitable`: a cold outfit lacked outerwear or a rainy outfit used light shoes.
+- `weather_suitable`: an outfit lacked outerwear on a cold (feels-like < 10°C) day or a rainy outfit used light shoes.
 - `focused_item_included`: the required focused item was absent from the primary outfit.
 - `no_exact_recent_repeat`: the primary item set exactly repeated a recent combination.
 - `reason_grounded`: a structured reason was malformed, cited an item outside its outfit/snapshot, or omitted an expected source.

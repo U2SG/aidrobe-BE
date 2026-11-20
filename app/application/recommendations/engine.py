@@ -19,6 +19,13 @@ from app.application.recommendations.context_override import (
 from app.application.recommendations.feasibility import has_first_outfit_core
 from app.application.recommendations.indoor_climate import IndoorClimateSignal
 from app.application.recommendations.reasoning import build_reasoning
+from app.application.recommendations.warmth_rules import (
+    WarmthExclusion,
+    combo_warmth_violation,
+    feels_like_c,
+    garment_warmth_traits,
+    item_warmth_violation,
+)
 from app.application.safety.copy_guard import sanitize_generated_copy
 from app.application.style.build_style_profile import aesthetic_score as compute_aesthetic_score
 from app.common.enums import Category, OutfitType
@@ -74,6 +81,9 @@ OUT_OF_SEASON_PENALTY_CAP = 0.3
 BUSINESS_FORMALITY = 60.0
 CASUAL_FORMALITY = 40.0
 FORMALITY_FEEDBACK_PENALTY = 0.3
+# Weather term: neutral baseline score and its weight in every scoring branch.
+WEATHER_BASE_SCORE = 0.8
+WEATHER_WEIGHT = 0.15
 MILD_FOR_WARM_RUNNER_C = 15.0
 COLD_FEELS_LIKE_C = 10.0
 THERMAL_FEEDBACK_PENALTY = 0.3
@@ -113,6 +123,24 @@ class EngineItem:
     # Recognised attributes (None / () = unknown, never penalised).
     formality_score: int | None = None
     season_tags: tuple[str, ...] = ()
+    # Warmth rules read garment type from the names + material (None = unknown).
+    canonical_name: str | None = None
+    material: str | None = None
+    # Traits recorded in a decision trace; trace replay uses them instead of re-deriving
+    # (the trace keeps derived labels, not titles or materials).
+    recorded_warmth_traits: frozenset[str] | None = None
+
+    @property
+    def warmth_traits(self) -> frozenset[str]:
+        if self.recorded_warmth_traits is not None:
+            return self.recorded_warmth_traits
+        return garment_warmth_traits(
+            category=self.category,
+            names=(self.canonical_name, self.title),
+            sub_category=self.sub_category,
+            material=self.material,
+            season_tags=self.season_tags,
+        )
 
 
 @dataclass(frozen=True)
@@ -145,6 +173,12 @@ class EngineResult:
     guidance_text: str | None = None
     candidates: list[EngineOutfit] = field(default_factory=list)
     llm_boundary_used: bool = False
+    # Warmth rules (warmth_rules.py): the feels-like they were judged at, the
+    # combos they hard-excluded, and whether they were relaxed because nothing
+    # would have survived them.
+    feels_like_c: float | None = None
+    warmth_exclusions: list[WarmthExclusion] = field(default_factory=list)
+    warmth_rules_relaxed: bool = False
 
 
 class RecommendationEngine:
@@ -183,7 +217,8 @@ class RecommendationEngine:
                 guidance_text="再加一件下装就能搭",
             )
 
-        candidates = await self._build_candidates(
+        dress_feels_like_c = feels_like_c(weather, thermal_offset_c)
+        candidates, warmth_exclusions, warmth_relaxed = await self._build_candidates(
             wearable,
             recent_worn_main_item_ids,
             style_profile or {},
@@ -202,6 +237,7 @@ class RecommendationEngine:
                 status="insufficient_items",
                 outfits=[],
                 guidance_text="再加一件下装就能搭",
+                feels_like_c=dress_feels_like_c,
             )
         candidates = self._apply_relationship_ranking(
             candidates,
@@ -325,6 +361,9 @@ class RecommendationEngine:
             outfits=selected,
             candidates=candidates,
             llm_boundary_used=any(outfit.llm_boundary_used for outfit in selected),
+            feels_like_c=dress_feels_like_c,
+            warmth_exclusions=warmth_exclusions,
+            warmth_rules_relaxed=warmth_relaxed,
         )
 
     async def _build_candidates(
@@ -341,8 +380,13 @@ class RecommendationEngine:
         thermal_offset_c: float = 0.0,
         season: str | None = None,
         formality_bias: int = 0,
-    ) -> list[EngineOutfit]:
+    ) -> tuple[list[EngineOutfit], list[WarmthExclusion], bool]:
+        """Score every buildable combo. Returns (candidates, combos the warmth
+        rules excluded, whether those rules were relaxed because they would have
+        left nothing — Today must never go empty because of them)."""
         context_constraints = context_constraints or []
+        dress_feels_like_c = feels_like_c(weather, thermal_offset_c)
+        traits = {item.item_id: item.warmth_traits for item in items}
         # BE#78 — "不想穿裙子" excludes dresses AND skirts (stored as bottom items
         # with sub_category == "skirt") for this request. Filter once, up front,
         # so every combo path — including the no-combo fallback — honors it.
@@ -370,20 +414,43 @@ class RecommendationEngine:
         if not combos and usable:
             combos.append(usable[: min(len(usable), 3)])
 
+        # One layer / one pair of shoes is attached to every look: take the first
+        # one that suits today's feels-like (sandals on a cold day, a puffer on a
+        # hot one), else the first one as before.
+        def _weather_ok_first(pool: list[EngineItem]) -> EngineItem:
+            return next(
+                (item for item in pool if item_warmth_violation(traits[item.item_id], dress_feels_like_c) is None),
+                pool[0],
+            )
+
         if outerwears:
+            outer = _weather_ok_first(outerwears)
             combos = combos + [
-                combo + [outerwears[0]]
+                combo + [outer]
                 for combo in combos
                 if all(item.category != Category.OUTERWEAR.value for item in combo)
             ]
 
         if shoes:
+            shoe = _weather_ok_first(shoes)
             combos = [
-                combo + [shoes[0]]
+                combo + [shoe]
                 if all(item.category != Category.SHOES.value for item in combo)
                 else combo
                 for combo in combos
             ]
+
+        warmth_exclusions: list[WarmthExclusion] = []
+        kept: list[list[EngineItem]] = []
+        for combo in combos:
+            rule = combo_warmth_violation([traits[item.item_id] for item in combo], dress_feels_like_c)
+            if rule is None:
+                kept.append(combo)
+            else:
+                warmth_exclusions.append(WarmthExclusion(tuple(item.item_id for item in combo), rule))
+        warmth_relaxed = bool(combos) and not kept
+        if not warmth_relaxed:
+            combos = kept
 
         for combo in combos:
             for outfit_type in [
@@ -408,7 +475,7 @@ class RecommendationEngine:
                         formality_bias,
                     )
                 )
-        return candidates
+        return candidates, warmth_exclusions, warmth_relaxed
 
     async def _score_combo(
         self,
@@ -435,6 +502,11 @@ class RecommendationEngine:
         aesthetic_score = compute_aesthetic_score(colors, categories, style_profile)
         time_cost_score = self._time_cost_score(combo)
         weather_score = self._weather_score(combo, weather)
+        # The profile branch weighs weather_score directly; the cold-start
+        # branches only lacked aesthetic/time-cost signals, not weather, so they
+        # take the same weather term as a deficit from the neutral 0.8 baseline
+        # (identical ranking effect, unchanged totals when nothing is off).
+        weather_deficit = (WEATHER_BASE_SCORE - weather_score) * WEATHER_WEIGHT if weather is not None else 0.0
         thermal_penalty = self._thermal_feedback_penalty(combo, weather, thermal_offset_c)
         season_penalty = self._out_of_season_penalty(combo, season)
         formality_penalty = self._formality_feedback_penalty(combo, formality_bias)
@@ -464,7 +536,7 @@ class RecommendationEngine:
                 utility_score * 0.25
                 + time_cost_score * 0.20
                 + aesthetic_score * 0.20
-                + weather_score * 0.15
+                + weather_score * WEATHER_WEIGHT
                 + freshness_score * 0.10
                 + fit_score * 0.10
                 - repetition_penalty
@@ -481,6 +553,7 @@ class RecommendationEngine:
                 + freshness_score * 0.30
                 + fit_score * 0.20
                 + type_boost
+                - weather_deficit
                 - repetition_penalty
                 - disliked_penalty
                 - thermal_penalty
@@ -494,6 +567,7 @@ class RecommendationEngine:
                 utility_score * 0.6
                 + freshness_score * 0.4
                 + type_boost
+                - weather_deficit
                 - repetition_penalty
                 - disliked_penalty
                 - thermal_penalty
@@ -600,6 +674,9 @@ class RecommendationEngine:
         context_lines = ""
         if weather is not None:
             context_lines += f"今日天气：{_clip(weather.condition)}，约 {round(weather.temperature_c)}°C"
+            felt_c = feels_like_c(weather)
+            if felt_c is not None and abs(felt_c - weather.temperature_c) >= 2:
+                context_lines += f"（体感 {round(felt_c)}°C）"
             if weather.rain_probability > 0.5:
                 context_lines += "，可能有雨"
             context_lines += "\n"
@@ -631,11 +708,13 @@ class RecommendationEngine:
         return _clamp_score(score)
 
     def _weather_score(self, combo: list[EngineItem], weather: WeatherInfo | None) -> float:
-        if weather is None:
+        # Provider feels-like; the user's own offset is _thermal_feedback_penalty's job.
+        dress_feels_like_c = feels_like_c(weather)
+        if weather is None or dress_feels_like_c is None:
             return 0.5
-        score = 0.8
+        score = WEATHER_BASE_SCORE
         categories = {item.category for item in combo}
-        if weather.temperature_c < 10 and Category.OUTERWEAR.value not in categories:
+        if dress_feels_like_c < COLD_FEELS_LIKE_C and Category.OUTERWEAR.value not in categories:
             score -= 0.35
         if weather.rain_probability > 0.5 and any(
             item.category == Category.SHOES.value and item.color_main.lower() in LIGHT_SHOE_COLORS
@@ -649,17 +728,17 @@ class RecommendationEngine:
     ) -> float:
         """Penalty from the user's own "too warm" / "too cold" feedback.
 
-        Applied in every scoring branch (the weather score only counts once a
-        style profile exists, so a new user's comfort feedback would otherwise
-        never change anything). 0 without feedback or weather → legacy ranking.
+        Judged on provider feels-like shifted by the user's offset (the weather
+        term only sees provider feels-like): the user told us, so the opposite
+        look loses clearly. 0 without feedback or weather → legacy ranking.
         """
-        if weather is None or thermal_offset_c == 0:
+        personal_feels_like_c = feels_like_c(weather, thermal_offset_c)
+        if personal_feels_like_c is None or thermal_offset_c == 0:
             return 0.0
-        feels_like_c = weather.temperature_c + thermal_offset_c
         has_outer = any(item.category == Category.OUTERWEAR.value for item in combo)
-        if thermal_offset_c > 0 and feels_like_c >= MILD_FOR_WARM_RUNNER_C and has_outer:
+        if thermal_offset_c > 0 and personal_feels_like_c >= MILD_FOR_WARM_RUNNER_C and has_outer:
             return THERMAL_FEEDBACK_PENALTY  # was too warm with a layer on
-        if thermal_offset_c < 0 and feels_like_c < COLD_FEELS_LIKE_C and not has_outer:
+        if thermal_offset_c < 0 and personal_feels_like_c < COLD_FEELS_LIKE_C and not has_outer:
             return THERMAL_FEEDBACK_PENALTY  # was too cold without one
         return 0.0
 

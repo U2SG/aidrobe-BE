@@ -32,12 +32,14 @@ from app.application.recommendations.engine import (
     RelationshipEdge,
 )
 from app.application.recommendations.indoor_climate import IndoorClimateSignal
+from app.application.recommendations.warmth_rules import garment_warmth_traits
+from app.common.season import season_tags_of
 from app.infrastructure.persistence.models.base import JsonDict
 from app.infrastructure.persistence.models.preference_memory import UserPreferenceMemory
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
 TRACE_SCHEMA_VERSION = 1
-ENGINE_VERSION = "recommendation-engine-v1"
+ENGINE_VERSION = "recommendation-engine-v2"
 RANKER_SCHEMA_VERSION = "recommendation-ranker-v1"
 PROMPT_SCHEMA_VERSION = "recommendation-reason-prompt-v1"
 REASON_OUTPUT_SCHEMA_VERSION = "recommendation-reason-output-v1"
@@ -212,6 +214,16 @@ def _wardrobe_snapshot(
                 "secondary_color": _normalized_identifier(item.color_secondary),
                 "style_features": _taxonomy_tokens(item.style_tags),
                 "season_features": _taxonomy_tokens(item.season_tags),
+                # Derived vocabulary only (no title text): what the warmth rules saw.
+                "warmth_traits": sorted(
+                    garment_warmth_traits(
+                        category=item.category,
+                        names=(item.canonical_name, item.title),
+                        sub_category=item.sub_category,
+                        material=item.material,
+                        season_tags=season_tags_of(item.season_tags),
+                    )
+                ),
                 "fit_status": _normalized_identifier(item.fit_status),
                 "fit_intent": _normalized_identifier(item.fit_intent),
                 "status": _normalized_identifier(item.status),
@@ -296,6 +308,16 @@ def _candidate_snapshot(
         "status": result.status,
         "filtered_items": filtered_items,
         "candidates": candidates,
+        "warmth_rules": {
+            # Provider feels-like (or air temperature) + the user's thermal offset.
+            "feels_like_c": result.feels_like_c,
+            "excluded_combos": [
+                {"item_ids": list(exclusion.item_ids), "rule": exclusion.rule}
+                for exclusion in result.warmth_exclusions
+            ],
+            # True when every combo broke a rule and they were kept anyway.
+            "relaxed": result.warmth_rules_relaxed,
+        },
     }
 
 

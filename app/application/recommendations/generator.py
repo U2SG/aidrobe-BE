@@ -184,6 +184,8 @@ class RecommendationGenerator:
                     sub_category=item.sub_category,
                     formality_score=item.formality_score,
                     season_tags=season_tags_of(item.season_tags),
+                    canonical_name=item.canonical_name,
+                    material=item.material,
                 )
                 for item in items
             ],

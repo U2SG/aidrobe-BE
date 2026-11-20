@@ -574,6 +574,144 @@
         "selected_outfit": {"required_item_ids": ["removable-layer"]},
         "expected_reason_sources": ["weather_rule", "indoor_climate_inference"]
       }
+    },
+    {
+      "id": "warmth-sweater-never-with-shorts",
+      "description": "A cold-start user's only top is a chunky knit sweater; it must pair with trousers, never the better-matching shorts.",
+      "user_settings": {
+        "timezone": "Asia/Shanghai",
+        "location": "Shanghai",
+        "commute_exposure": null,
+        "preferences": {}
+      },
+      "wardrobe": [
+        {"id": "knit-sweater", "title": "Chunky knit sweater", "category": "top", "color_main": "navy"},
+        {"id": "denim-shorts", "title": "Denim shorts", "category": "bottom", "color_main": "white"},
+        {"id": "grey-trousers", "title": "Grey wool trousers", "category": "bottom", "color_main": "gray"},
+        {"id": "warmth-sneakers", "title": "White sneakers", "category": "shoes", "color_main": "white"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {},
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {
+        "current": {"temperature_c": 18.0, "feels_like_c": 17.0, "rain_probability": 0.0, "condition": "cloudy"},
+        "forecast_by_date": {}
+      },
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "commute",
+        "active_constraints": [],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "weather_suitable", "reason_grounded", "outcome_constraints"],
+        "acceptable_slot_sets": [["top", "bottom", "shoes"]],
+        "selected_outfit": {"required_item_ids": ["knit-sweater", "grey-trousers"], "forbidden_item_ids": ["denim-shorts"]},
+        "expected_reason_sources": ["wardrobe_history", "style_memory", "weather_rule"]
+      }
+    },
+    {
+      "id": "warmth-cold-feels-like-no-summer-pieces",
+      "description": "14°C air but 8°C feels-like: no tank top or sandals, and a coat on top.",
+      "user_settings": {
+        "timezone": "Asia/Shanghai",
+        "location": "Shanghai",
+        "commute_exposure": null,
+        "preferences": {}
+      },
+      "wardrobe": [
+        {"id": "tank-top", "title": "Black tank top", "category": "top", "color_main": "black"},
+        {"id": "long-sleeve-tee", "title": "Grey long-sleeve tee", "category": "top", "color_main": "gray"},
+        {"id": "black-trousers", "title": "Black trousers", "category": "bottom", "color_main": "black"},
+        {"id": "wool-coat", "title": "Camel wool coat", "category": "outerwear", "color_main": "beige"},
+        {"id": "summer-sandals", "title": "Black sandals", "category": "shoes", "color_main": "black"},
+        {"id": "leather-boots", "title": "Brown leather boots", "category": "shoes", "color_main": "brown"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {},
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {
+        "current": {"temperature_c": 14.0, "feels_like_c": 8.0, "rain_probability": 0.0, "condition": "windy"},
+        "forecast_by_date": {}
+      },
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "commute",
+        "active_constraints": [],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "weather_suitable", "reason_grounded", "outcome_constraints"],
+        "acceptable_slot_sets": [["top", "bottom", "outerwear", "shoes"]],
+        "selected_outfit": {"required_item_ids": ["long-sleeve-tee", "wool-coat", "leather-boots"], "forbidden_item_ids": ["tank-top", "summer-sandals"]},
+        "expected_reason_sources": ["wardrobe_history", "style_memory", "weather_rule"]
+      }
+    },
+    {
+      "id": "warmth-hot-feels-like-no-puffer",
+      "description": "23°C air but 28°C feels-like with a removable-layer request: the layer is the denim jacket, never the puffer listed first.",
+      "user_settings": {
+        "timezone": "Asia/Shanghai",
+        "location": "Shanghai",
+        "commute_exposure": null,
+        "preferences": {}
+      },
+      "wardrobe": [
+        {"id": "hot-tee", "title": "White linen tee", "category": "top", "color_main": "white"},
+        {"id": "hot-chinos", "title": "Beige chinos", "category": "bottom", "color_main": "beige"},
+        {"id": "black-puffer", "title": "Black puffer jacket", "category": "outerwear", "color_main": "black"},
+        {"id": "denim-jacket", "title": "Light denim jacket", "category": "outerwear", "color_main": "blue"},
+        {"id": "hot-sneakers", "title": "White sneakers", "category": "shoes", "color_main": "white"}
+      ],
+      "wear_history": {
+        "recent_main_item_ids": [],
+        "recent_outfits": [],
+        "temperature_mismatch_events": []
+      },
+      "learned_signals": {
+        "style_profile": {},
+        "fit_profile": {},
+        "disliked_colors": [],
+        "relationship_edges": [],
+        "suppressed_outfits": [],
+        "avoid_exact_repeats": false
+      },
+      "weather": {
+        "current": {"temperature_c": 23.0, "feels_like_c": 28.0, "rain_probability": 0.0, "condition": "humid"},
+        "forecast_by_date": {}
+      },
+      "request": {
+        "target_date": "2026-08-05",
+        "scene": "commute",
+        "active_constraints": ["removable_layer"],
+        "focused_item_id": null
+      },
+      "expected": {
+        "hard_invariants": ["status_ready", "slot_completeness", "available_items_only", "weather_suitable", "reason_grounded", "outcome_constraints"],
+        "acceptable_slot_sets": [["top", "bottom", "outerwear", "shoes"]],
+        "selected_outfit": {"required_item_ids": ["hot-tee", "hot-chinos", "denim-jacket"], "forbidden_item_ids": ["black-puffer"]},
+        "expected_reason_sources": ["wardrobe_history", "style_memory", "weather_rule"]
+      }
     }
   ]
 }
