@@ -24,6 +24,7 @@ from typing import Any
 
 import structlog
 
+from app.application.cost_guard import assert_within_quota
 from app.application.import_tasks.candidates import (
     RECOGNIZED_KEY,
     confirmed_item_ids,
@@ -36,6 +37,7 @@ from app.common.enums import ImportStatus
 from app.common.exceptions import FriendlyException
 from app.common.garment_materials import GARMENT_MATERIALS
 from app.infrastructure.llm.sanitizer import sanitize_for_llm, sanitize_llm_text
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.import_task import ImportTask
 from app.infrastructure.persistence.repositories.import_task_repo import SqlAlchemyImportTaskRepository
 
@@ -87,6 +89,11 @@ def _as_recognized(raw: dict[str, Any]) -> dict[str, Any]:
     return {**base, **recognized, RECOGNIZED_KEY: recognized}
 
 
+#: The note read counts against the Ask text-model budget (cost guard bucket).
+_QUOTA_JOB_TYPE = "llm_ask"
+_PROJECTED_TOKENS = 600
+
+
 async def apply_import_note(
     repository: SqlAlchemyImportTaskRepository,
     *,
@@ -100,7 +107,16 @@ async def apply_import_note(
         raise FriendlyException(error_codes.NOT_FOUND, "Import task not found", 404)
     _require_waiting(task)
     pending = _pending(task)
-    suggestions = await _suggest(pending, note, llm) if pending else {}
+    suggestions: dict[str, NoteSuggestion] = {}
+    if pending:
+        # Same daily text-model budget as Ask: refuse before spending, record what was spent.
+        session = repository.session
+        await assert_within_quota(session, user_id, _QUOTA_JOB_TYPE, cost_tokens=_PROJECTED_TOKENS)
+        suggestions, tokens_used = await _suggest(pending, note, llm)
+        session.add(AsyncJob(
+            job_type=_QUOTA_JOB_TYPE, idempotency_key=f"{_QUOTA_JOB_TYPE}:import-note:{uuid.uuid4()}",
+            user_id=user_id, target_id=task_id, status="succeeded", attempts=1, cost_tokens=tokens_used,
+        ))
 
     # The model call ran without a row lock; re-read under lock so a crop
     # finishing meanwhile is kept, and recheck the state.
@@ -146,7 +162,9 @@ def _pending(task: ImportTask) -> list[dict[str, Any]]:
     ]
 
 
-async def _suggest(candidates: list[dict[str, Any]], note: str, llm: LlmPort) -> dict[str, NoteSuggestion]:
+async def _suggest(
+    candidates: list[dict[str, Any]], note: str, llm: LlmPort
+) -> tuple[dict[str, NoteSuggestion], int]:
     items = [
         {
             "item": position,
@@ -188,7 +206,7 @@ async def _suggest(candidates: list[dict[str, Any]], note: str, llm: LlmPort) ->
             purchase_price=_price(entry.get("purchase_price")),
             material=_material(entry.get("material")),
         )
-    return suggestions
+    return suggestions, answer.tokens_used
 
 
 def _title(value: object) -> str | None:

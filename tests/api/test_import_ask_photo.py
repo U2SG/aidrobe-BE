@@ -236,3 +236,29 @@ async def test_confirm_writes_price_and_material_with_candidate_fallback(db_sess
     assert (jeans.purchase_price, jeans.material) == (Decimal("259.00"), "cotton")
     # The title was the recognised one, so the AI naming provenance stays.
     assert jeans.name_source == "ai"
+
+
+async def test_apply_note_respects_and_records_the_text_model_quota(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.infrastructure.persistence.models.async_job import AsyncJob
+
+    user_id = uuid.uuid4()
+    task = await seed_task(db_session, user_id)
+    llm = FakeLlm(json.dumps({"items": [{"item": 1, "include": True}]}))
+    url = f"/v1/import-tasks/{task.id}/apply-note"
+    headers = {"X-User-Id": str(user_id)}
+    app = build_app(db_session, llm)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        allowed = await client.post(url, headers=headers, json={"note": "只要大衣"})
+    recorded = (await db_session.scalars(select(AsyncJob).where(AsyncJob.user_id == user_id))).all()
+    assert allowed.status_code == 200, allowed.text
+    assert [(job.job_type, job.cost_tokens) for job in recorded] == [("llm_ask", 10)]
+
+    exhausted = Settings(APP_ENV="dev", ENABLE_COST_GUARD=True, LLM_DAILY_TOKEN_LIMIT=10)
+    monkeypatch.setattr("app.application.cost_guard.get_settings", lambda: exhausted)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        refused = await client.post(url, headers=headers, json={"note": "只要大衣"})
+    assert refused.status_code == 429, refused.text
+    assert len(llm.calls) == 1
