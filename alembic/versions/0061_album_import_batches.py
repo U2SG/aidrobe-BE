@@ -1,15 +1,15 @@
 """Album scan: batch + capture date on import tasks, cached same-garment verdicts.
 
-Revision ID: 0059_album_import_batches
-Revises: 0058_link_purchase_decisions
+Revision ID: 0061_album_import_batches
+Revises: 0060_link_imports_to_ask
 """
 
 import sqlalchemy as sa
 
 from alembic import op
 
-revision = "0059_album_import_batches"
-down_revision = "0058_link_purchase_decisions"
+revision = "0061_album_import_batches"
+down_revision = "0060_link_imports_to_ask"
 branch_labels = None
 depends_on = None
 
