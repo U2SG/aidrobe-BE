@@ -33,8 +33,8 @@ async def _load(image: GarmentImage) -> bytes:
     return f"garment:{image.url.split('/')[3]} {image.url}".encode()
 
 
-def judge(**kwargs: int) -> CachedJudge:
-    return CachedJudge(FakeVision(), _load, {}, **kwargs)
+def judge(budget: int = 100) -> CachedJudge:
+    return CachedJudge({}, FakeVision(), _load, budget=budget)
 
 
 def keys(groups: list[list[BatchCandidate]]) -> list[list[str]]:
@@ -82,7 +82,7 @@ async def test_two_garments_of_one_photo_never_merge() -> None:
 async def test_bucket_and_type_gate_comparisons() -> None:
     seen: list[str] = []
 
-    async def spy(a: GarmentImage, b: GarmentImage, garment: str) -> bool:
+    async def spy(a: GarmentImage, b: GarmentImage, garment: str, **options: object) -> bool:
         seen.append(garment)
         return True
 
@@ -105,7 +105,7 @@ async def test_hidden_or_uncropped_candidates_stay_on_their_own() -> None:
 async def test_a_candidate_matching_two_groups_bridges_them() -> None:
     calls: list[tuple[str | None, str | None]] = []
 
-    async def verdicts(a: GarmentImage, b: GarmentImage, garment: str) -> bool:
+    async def verdicts(a: GarmentImage, b: GarmentImage, garment: str, **options: object) -> bool:
         calls.append((a.url, b.url))
         # The founders (photos 0 and 1) were judged different; photo 2 matches both.
         return "/2.jpg" in (a.url or "") + (b.url or "")
@@ -124,7 +124,7 @@ async def test_budget_leaves_comparisons_pending() -> None:
 
 async def test_cached_verdicts_are_reused_without_vision() -> None:
     cache = {("https://cdn/a/0.jpg", "https://cdn/b/1.jpg"): True}
-    cached = CachedJudge(FakeVision(), _load, cache, budget=0)
+    cached = CachedJudge(cache, FakeVision(), _load, budget=0)
     grouping = await group_candidates([candidate(0, "a"), candidate(1, "b")], cached)
     assert keys(grouping.groups) == [["a-0", "b-1"]]
     assert cached.new == {}
@@ -141,3 +141,59 @@ def test_best_member_prefers_a_mergeable_confident_crop() -> None:
     members = [candidate(0, "a", image=False, confidence=0.99), candidate(1, "a", confidence=0.6),
                candidate(2, "a", confidence=0.9)]
     assert best_member(members).temp_item_id == "a-2"
+
+
+class _OneWayVision(FakeVision):
+    """Says "same" only when asked in one image order: a single, unconfirmed yes."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[bytes, bytes]] = []
+
+    async def same_garment(self, crop_a: bytes, crop_b: bytes, garment: str) -> bool:
+        self.asked.append((crop_a, crop_b))
+        return crop_a > crop_b
+
+
+async def test_shoes_need_two_yes_answers_but_tops_one() -> None:
+    vision = _OneWayVision()
+    shoes = [candidate(0, "x", category="shoes", name="sneakers"), candidate(1, "y", category="shoes", name="sneakers")]
+    tops = [candidate(2, "p"), candidate(3, "q")]
+    strict = CachedJudge({}, vision, _load, budget=10)
+    grouping = await group_candidates(shoes + tops, strict)
+    assert keys(grouping.groups) == [["x-0"], ["y-1"], ["p-2", "q-3"]]
+    # Shoes: asked both ways (1 yes + 1 no); tops: asked once.
+    assert len(vision.asked) == 3
+    shoe_pair = next(pair for pair in strict.new if "/x/" in pair[0])
+    assert strict.new[shoe_pair] is False  # the combined verdict is what gets cached
+
+
+async def test_a_strict_comparison_needs_budget_for_both_calls() -> None:
+    shoes = [candidate(0, "x", category="shoes", name="sneakers"), candidate(1, "x", category="shoes", name="sneakers")]
+    short = CachedJudge({}, FakeVision(), _load, budget=1)
+    grouping = await group_candidates(shoes, short)
+    assert len(grouping.groups) == 2 and grouping.pending and short.exhausted and short.calls == 0
+    enough = CachedJudge({}, FakeVision(), _load, budget=2)
+    assert len((await group_candidates(shoes, enough)).groups) == 1
+    assert enough.calls == 2
+
+
+async def test_local_prescreen_answers_without_the_model() -> None:
+    vision = _OneWayVision()
+    screened: list[bool] = []
+
+    def screen(a: bytes, b: bytes, same_photo: bool) -> bool | None:
+        screened.append(same_photo)
+        return False
+
+    candidates = [candidate(0, "a"), candidate(1, "a")]
+    local = CachedJudge({}, vision, _load, budget=10, screen=screen)
+    grouping = await group_candidates(candidates, local)
+    assert len(grouping.groups) == 2
+    assert vision.asked == [] and local.calls == 0 and local.screened == 1 and screened == [False]
+    assert list(local.new.values()) == [False]  # cached like a model verdict
+
+
+async def test_cache_only_judge_records_missing_pairs() -> None:
+    cache_only = CachedJudge({})
+    grouping = await group_candidates([candidate(0, "a"), candidate(1, "a")], cache_only)
+    assert grouping.pending and cache_only.missing == {("https://cdn/a/0.jpg", "https://cdn/a/1.jpg")}

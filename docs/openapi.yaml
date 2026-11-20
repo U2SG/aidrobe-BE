@@ -7694,6 +7694,10 @@ components:
         complete:
           type: boolean
           title: Complete
+        comparison_limited:
+          type: boolean
+          title: Comparison Limited
+          default: false
         groups:
           items:
             $ref: '#/components/schemas/ImportBatchGroup'

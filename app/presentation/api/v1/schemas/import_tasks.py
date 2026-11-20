@@ -171,6 +171,9 @@ class ImportBatchResponse(BaseModel):
     # False while photos are processing or garment comparisons are still outstanding:
     # groups can still merge, so poll again.
     complete: bool
+    # Garment comparisons stopped early (daily limit reached or the model was
+    # unavailable): some same-garment photos may show as separate groups.
+    comparison_limited: bool = False
     groups: list[ImportBatchGroup]
 
 

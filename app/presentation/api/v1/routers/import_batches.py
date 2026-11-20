@@ -9,14 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.import_tasks.batch_groups import BatchCandidate, GarmentImage
 from app.application.import_tasks.confirm_batch import ConfirmImportBatch, GroupDecision
-from app.application.import_tasks.import_batch import BatchView, ImageLoader, load_batch_view
-from app.application.ports.vision import VisionPort
-from app.bootstrap.container import vision_service
+from app.application.import_tasks.import_batch import BatchView, read_batch_view
 from app.infrastructure.cache.client import get_redis_client, invalidate_daily_recommendation_cache
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.repositories.operation_log_repo import SqlAlchemyOperationLogRepository
 from app.infrastructure.persistence.session import get_db_session
-from app.infrastructure.storage.source_image import load_source_bytes
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url, wardrobe_image_urls
 from app.presentation.api.v1.schemas.common import ResponseModel
@@ -31,19 +28,6 @@ from app.presentation.api.v1.schemas.import_tasks import (
 )
 
 router = APIRouter(prefix="/v1/import-batches", tags=["import-tasks"])
-
-
-def get_vision_service() -> VisionPort:
-    return vision_service()
-
-
-async def _load_image(image: GarmentImage) -> bytes:
-    # Refs come from our own crop pipeline / wardrobe rows, so keys are trusted.
-    return await load_source_bytes(image.url, image.key)
-
-
-def get_image_loader() -> ImageLoader:
-    return _load_image
 
 
 def _render(image: GarmentImage | None) -> str | None:
@@ -83,7 +67,7 @@ async def _to_response(session: AsyncSession, view: BatchView) -> ImportBatchRes
         )
     return ImportBatchResponse(
         batch_id=view.batch_id, total_photos=view.total_photos, processing=view.processing, failed=view.failed,
-        complete=view.complete, groups=groups,
+        complete=view.complete, comparison_limited=view.comparison_limited, groups=groups,
     )
 
 
@@ -92,11 +76,10 @@ async def get_import_batch(
     batch_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
-    vision: Annotated[VisionPort, Depends(get_vision_service)],
-    load_image: Annotated[ImageLoader, Depends(get_image_loader)],
 ) -> ResponseModel[ImportBatchResponse]:
-    """Garments found across the batch's photos. Poll while `complete` is false."""
-    view = await load_batch_view(session, current_user.id, batch_id, vision, load_image, release_connection=True)
+    """Garments found across the batch's photos. Never waits on the vision model:
+    comparisons run in a background job; poll while `complete` is false."""
+    view = await read_batch_view(session, current_user.id, batch_id)
     return ResponseModel(data=await _to_response(session, view))
 
 
@@ -107,11 +90,9 @@ async def confirm_import_batch(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     redis_client: Annotated[Redis, Depends(get_redis_client)],
-    vision: Annotated[VisionPort, Depends(get_vision_service)],
-    load_image: Annotated[ImageLoader, Depends(get_image_loader)],
 ) -> ResponseModel[ConfirmImportBatchResponse]:
     """Apply create / link / skip per group. Safe to retry: replays return the same items."""
-    outcomes = await ConfirmImportBatch(session, vision, load_image).execute(
+    outcomes = await ConfirmImportBatch(session).execute(
         current_user.id, batch_id,
         [
             GroupDecision(

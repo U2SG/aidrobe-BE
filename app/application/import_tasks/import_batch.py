@@ -1,11 +1,19 @@
-"""Album scan read model: one batch of photo imports, grouped by garment."""
+"""Album scan read model: one batch of photo imports, grouped by garment.
+
+Reads never call the vision model. They group with the verdicts cached on the
+batch and, while comparisons are missing, schedule one `garment_match` job
+(job_runtime) that makes them — pre-screened locally, metered against the
+user's daily quota — and caches the results for the next read.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import structlog
@@ -14,6 +22,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.import_tasks.batch_groups import (
+    STRICT_CATEGORIES,
     BatchCandidate,
     GarmentImage,
     SameGarmentJudge,
@@ -33,12 +42,19 @@ from app.infrastructure.persistence.models.import_task import ImportBatchVerdict
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.storage.object_key import is_legacy_garment_crop
 from app.infrastructure.workers.garment_crops import CROP_JOB_TYPE
-from app.infrastructure.workers.job_runtime import JOB_STATUS_QUEUED, JOB_STATUS_RUNNING
+from app.infrastructure.workers.job_runtime import (
+    JOB_STATUS_DEAD,
+    JOB_STATUS_QUEUED,
+    JOB_STATUS_RUNNING,
+    JOB_STATUS_SUCCEEDED,
+    enqueue,
+)
 
 logger = structlog.get_logger(__name__)
 
-#: New vision comparisons one read may spend; the rest wait for the next read (`complete=false`).
-MAX_NEW_COMPARISONS = 32
+MATCH_JOB_TYPE = "garment_match"
+#: Vision calls one match job may make; a larger batch continues in a follow-up job.
+MAX_CALLS_PER_RUN = 120
 COMPARISON_CONCURRENCY = 8
 #: Wardrobe look-alikes checked per group, newest first.
 EXISTING_MATCH_LIMIT = 3
@@ -46,27 +62,48 @@ EXISTING_MATCH_LIMIT = 3
 DISMISSED_KEY = "dismissed_items"
 
 ImageLoader = Callable[[GarmentImage], Awaitable[bytes]]
+#: Local pre-screen: (crop_a, crop_b, same_photo) -> verdict, or None to ask the model.
+Screen = Callable[[bytes, bytes, bool], bool | None]
 GroupKind = Literal["new", "existing", "uncertain"]
 GroupStatus = Literal["pending", "confirmed", "skipped"]
+Pair = tuple[str, str]
 
 
 class CachedJudge:
-    """Same-garment verdicts: identical image → same; cached → reuse; else ask vision within budget."""
+    """Same-garment verdicts: identical image → same; cached → reuse; else (with a
+    vision port) pre-screen locally, then ask the model within `budget` calls.
+
+    Without a vision port it only reads the cache and records what is missing.
+    """
 
     def __init__(
-        self, vision: VisionPort, load: ImageLoader, cache: dict[tuple[str, str], bool],
-        *, budget: int = MAX_NEW_COMPARISONS, concurrency: int = COMPARISON_CONCURRENCY,
+        self,
+        cache: dict[Pair, bool],
+        vision: VisionPort | None = None,
+        load: ImageLoader | None = None,
+        *,
+        budget: int = 0,
+        concurrency: int = COMPARISON_CONCURRENCY,
+        screen: Screen | None = None,
     ) -> None:
+        self.cache = cache
         self.vision = vision
         self.load = load
-        self.cache = cache
         self.budget = budget
-        self.new: dict[tuple[str, str], bool] = {}
+        self.screen = screen
+        self.new: dict[Pair, bool] = {}
+        self.missing: set[Pair] = set()
+        self.calls = 0
+        self.screened = 0
+        self.errors = 0
+        self.exhausted = False
         self._semaphore = asyncio.Semaphore(concurrency)
-        self._inflight: dict[tuple[str, str], asyncio.Task[bool | None]] = {}
+        self._inflight: dict[Pair, asyncio.Task[bool | None]] = {}
         self._images: dict[str, asyncio.Task[bytes]] = {}
 
-    async def __call__(self, a: GarmentImage, b: GarmentImage, garment: str) -> bool | None:
+    async def __call__(
+        self, a: GarmentImage, b: GarmentImage, garment: str, *, strict: bool = False, same_photo: bool | None = None,
+    ) -> bool | None:
         if a.ref is None or b.ref is None:
             return None
         if a.ref == b.ref:
@@ -75,26 +112,51 @@ class CachedJudge:
         pair = (ref_a, ref_b)
         if pair in self.cache:
             return self.cache[pair]
+        if self.vision is None or self.load is None:
+            self.missing.add(pair)
+            return None
         if pair not in self._inflight:
-            if self.budget <= 0:
-                return None
-            self.budget -= 1
-            self._inflight[pair] = asyncio.create_task(self._compare(pair, a, b, garment))
+            self._inflight[pair] = asyncio.create_task(self._compare(pair, a, b, garment, strict, same_photo))
         return await self._inflight[pair]
 
-    async def _compare(self, pair: tuple[str, str], a: GarmentImage, b: GarmentImage, garment: str) -> bool | None:
+    async def _compare(
+        self, pair: Pair, a: GarmentImage, b: GarmentImage, garment: str, strict: bool, same_photo: bool | None,
+    ) -> bool | None:
+        assert self.vision is not None
         try:
             async with self._semaphore:
                 crop_a, crop_b = await asyncio.gather(self._image(a), self._image(b))
-                verdict = await self.vision.same_garment(crop_a, crop_b, garment)
+                local = self.screen(crop_a, crop_b, same_photo) if self.screen and same_photo is not None else None
+                if local is not None:
+                    self.screened += 1
+                    verdict = local
+                else:
+                    needed = 2 if strict else 1
+                    if self.budget < needed:
+                        self.exhausted = True
+                        self.missing.add(pair)
+                        return None
+                    self.budget -= needed
+                    self.calls += 1
+                    verdict = await self.vision.same_garment(crop_a, crop_b, garment)
+                    if strict:
+                        if verdict:
+                            # A look-alike category needs a second, independent yes
+                            # (images swapped) before two photos merge.
+                            self.calls += 1
+                            verdict = await self.vision.same_garment(crop_b, crop_a, garment)
+                        else:
+                            self.budget += 1
         except Exception as exc:
             logger.warning("import_batch.same_garment_failed", error=type(exc).__name__)
+            self.errors += 1
+            self.missing.add(pair)
             return None
         self.cache[pair] = self.new[pair] = verdict
         return verdict
 
     def _image(self, image: GarmentImage) -> asyncio.Task[bytes]:
-        assert image.ref is not None
+        assert image.ref is not None and self.load is not None
         if image.ref not in self._images:
             self._images[image.ref] = asyncio.ensure_future(self.load(image))
         return self._images[image.ref]
@@ -111,6 +173,25 @@ class BatchGroup:
 
 
 @dataclass(frozen=True)
+class BatchState:
+    """Everything a grouping pass needs, read in one go."""
+
+    user_id: uuid.UUID
+    batch_id: uuid.UUID
+    tasks: list[ImportTask]
+    processing: int
+    failed: int
+    candidates: list[BatchCandidate]
+    items: list[WardrobeItem]
+    images: dict[uuid.UUID, GarmentImage]
+    cache: dict[Pair, bool]
+
+    @property
+    def items_by_id(self) -> dict[uuid.UUID, WardrobeItem]:
+        return {item.id: item for item in self.items}
+
+
+@dataclass(frozen=True)
 class BatchView:
     batch_id: uuid.UUID
     tasks: list[ImportTask]
@@ -119,6 +200,8 @@ class BatchView:
     failed: int
     groups: list[BatchGroup]
     complete: bool
+    # Comparisons stopped (daily quota, provider failure); the rest stay separate groups.
+    comparison_limited: bool
 
     def group(self, group_id: uuid.UUID) -> BatchGroup | None:
         return next((group for group in self.groups if group.group_id == group_id), None)
@@ -147,6 +230,8 @@ def importable_candidates(task: ImportTask) -> list[dict[str, Any]]:
 
 
 def _candidate_image(task: ImportTask, raw: dict[str, Any]) -> GarmentImage | None:
+    """The verified crop. A crop the review rejected was never stored, so such a
+    candidate has none and stays out of visual merging (its own uncertain group)."""
     crop_key, crop_url = raw.get("crop_object_key"), raw.get("crop_image_url")
     if (crop_key or crop_url) and not is_legacy_garment_crop(crop_key or crop_url, task.user_id):
         return GarmentImage(key=crop_key, url=crop_url)
@@ -173,6 +258,7 @@ def batch_candidates(tasks: list[ImportTask]) -> list[BatchCandidate]:
             continue
         confirmed = confirmed_item_ids(task)
         dismissed = dismissed_ids(task)
+        fingerprint = (task.input_payload or {}).get("photo_fingerprint")
         for raw in importable_candidates(task):
             temp_id = raw["temp_item_id"]
             try:
@@ -193,6 +279,7 @@ def batch_candidates(tasks: list[ImportTask]) -> list[BatchCandidate]:
                     taken_at=task.taken_at,
                     confirmed_item_id=_to_uuid(confirmed.get(temp_id)),
                     dismissed=temp_id in dismissed,
+                    photo_fingerprint=fingerprint if isinstance(fingerprint, str) else None,
                 )
             )
     return candidates
@@ -223,16 +310,9 @@ async def _item_images(session: AsyncSession, items: list[WardrobeItem]) -> dict
     return {item_id: GarmentImage(key=row.object_key, url=row.image_url) for item_id, row in chosen.items()}
 
 
-async def load_batch_view(
-    session: AsyncSession,
-    user_id: uuid.UUID,
-    batch_id: uuid.UUID,
-    vision: VisionPort,
-    load_image: ImageLoader,
-    *,
-    tasks: list[ImportTask] | None = None,
-    release_connection: bool = False,
-) -> BatchView:
+async def load_batch_state(
+    session: AsyncSession, user_id: uuid.UUID, batch_id: uuid.UUID, *, tasks: list[ImportTask] | None = None,
+) -> BatchState:
     if tasks is None:
         tasks = await batch_tasks(session, user_id, batch_id)
     if not tasks:
@@ -248,9 +328,6 @@ async def load_batch_view(
         )
     )
     active = (ImportStatus.QUEUED.value, ImportStatus.PROCESSING.value)
-    processing = sum(1 for task in tasks if task.task_status in active or task.id in cropping)
-    failed = sum(1 for task in tasks if task.task_status == ImportStatus.FAILED.value)
-
     candidates = batch_candidates(tasks)
     categories = {candidate.category for candidate in candidates}
     confirmed_ids = {c.confirmed_item_id for c in candidates if c.confirmed_item_id is not None}
@@ -265,8 +342,12 @@ async def load_batch_view(
             .order_by(WardrobeItem.created_at.desc(), WardrobeItem.id.desc())
         )
     ) if candidates else []
-    items_by_id = {item.id: item for item in items}
-    images = await _item_images(session, items)
+    live_ids = {item.id for item in items}
+    # Members confirmed to an item that was since deleted are back to undecided.
+    candidates = [
+        c if c.confirmed_item_id is None or c.confirmed_item_id in live_ids else replace(c, confirmed_item_id=None)
+        for c in candidates
+    ]
     cache = {
         (row.image_a, row.image_b): row.same
         for row in await session.scalars(
@@ -275,49 +356,30 @@ async def load_batch_view(
             )
         )
     }
-    if release_connection:
-        # Vision calls take seconds each; don't hold a pooled connection meanwhile.
-        await session.commit()
+    return BatchState(
+        user_id=user_id, batch_id=batch_id, tasks=tasks,
+        processing=sum(1 for task in tasks if task.task_status in active or task.id in cropping),
+        failed=sum(1 for task in tasks if task.task_status == ImportStatus.FAILED.value),
+        candidates=candidates, items=items, images=await _item_images(session, items), cache=cache,
+    )
 
-    judge = CachedJudge(vision, load_image, cache)
-    # Members confirmed to an item that was since deleted are back to undecided.
-    live = [
-        candidate if candidate.confirmed_item_id in items_by_id or candidate.confirmed_item_id is None
-        else replace(candidate, confirmed_item_id=None)
-        for candidate in candidates
-    ]
-    grouping = await group_candidates(live, judge)
+
+async def group_batch(state: BatchState, judge: SameGarmentJudge) -> tuple[list[BatchGroup], bool]:
+    """Groups and whether any comparison is still unanswered."""
+    grouping = await group_candidates(state.candidates, judge)
+    items_by_id = state.items_by_id
     results = await asyncio.gather(
-        *(_classify(batch_id, members, items, items_by_id, images, judge) for members in grouping.groups)
+        *(_classify(state, members, items_by_id, judge) for members in grouping.groups)
     )
-    groups = [group for group, _ in results]
-    pending = grouping.pending or any(group_pending for _, group_pending in results)
-
-    if judge.new:
-        await session.execute(
-            insert(ImportBatchVerdict)
-            .values([
-                {"id": uuid.uuid4(), "user_id": user_id, "batch_id": batch_id, "image_a": a, "image_b": b, "same": same}
-                for (a, b), same in judge.new.items()
-            ])
-            .on_conflict_do_nothing(index_elements=["user_id", "batch_id", "image_a", "image_b"])
-        )
-    return BatchView(
-        batch_id=batch_id, tasks=tasks, total_photos=len(tasks), processing=processing, failed=failed,
-        groups=groups, complete=processing == 0 and not pending,
-    )
+    return [group for group, _ in results], grouping.pending or any(pending for _, pending in results)
 
 
 async def _classify(
-    batch_id: uuid.UUID,
-    members: list[BatchCandidate],
-    items: list[WardrobeItem],
-    items_by_id: dict[uuid.UUID, WardrobeItem],
-    images: dict[uuid.UUID, GarmentImage],
+    state: BatchState, members: list[BatchCandidate], items_by_id: dict[uuid.UUID, WardrobeItem],
     judge: SameGarmentJudge,
 ) -> tuple[BatchGroup, bool]:
     best = best_member(members)
-    group_id = uuid.uuid5(batch_id, members[0].key)
+    group_id = uuid.uuid5(state.batch_id, members[0].key)
     confirmed = next(
         (items_by_id[m.confirmed_item_id] for m in members if m.confirmed_item_id in items_by_id), None
     )
@@ -325,15 +387,20 @@ async def _classify(
         return BatchGroup(group_id, "existing", "confirmed", members, best, confirmed), False
     status: GroupStatus = "skipped" if all(m.dismissed for m in members) else "pending"
     lookalikes = [
-        item for item in items
+        item for item in state.items
         if (item.category, color_family(item.color_main)) == best.bucket
         and kinds_compatible(item_kind(item), best.kind)
     ][:EXISTING_MATCH_LIMIT]
     if not best.mergeable or best.image is None:
-        kind: GroupKind = "uncertain"
-        return BatchGroup(group_id, kind, status, members, best, lookalikes[0] if lookalikes else None), False
-    checked = [item for item in lookalikes if item.id in images]
-    verdicts = await asyncio.gather(*(judge(best.image, images[item.id], best.label) for item in checked))
+        return BatchGroup(group_id, "uncertain", status, members, best, lookalikes[0] if lookalikes else None), False
+    checked = [item for item in lookalikes if item.id in state.images]
+    verdicts = await asyncio.gather(
+        *(
+            # A wardrobe image may be a product cutout, so no local pre-screen (same_photo=None).
+            judge(best.image, state.images[item.id], best.label, strict=best.category in STRICT_CATEGORIES)
+            for item in checked
+        )
+    )
     match = next((item for item, verdict in zip(checked, verdicts, strict=True) if verdict), None)
     if match is not None:
         return BatchGroup(group_id, "existing", status, members, best, match), False
@@ -341,3 +408,66 @@ async def _classify(
     if lookalikes:
         return BatchGroup(group_id, "uncertain", status, members, best, lookalikes[0]), pending
     return BatchGroup(group_id, "new", status, members, best, None), pending
+
+
+def match_job_key(batch_id: uuid.UUID, missing: set[Pair]) -> str:
+    """One job per batch, per set of open comparisons, per day: a finished job is
+    not re-run for the same open pairs until tomorrow's quota."""
+    digest = hashlib.sha256("\n".join(f"{a}\t{b}" for a, b in sorted(missing)).encode()).hexdigest()[:32]
+    return f"{MATCH_JOB_TYPE}:{batch_id}:{datetime.now(UTC).date().isoformat()}:{digest}"
+
+
+async def schedule_match_job(session: AsyncSession, state: BatchState, missing: set[Pair]) -> bool:
+    """Make sure a job will answer `missing`. Returns True when none will today
+    (the job for exactly these pairs already ran and stopped: quota / provider)."""
+    key = match_job_key(state.batch_id, missing)
+    done = await session.scalar(select(AsyncJob.status).where(AsyncJob.idempotency_key == key))
+    if done is not None:
+        return done in (JOB_STATUS_SUCCEEDED, JOB_STATUS_DEAD)
+    active = await session.scalar(
+        select(AsyncJob.id).where(
+            AsyncJob.job_type == MATCH_JOB_TYPE,
+            AsyncJob.target_id == state.batch_id,
+            AsyncJob.user_id == state.user_id,
+            AsyncJob.status.in_((JOB_STATUS_QUEUED, JOB_STATUS_RUNNING)),
+        ).limit(1)
+    )
+    if active is None:
+        await enqueue(
+            session, job_type=MATCH_JOB_TYPE, idempotency_key=key, user_id=state.user_id,
+            target_id=state.batch_id, payload={"batch_id": str(state.batch_id)},
+        )
+    return False
+
+
+async def read_batch_view(
+    session: AsyncSession, user_id: uuid.UUID, batch_id: uuid.UUID, *,
+    tasks: list[ImportTask] | None = None, schedule: bool = True,
+) -> BatchView:
+    """The batch as grouped by cached verdicts only; schedules the missing comparisons."""
+    state = await load_batch_state(session, user_id, batch_id, tasks=tasks)
+    judge = CachedJudge(state.cache)
+    groups, pending = await group_batch(state, judge)
+    limited = False
+    if pending and schedule:
+        limited = await schedule_match_job(session, state, judge.missing)
+    return BatchView(
+        batch_id=batch_id, tasks=state.tasks, total_photos=len(state.tasks), processing=state.processing,
+        failed=state.failed, groups=groups,
+        complete=state.processing == 0 and (not pending or limited), comparison_limited=limited,
+    )
+
+
+async def save_verdicts(
+    session: AsyncSession, user_id: uuid.UUID, batch_id: uuid.UUID, verdicts: dict[Pair, bool]
+) -> None:
+    if not verdicts:
+        return
+    await session.execute(
+        insert(ImportBatchVerdict)
+        .values([
+            {"id": uuid.uuid4(), "user_id": user_id, "batch_id": batch_id, "image_a": a, "image_b": b, "same": same}
+            for (a, b), same in verdicts.items()
+        ])
+        .on_conflict_do_nothing(index_elements=["user_id", "batch_id", "image_a", "image_b"])
+    )

@@ -9,15 +9,21 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application import cost_guard
 from app.application.import_tasks.batch_groups import GarmentImage
+from app.application.import_tasks.import_batch import MATCH_JOB_TYPE
+from app.bootstrap import container
 from app.config.settings import Settings, get_settings
 from app.infrastructure.cache.client import get_redis_client
+from app.infrastructure.persistence.models.async_job import AsyncJob
 from app.infrastructure.persistence.models.import_task import ImportBatchVerdict, ImportTask
 from app.infrastructure.persistence.models.recommendation import RecommendationEvent
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem, WardrobeItemImage
 from app.infrastructure.persistence.session import get_db_session
 from app.infrastructure.vision.fake_vision import FakeVision
+from app.infrastructure.workers import garment_match_worker as match_worker
+from app.infrastructure.workers.job_runtime import claim_one
 from app.presentation.api.v1.routers import import_batches as batches_router
 from app.presentation.api.v1.routers import import_tasks as import_tasks_router
 from app.presentation.middlewares.exception_handler import setup_exception_handlers
@@ -50,6 +56,37 @@ async def _load(image: GarmentImage) -> bytes:
     return f"garment:{image.url.split('/')[4]} {image.url}".encode()
 
 
+@pytest.fixture(autouse=True)
+def match_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    _CountingVision.calls = 0
+    monkeypatch.setattr(container, "vision_service", _CountingVision)
+    monkeypatch.setattr(match_worker, "load_garment_image", _load)
+
+
+async def run_matching(session: AsyncSession) -> list[AsyncJob]:
+    """Drain garment_match jobs on the test connection, like the cron drainer."""
+    done = []
+    while (job := await claim_one(session, [MATCH_JOB_TYPE])) is not None:
+        await match_worker._match_one(session, job)
+        done.append(job)
+    return done
+
+
+async def match_jobs(session: AsyncSession) -> list[AsyncJob]:
+    return list(
+        await session.scalars(
+            select(AsyncJob).where(AsyncJob.job_type == MATCH_JOB_TYPE).execution_options(populate_existing=True)
+        )
+    )
+
+
+async def settled(client: AsyncClient, session: AsyncSession, user_id: uuid.UUID, batch_id: uuid.UUID) -> Any:
+    """Read (schedules comparisons), run the job, read again."""
+    await get_batch(client, user_id, batch_id)
+    await run_matching(session)
+    return await get_batch(client, user_id, batch_id)
+
+
 def build_app(session: AsyncSession) -> FastAPI:
     app = FastAPI()
     setup_exception_handlers(app)
@@ -60,8 +97,6 @@ def build_app(session: AsyncSession) -> FastAPI:
     app.dependency_overrides[get_db_session] = override_db_session
     app.dependency_overrides[get_settings] = lambda: Settings(APP_ENV="dev", VISION_PROVIDER="fake")
     app.dependency_overrides[get_redis_client] = _Redis
-    app.dependency_overrides[batches_router.get_vision_service] = _CountingVision
-    app.dependency_overrides[batches_router.get_image_loader] = lambda: _load
     app.include_router(import_tasks_router.router)
     app.include_router(batches_router.router)
     return app
@@ -131,25 +166,34 @@ async def test_batch_groups_garments_across_photos(db_session: AsyncSession) -> 
         garment("jeans", "bottom", "blue", "jeans", "jeans-1"),
     ], taken_at=DAY_1)
     second = await seed_photo(db_session, user_id, batch_id, "p2", [
-        garment("tee", "top", "cream", "t_shirt", "tee-1", confidence=0.95),
+        garment("tee2", "top", "cream", "t_shirt", "tee-1", confidence=0.95),
         garment("jeans", "bottom", "light_blue", "jeans", "jeans-2"),
     ], taken_at=DAY_2)
     await seed_photo(db_session, user_id, batch_id, "p3", [], status="processing", taken_at=None)
     await seed_photo(db_session, user_id, batch_id, "p4", [], status="failed", taken_at=None)
-    _CountingVision.calls = 0
     async with AsyncClient(transport=ASGITransport(app=build_app(db_session)), base_url="http://t") as client:
+        before = (await get_batch(client, user_id, batch_id)).json()["data"]
+        await get_batch(client, user_id, batch_id)
+        # Reads never call the model; they queue one comparison job, once.
+        assert _CountingVision.calls == 0
+        queued = await match_jobs(db_session)
+        assert [job.status for job in queued] == ["queued"]
+        ran = await run_matching(db_session)
+        calls_in_job = _CountingVision.calls
         response = await get_batch(client, user_id, batch_id)
-        calls_after_first = _CountingVision.calls
         again = await get_batch(client, user_id, batch_id)
 
+    assert before["complete"] is False and len(before["groups"]) == 4  # nothing compared yet
+    assert len(ran) == 1 and ran[0].id == queued[0].id
     data = response.json()["data"]
     assert (data["total_photos"], data["processing"], data["failed"], data["complete"]) == (4, 1, 1, False)
+    assert data["comparison_limited"] is False
     groups = group_by_title(data)
     assert set(groups) == {"t_shirt", "jeans"}
     tee = groups["t_shirt"]
     assert tee["kind"] == "new" and tee["status"] == "pending"
     assert [m["task_id"] for m in tee["members"]] == [str(first.id), str(second.id)]
-    assert tee["best_crop_url"] == "https://cdn/crops/tee-1/tee.jpg"
+    assert tee["best_crop_url"] == "https://cdn/crops/tee-1/tee2.jpg"
     assert tee["color_main"] == "cream"  # the more confident member represents the group
     assert tee["wear_dates"] == [DAY_1.isoformat(), DAY_2.isoformat()]
     assert tee["members"][0]["photo_url"] == "https://cdn/photos/p1.jpg"
@@ -157,11 +201,61 @@ async def test_batch_groups_garments_across_photos(db_session: AsyncSession) -> 
     assert groups["jeans"]["kind"] == "new"
     jeans = [g for g in data["groups"] if g["category"] == "bottom"]
     assert len(jeans) == 2  # different crops → different jeans
-    # Verdicts are cached on the batch: a second read asks vision nothing.
-    assert calls_after_first == 1
-    assert _CountingVision.calls == calls_after_first
+    # Verdicts are cached on the batch; nothing is left to compare, so no new job.
+    assert calls_in_job == 2 and _CountingVision.calls == 2
     assert again.json()["data"]["groups"] == data["groups"]
-    assert await db_session.scalar(select(func.count()).select_from(ImportBatchVerdict)) == 1
+    assert await db_session.scalar(select(func.count()).select_from(ImportBatchVerdict)) == 2
+    assert len(await match_jobs(db_session)) == 1
+    finished = (await match_jobs(db_session))[0]
+    assert finished.status == "succeeded" and finished.cost_tokens == 2
+    assert finished.result is not None and finished.result["outcome"] == "complete"
+
+
+async def test_daily_quota_stops_comparisons(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        cost_guard, "get_settings", lambda: Settings(ENABLE_COST_GUARD=True, GARMENT_MATCH_DAILY_CALL_LIMIT=1),
+    )
+    user_id, batch_id = uuid.uuid4(), uuid.uuid4()
+    for index in range(1, 4):
+        await seed_photo(db_session, user_id, batch_id, f"p{index}", [
+            garment(f"tee{index}", "top", "white", "t_shirt", "tee-1"),
+            garment(f"jeans{index}", "bottom", "blue", "jeans", f"jeans-{index}"),
+        ])
+    async with AsyncClient(transport=ASGITransport(app=build_app(db_session)), base_url="http://t") as client:
+        await get_batch(client, user_id, batch_id)
+        await run_matching(db_session)
+        # The read schedules the remaining pairs; that run finds the quota spent.
+        mid = (await get_batch(client, user_id, batch_id)).json()["data"]
+        await run_matching(db_session)
+        final = (await get_batch(client, user_id, batch_id)).json()["data"]
+        repeat = (await get_batch(client, user_id, batch_id)).json()["data"]
+
+    assert mid["complete"] is False
+    assert _CountingVision.calls == 1  # the one call the quota allowed
+    jobs = await match_jobs(db_session)
+    assert [job.result["outcome"] for job in jobs if job.result] == ["quota_limited", "quota_limited"]
+    assert sum(job.cost_tokens for job in jobs) == 1
+    assert final["complete"] is True and final["comparison_limited"] is True
+    # Uncompared photos stay separate groups; nothing more is queued.
+    assert len(final["groups"]) > 2
+    assert repeat == final and len(await match_jobs(db_session)) == 2
+
+
+async def test_batch_tasks_stay_out_of_the_pending_list(db_session: AsyncSession) -> None:
+    user_id, batch_id = uuid.uuid4(), uuid.uuid4()
+    scanned = await seed_photo(db_session, user_id, batch_id, "p1", [garment("tee", "top", "white", "t_shirt", "t")])
+    single = ImportTask(
+        user_id=user_id, input_type="image", source_type="camera", task_status="waiting_confirm",
+        input_payload={"image_url": "https://cdn/photos/single.jpg"}, candidate_payload=None,
+    )
+    db_session.add(single)
+    await db_session.flush()
+    headers = {"X-User-Id": str(user_id)}
+    async with AsyncClient(transport=ASGITransport(app=build_app(db_session)), base_url="http://t") as client:
+        pending = await client.get("/v1/import-tasks", headers=headers)
+        by_id = await client.get(f"/v1/import-tasks/{scanned.id}", headers=headers)
+    assert [task["task_id"] for task in pending.json()["data"]] == [str(single.id)]
+    assert by_id.status_code == 200 and by_id.json()["data"]["task_id"] == str(scanned.id)
 
 
 async def test_batch_matches_existing_items(db_session: AsyncSession) -> None:
@@ -175,7 +269,7 @@ async def test_batch_matches_existing_items(db_session: AsyncSession) -> None:
     same = await seed_item(db_session, user_id, "white t_shirt", "tee-1")
     lookalike = await seed_item(db_session, user_id, "white shirt", "other-shirt")
     async with AsyncClient(transport=ASGITransport(app=build_app(db_session)), base_url="http://t") as client:
-        response = await get_batch(client, user_id, batch_id)
+        response = await settled(client, db_session, user_id, batch_id)
 
     groups = group_by_title(response.json()["data"])
     assert groups["t_shirt"]["kind"] == "existing"
@@ -246,7 +340,7 @@ async def test_confirm_create_link_skip_is_idempotent(db_session: AsyncSession) 
     owned_jeans = await seed_item(db_session, user_id, "blue jeans", "jeans-1", category="bottom", color="blue")
     app = build_app(db_session)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
-        groups = group_by_title((await get_batch(client, user_id, batch_id)).json()["data"])
+        groups = group_by_title((await settled(client, db_session, user_id, batch_id)).json()["data"])
         assert groups["jeans"]["kind"] == "existing"
         decisions = [
             {"group_id": groups["t_shirt"]["group_id"], "action": "create", "title": "White tee",

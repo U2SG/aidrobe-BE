@@ -266,6 +266,9 @@ class Settings(BaseSettings):
     # only when ENABLE_COST_GUARD=True.
     ITEM_CUTOUT_DAILY_LIMIT: int = 50
     OUTFIT_IMAGE_DAILY_LIMIT: int = 10
+    # Album scan same-garment checks (vision calls, summed from async_jobs.cost_tokens).
+    # Generous: a 60-photo scan takes roughly 100-250. Enforced only when ENABLE_COST_GUARD=True.
+    GARMENT_MATCH_DAILY_CALL_LIMIT: int = 600
 
     # V4 Outfit Calendar — plan/calendar endpoints. Off by default; plans
     # persist regardless of the flag, the flag only gates exposure.

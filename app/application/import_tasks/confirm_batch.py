@@ -15,13 +15,11 @@ from app.application.import_tasks.confirm_import import ConfirmImageImportTask, 
 from app.application.import_tasks.import_batch import (
     DISMISSED_KEY,
     BatchGroup,
-    ImageLoader,
     batch_tasks,
     dismissed_ids,
     importable_candidates,
-    load_batch_view,
+    read_batch_view,
 )
-from app.application.ports.vision import VisionPort
 from app.application.wardrobe.wears import record_manual_wear
 from app.common import error_codes
 from app.common.enums import ImportStatus
@@ -55,10 +53,8 @@ class GroupOutcome:
 
 
 class ConfirmImportBatch:
-    def __init__(self, session: AsyncSession, vision: VisionPort, load_image: ImageLoader) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self.session = session
-        self.vision = vision
-        self.load_image = load_image
 
     async def execute(
         self, user_id: uuid.UUID, batch_id: uuid.UUID, decisions: list[GroupDecision]
@@ -71,7 +67,7 @@ class ConfirmImportBatch:
         lock = int.from_bytes(digest[:8], "big", signed=True)
         await self.session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock})
 
-        view = await load_batch_view(self.session, user_id, batch_id, self.vision, self.load_image)
+        view = await read_batch_view(self.session, user_id, batch_id, schedule=False)
         groups: list[tuple[GroupDecision, BatchGroup]] = []
         for decision in decisions:
             group = view.group(decision.group_id)

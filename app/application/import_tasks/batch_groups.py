@@ -81,6 +81,8 @@ class BatchCandidate:
     taken_at: date | None = None
     confirmed_item_id: uuid.UUID | None = None
     dismissed: bool = False
+    # sha256 of the source photo; equal for two uploads of the same picture.
+    photo_fingerprint: str | None = None
 
     @property
     def key(self) -> str:
@@ -103,10 +105,30 @@ class BatchCandidate:
         return " ".join(part for part in (self.color_main, self.canonical_name or self.title) if part)
 
 
+#: Look-alike categories where one "same" from the model is not enough to merge:
+#: white sneakers in different photos fool it most often.
+STRICT_CATEGORIES = frozenset({"shoes"})
+
+
 class SameGarmentJudge(Protocol):
-    async def __call__(self, a: GarmentImage, b: GarmentImage, garment: str) -> bool | None:
-        """True / False, or None when the comparison could not be made yet (budget, provider error)."""
+    async def __call__(
+        self, a: GarmentImage, b: GarmentImage, garment: str, *, strict: bool = False, same_photo: bool | None = None,
+    ) -> bool | None:
+        """True / False, or None when the comparison could not be made (yet).
+
+        `strict`: require the model to agree twice. `same_photo`: both crops come
+        from uploads of one picture (True), from different photos (False), or one
+        side is not a batch crop (None, e.g. a wardrobe item's image).
+        """
         ...
+
+
+async def compare(judge: SameGarmentJudge, a: BatchCandidate, b: BatchCandidate) -> bool | None:
+    assert a.image is not None and b.image is not None
+    return await judge(
+        a.image, b.image, a.label, strict=a.category in STRICT_CATEGORIES,
+        same_photo=a.photo_fingerprint is not None and a.photo_fingerprint == b.photo_fingerprint,
+    )
 
 
 class UnionFind:
@@ -159,10 +181,10 @@ async def group_candidates(candidates: list[BatchCandidate], judge: SameGarmentJ
         async def against_group(candidate: BatchCandidate, founder: BatchCandidate) -> bool | None:
             # Founder first; on a "no", one retry against the group's latest member,
             # since a small or dark founder crop hides the details that decide.
-            verdict = await judge(_image(candidate), _image(founder), candidate.label)
+            verdict = await compare(judge, candidate, founder)
             other = latest.get(founder.key, founder)
             if verdict is False and other is not founder:
-                verdict = await judge(_image(candidate), _image(other), candidate.label)
+                verdict = await compare(judge, candidate, other)
             return verdict
 
         for candidate in members:
@@ -203,11 +225,6 @@ async def group_candidates(candidates: list[BatchCandidate], judge: SameGarmentJ
     for candidate in candidates:
         grouped.setdefault(uf.find(candidate.key), []).append(candidate)
     return Grouping(groups=list(grouped.values()), pending=pending)
-
-
-def _image(candidate: BatchCandidate) -> GarmentImage:
-    assert candidate.image is not None
-    return candidate.image
 
 
 def best_member(members: list[BatchCandidate]) -> BatchCandidate:
