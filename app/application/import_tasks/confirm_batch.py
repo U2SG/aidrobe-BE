@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Literal
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.import_tasks.candidates import confirmed_item_ids, normalize_candidates, store_candidates
@@ -67,6 +67,7 @@ class ConfirmImportBatch:
         lock = int.from_bytes(digest[:8], "big", signed=True)
         await self.session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock})
 
+        await self._release_deleted_items(user_id, batch_id)
         view = await read_batch_view(self.session, user_id, batch_id, schedule=False)
         groups: list[tuple[GroupDecision, BatchGroup]] = []
         for decision in decisions:
@@ -125,10 +126,44 @@ class ConfirmImportBatch:
                     dates = sorted({m.taken_at for m in group.members if m.taken_at is not None})
                     for worn in dates:
                         wears += await record_manual_wear(self.session, user_id, item.id, worn)
-            outcomes.append(GroupOutcome(group.group_id, decision.action, item, created, wears))
+            outcomes.append(GroupOutcome(decision.group_id, decision.action, item, created, wears))
 
         await self._settle_tasks(user_id, batch_id, attach, dismiss)
         return outcomes
+
+    async def _release_deleted_items(self, user_id: uuid.UUID, batch_id: uuid.UUID) -> None:
+        """Forget confirmations whose wardrobe item was deleted since.
+
+        The batch read already shows such members as undecided again (re-adding
+        a deleted garment is a normal thing to do). Persist that here, under the
+        batch lock, so create / link start from a waiting task instead of hitting
+        the single-import "confirmed item was removed" guard.
+        """
+        tasks = await batch_tasks(self.session, user_id, batch_id, for_update=True)
+        referenced = {
+            item_id for task in tasks for item_id in confirmed_item_ids(task).values()
+        }
+        if not referenced:
+            return
+        live = {
+            str(item_id)
+            for item_id in await self.session.scalars(
+                select(WardrobeItem.id).where(
+                    WardrobeItem.user_id == user_id,
+                    WardrobeItem.deleted_at.is_(None),
+                    WardrobeItem.id.in_(_uuids(referenced)),
+                )
+            )
+        }
+        for task in tasks:
+            confirmed = confirmed_item_ids(task)
+            kept = {temp_id: item_id for temp_id, item_id in confirmed.items() if item_id in live}
+            if kept == confirmed:
+                continue
+            task.input_payload = {**task.input_payload, "confirmed_items": kept}
+            if task.task_status == ImportStatus.COMPLETED.value:
+                task.task_status = ImportStatus.WAITING_CONFIRM.value
+        await self.session.flush()
 
     async def _settle_tasks(
         self,
@@ -155,3 +190,13 @@ class ConfirmImportBatch:
             if task.task_status == ImportStatus.WAITING_CONFIRM.value and not undecided:
                 task.task_status = ImportStatus.COMPLETED.value
         await self.session.flush()
+
+
+def _uuids(values: set[str]) -> list[uuid.UUID]:
+    parsed = []
+    for value in values:
+        try:
+            parsed.append(uuid.UUID(value))
+        except ValueError:
+            continue
+    return parsed

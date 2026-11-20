@@ -204,7 +204,25 @@ class BatchView:
     comparison_limited: bool
 
     def group(self, group_id: uuid.UUID) -> BatchGroup | None:
-        return next((group for group in self.groups if group.group_id == group_id), None)
+        """The group with this id, or the group that has since absorbed it.
+
+        A group's id derives from its first member, so a group merged into
+        another (a later comparison, or two groups confirmed to one item) is
+        still found through that member — a retried confirmation then replays
+        instead of failing on an id the client saw a moment ago.
+        """
+        exact = next((group for group in self.groups if group.group_id == group_id), None)
+        return exact or next(
+            (
+                group for group in self.groups
+                if any(group_id_for(self.batch_id, member) == group_id for member in group.members)
+            ),
+            None,
+        )
+
+
+def group_id_for(batch_id: uuid.UUID, founder: BatchCandidate) -> uuid.UUID:
+    return uuid.uuid5(batch_id, founder.key)
 
 
 async def batch_tasks(
@@ -379,7 +397,7 @@ async def _classify(
     judge: SameGarmentJudge,
 ) -> tuple[BatchGroup, bool]:
     best = best_member(members)
-    group_id = uuid.uuid5(state.batch_id, members[0].key)
+    group_id = group_id_for(state.batch_id, members[0])
     confirmed = next(
         (items_by_id[m.confirmed_item_id] for m in members if m.confirmed_item_id in items_by_id), None
     )

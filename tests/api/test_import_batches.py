@@ -396,3 +396,48 @@ async def test_confirm_rejects_unknown_group_and_link_without_item(db_session: A
         link = await _confirm(client, user_id, batch_id, [{"group_id": group_id, "action": "link"}])
     assert unknown.status_code == 409
     assert link.status_code == 422
+
+
+async def test_replay_succeeds_after_two_groups_were_linked_to_one_item(db_session: AsyncSession) -> None:
+    user_id, batch_id = uuid.uuid4(), uuid.uuid4()
+    await seed_photo(db_session, user_id, batch_id, "p1", [garment("tee", "top", "white", "t_shirt", "tee-a")])
+    await seed_photo(db_session, user_id, batch_id, "p2", [garment("tee", "top", "white", "t_shirt", "tee-b")])
+    owned = await seed_item(db_session, user_id, "white t_shirt", "tee-owned")
+    async with AsyncClient(transport=ASGITransport(app=build_app(db_session)), base_url="http://t") as client:
+        groups = (await settled(client, db_session, user_id, batch_id)).json()["data"]["groups"]
+        assert len(groups) == 2 and {g["existing_item"]["item_id"] for g in groups} == {str(owned.id)}
+        decisions = [{"group_id": g["group_id"], "action": "link", "backfill_wear": True} for g in groups]
+        first = await _confirm(client, user_id, batch_id, decisions)
+        # Both groups now share one item, so the read shows them as one group…
+        merged = (await get_batch(client, user_id, batch_id)).json()["data"]["groups"]
+        # …and the identical retry still resolves both ids.
+        retry = await _confirm(client, user_id, batch_id, decisions)
+
+    assert first.status_code == 200 and len(merged) == 1
+    assert retry.status_code == 200, retry.text
+    assert [r["group_id"] for r in retry.json()["data"]["groups"]] == [g["group_id"] for g in groups]
+    assert {r["item_id"] for r in retry.json()["data"]["groups"]} == {str(owned.id)}
+    assert all(r["wears_recorded"] == 0 for r in retry.json()["data"]["groups"])
+
+
+async def test_deleted_item_can_be_created_again_from_its_batch(db_session: AsyncSession) -> None:
+    user_id, batch_id = uuid.uuid4(), uuid.uuid4()
+    task = await seed_photo(db_session, user_id, batch_id, "p1", [garment("tee", "top", "white", "t_shirt", "tee-1")])
+    async with AsyncClient(transport=ASGITransport(app=build_app(db_session)), base_url="http://t") as client:
+        group_id = (await settled(client, db_session, user_id, batch_id)).json()["data"]["groups"][0]["group_id"]
+        created = await _confirm(client, user_id, batch_id, [{"group_id": group_id, "action": "create"}])
+        first_id = uuid.UUID(created.json()["data"]["groups"][0]["item_id"])
+        first_item = await db_session.get(WardrobeItem, first_id)
+        assert first_item is not None
+        first_item.deleted_at = datetime.now(UTC)
+        await db_session.flush()
+        reopened = (await get_batch(client, user_id, batch_id)).json()["data"]["groups"][0]
+        again = await _confirm(client, user_id, batch_id, [{"group_id": group_id, "action": "create"}])
+
+    assert reopened["status"] == "pending" and reopened["kind"] == "new"
+    assert again.status_code == 200, again.text
+    result = again.json()["data"]["groups"][0]
+    assert result["created"] is True and result["item_id"] != str(first_id)
+    await db_session.refresh(task)
+    assert task.task_status == "completed"
+    assert task.input_payload["confirmed_items"]["tee"] == result["item_id"]
