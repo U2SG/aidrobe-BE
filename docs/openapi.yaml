@@ -369,7 +369,10 @@ paths:
       tags:
       - import-tasks
       summary: List Pending Import Tasks
-      description: List this account's imports. Defaults to tasks waiting for confirmation.
+      description: 'List this account''s imports (album-scan batches excluded; see
+        /v1/import-batches).
+
+        Defaults to tasks waiting for confirmation.'
       operationId: list_pending_import_tasks_v1_import_tasks_get
       parameters:
       - name: limit
@@ -709,6 +712,104 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ResponseModel_ImportTaskResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/import-batches/{batch_id}:
+    get:
+      tags:
+      - import-tasks
+      summary: Get Import Batch
+      description: 'Garments found across the batch''s photos. Never waits on the
+        vision model:
+
+        comparisons run in a background job; poll while `complete` is false.'
+      operationId: get_import_batch_v1_import_batches__batch_id__get
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Batch Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_ImportBatchResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/import-batches/{batch_id}/confirm:
+    post:
+      tags:
+      - import-tasks
+      summary: Confirm Import Batch
+      description: 'Apply create / link / skip per group. Safe to retry: replays return
+        the same items.'
+      operationId: confirm_import_batch_v1_import_batches__batch_id__confirm_post
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Batch Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      - name: X-User-Id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-User-Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmImportBatchRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseModel_ConfirmImportBatchResponse_'
         '422':
           description: Validation Error
           content:
@@ -6345,6 +6446,30 @@ components:
         persisted (V3_SPEC §13.5); it is `null` when the item has no image or when
 
         signing is unavailable, which is a display detail rather than an error.'
+    ConfirmImportBatchRequest:
+      properties:
+        groups:
+          items:
+            $ref: '#/components/schemas/ImportBatchGroupDecision'
+          type: array
+          maxItems: 200
+          minItems: 1
+          title: Groups
+      type: object
+      required:
+      - groups
+      title: ConfirmImportBatchRequest
+    ConfirmImportBatchResponse:
+      properties:
+        groups:
+          items:
+            $ref: '#/components/schemas/ImportBatchGroupResult'
+          type: array
+          title: Groups
+      type: object
+      required:
+      - groups
+      title: ConfirmImportBatchResponse
     ConfirmImportRequest:
       properties:
         title:
@@ -6644,6 +6769,18 @@ components:
             format: uuid
           - type: 'null'
           title: Conversation Id
+        batch_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Batch Id
+        taken_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Taken At
       type: object
       required:
       - input_type
@@ -7355,6 +7492,226 @@ components:
       - category
       - wear_count
       title: IdleItemResponse
+    ImportBatchExistingItem:
+      properties:
+        item_id:
+          type: string
+          format: uuid
+          title: Item Id
+        title:
+          type: string
+          title: Title
+        image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Url
+      type: object
+      required:
+      - item_id
+      - title
+      title: ImportBatchExistingItem
+    ImportBatchGroup:
+      properties:
+        group_id:
+          type: string
+          format: uuid
+          title: Group Id
+        kind:
+          type: string
+          enum:
+          - new
+          - existing
+          - uncertain
+          title: Kind
+        status:
+          type: string
+          enum:
+          - pending
+          - confirmed
+          - skipped
+          title: Status
+        category:
+          type: string
+          title: Category
+        color_main:
+          type: string
+          title: Color Main
+        title:
+          type: string
+          title: Title
+        best_crop_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Best Crop Url
+        members:
+          items:
+            $ref: '#/components/schemas/ImportBatchMember'
+          type: array
+          title: Members
+        existing_item:
+          anyOf:
+          - $ref: '#/components/schemas/ImportBatchExistingItem'
+          - type: 'null'
+        wear_dates:
+          items:
+            type: string
+            format: date
+          type: array
+          title: Wear Dates
+      type: object
+      required:
+      - group_id
+      - kind
+      - status
+      - category
+      - color_main
+      - title
+      - members
+      title: ImportBatchGroup
+      description: One garment seen in one or more photos of the batch.
+    ImportBatchGroupDecision:
+      properties:
+        group_id:
+          type: string
+          format: uuid
+          title: Group Id
+        action:
+          type: string
+          enum:
+          - create
+          - link
+          - skip
+          title: Action
+        title:
+          anyOf:
+          - type: string
+            maxLength: 120
+            minLength: 1
+          - type: 'null'
+          title: Title
+        category:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Category
+        color_main:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Color Main
+        backfill_wear:
+          type: boolean
+          title: Backfill Wear
+          default: false
+      type: object
+      required:
+      - group_id
+      - action
+      title: ImportBatchGroupDecision
+    ImportBatchGroupResult:
+      properties:
+        group_id:
+          type: string
+          format: uuid
+          title: Group Id
+        action:
+          type: string
+          enum:
+          - create
+          - link
+          - skip
+          title: Action
+        item_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Item Id
+        created:
+          type: boolean
+          title: Created
+          default: false
+        wears_recorded:
+          type: integer
+          title: Wears Recorded
+          default: 0
+      type: object
+      required:
+      - group_id
+      - action
+      title: ImportBatchGroupResult
+    ImportBatchMember:
+      properties:
+        task_id:
+          type: string
+          format: uuid
+          title: Task Id
+        temp_item_id:
+          type: string
+          title: Temp Item Id
+        crop_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Crop Url
+        photo_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Photo Url
+        taken_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Taken At
+      type: object
+      required:
+      - task_id
+      - temp_item_id
+      title: ImportBatchMember
+    ImportBatchResponse:
+      properties:
+        batch_id:
+          type: string
+          format: uuid
+          title: Batch Id
+        total_photos:
+          type: integer
+          title: Total Photos
+        processing:
+          type: integer
+          title: Processing
+        failed:
+          type: integer
+          title: Failed
+        complete:
+          type: boolean
+          title: Complete
+        comparison_limited:
+          type: boolean
+          title: Comparison Limited
+          default: false
+        groups:
+          items:
+            $ref: '#/components/schemas/ImportBatchGroup'
+          type: array
+          title: Groups
+      type: object
+      required:
+      - batch_id
+      - total_photos
+      - processing
+      - failed
+      - complete
+      - groups
+      title: ImportBatchResponse
     ImportDuplicateHint:
       properties:
         item_id:
@@ -9160,6 +9517,22 @@ components:
           - type: 'null'
       type: object
       title: ResponseModel[ClearDataResponse]
+    ResponseModel_ConfirmImportBatchResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/ConfirmImportBatchResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[ConfirmImportBatchResponse]
     ResponseModel_ConfirmImportResponse_:
       properties:
         code:
@@ -9368,6 +9741,22 @@ components:
           - type: 'null'
       type: object
       title: ResponseModel[FitFeedbackResponse]
+    ResponseModel_ImportBatchResponse_:
+      properties:
+        code:
+          type: integer
+          title: Code
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: ok
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/ImportBatchResponse'
+          - type: 'null'
+      type: object
+      title: ResponseModel[ImportBatchResponse]
     ResponseModel_ImportTaskResponse_:
       properties:
         code:

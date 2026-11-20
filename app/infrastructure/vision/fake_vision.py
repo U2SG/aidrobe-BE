@@ -65,6 +65,12 @@ def _result_for(key: str, locale: str) -> VisionResult:
     )
 
 
+def _garment_marker(data: bytes) -> str | None:
+    text = data.decode("utf-8", errors="ignore")
+    start = text.find("garment:")
+    return text[start:].split()[0] if start >= 0 else None
+
+
 class FakeVision:
     async def analyze_image(
         self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None
@@ -85,6 +91,11 @@ class FakeVision:
 
     async def review_garment_crops(self, crops: list[bytes], garments: list[VisionResult]) -> list[bool]:
         return [True] * len(crops)
+
+    async def same_garment(self, crop_a: bytes, crop_b: bytes, garment: str) -> bool:
+        # Deterministic: identical bytes, or both carry the same `garment:<id>` marker.
+        marker = _garment_marker(crop_a)
+        return crop_a == crop_b or (marker is not None and marker == _garment_marker(crop_b))
 
     async def analyze_style(
         self, image_url: str, locale: str = DEFAULT_LOCALE, *, source_key: str | None = None

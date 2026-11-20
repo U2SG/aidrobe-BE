@@ -1,4 +1,5 @@
 import uuid
+from datetime import date
 from typing import Annotated
 
 import structlog
@@ -24,10 +25,11 @@ from app.bootstrap.container import llm_service
 from app.common import error_codes
 from app.common.enums import AvatarSourceType, ImportStatus, InputType
 from app.common.exceptions import FriendlyException
+from app.common.local_time import local_datetime, utc_now
 from app.config.settings import get_settings
 from app.infrastructure.cache.client import get_redis_client, invalidate_daily_recommendation_cache
 from app.infrastructure.persistence.models.import_task import ImportTask
-from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 from app.infrastructure.persistence.repositories.import_task_repo import (
     SqlAlchemyImportTaskRepository,
@@ -125,6 +127,11 @@ def _is_retryable(task: ImportTask) -> bool:
     return task.retryable
 
 
+async def _user_today(session: AsyncSession, user_id: uuid.UUID) -> date:
+    timezone = await session.scalar(select(UserSettings.timezone).where(UserSettings.user_id == user_id))
+    return local_datetime(utc_now(), timezone, get_settings().DEFAULT_TIMEZONE).date()
+
+
 def _correlation_id() -> str | None:
     value = structlog.contextvars.get_contextvars().get("correlation_id")
     return value if isinstance(value, str) else None
@@ -198,7 +205,8 @@ async def list_pending_import_tasks(
     offset: Annotated[int, Query(ge=0)] = 0,
     statuses: Annotated[list[ImportStatus] | None, Query(alias="status")] = None,
 ) -> ResponseModel[list[ImportTaskResponse]]:
-    """List this account's imports. Defaults to tasks waiting for confirmation."""
+    """List this account's imports (album-scan batches excluded; see /v1/import-batches).
+    Defaults to tasks waiting for confirmation."""
     tasks = await SqlAlchemyImportTaskRepository(session).list_for_user(
         current_user.id, limit=limit, offset=offset, statuses=statuses,
     )
@@ -232,6 +240,9 @@ async def create_import_task(
             status_code=400,
         )
 
+    if payload.taken_at is not None and payload.taken_at > await _user_today(session, current_user.id):
+        raise FriendlyException(error_codes.VALIDATION_ERROR, "taken_at cannot be in the future", status_code=422)
+
     repository = SqlAlchemyImportTaskRepository(session)
     use_case = CreateImageImportTask(repository)
     task, created = await use_case.execute(
@@ -243,6 +254,8 @@ async def create_import_task(
         locale=payload.locale,
         idempotency_key=idempotency_key,
         conversation_id=payload.conversation_id,
+        batch_id=payload.batch_id,
+        taken_at=payload.taken_at,
     )
     response = to_response(task)
     if not created:

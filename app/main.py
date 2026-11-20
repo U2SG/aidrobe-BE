@@ -21,6 +21,7 @@ from app.presentation.api.v1.routers import (
     avatar,
     fit,
     health,
+    import_batches,
     import_tasks,
     insights,
     ootd_posters,
@@ -102,6 +103,7 @@ def create_app() -> FastAPI:
     app.include_router(settings.router)
     app.include_router(uploads.router)
     app.include_router(import_tasks.router)
+    app.include_router(import_batches.router)
     app.include_router(wardrobe.router)
     app.include_router(fit.router)
     app.include_router(recommendations.router)

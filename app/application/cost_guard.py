@@ -60,6 +60,7 @@ def _limit_for(settings: Settings, job_type: str) -> int | None:
         "ootd_poster": settings.OOTD_POSTER_DAILY_CALL_LIMIT,
         "cutout": settings.ITEM_CUTOUT_DAILY_LIMIT,
         "outfit_image": settings.OUTFIT_IMAGE_DAILY_LIMIT,
+        "garment_match": settings.GARMENT_MATCH_DAILY_CALL_LIMIT,
     }.get(job_type)
 
 
@@ -69,6 +70,10 @@ def _limit_for(settings: Settings, job_type: str) -> int | None:
 #: make `GET /v1/user/cost-summary` report a smaller number than admission
 #: enforces, which is a lie in the direction the user notices.
 RESERVATION_BACKED_JOB_TYPES: tuple[str, ...] = ("tryon", "cutout")
+
+#: Job types metered by SUM(cost_tokens) — tokens for `llm_ask`, vision calls
+#: for `garment_match` (one job makes many calls) — instead of one per job.
+SUMMED_JOB_TYPES: tuple[str, ...] = ("llm_ask", "garment_match")
 
 
 def resolve_quota_limit(job_type: str) -> int | None:
@@ -125,7 +130,7 @@ async def usage_today(
 
     start, end = _today_window()
 
-    if job_type == "llm_ask":
+    if job_type in SUMMED_JOB_TYPES:
         # Token quotas count ALL cost-bearing statuses including failed/
         # dead — see docstring rationale.
         statuses: tuple[str, ...] = ("succeeded", "running", "failed", "dead")
@@ -195,7 +200,7 @@ async def assert_within_quota(
     if limit is None:
         return
 
-    delta = cost_tokens if job_type == "llm_ask" else 1
+    delta = cost_tokens if job_type in SUMMED_JOB_TYPES else 1
 
     if redis_client is not None:
         # Atomic path. INCRBY returns the post-increment value; if that

@@ -1,12 +1,12 @@
 import uuid
 from collections import defaultdict
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Annotated, cast
 
 import structlog
 from fastapi import APIRouter, Depends, Query
 from redis.asyncio import Redis
-from sqlalchemy import func, select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.cost_guard import resolve_quota_limit
@@ -15,6 +15,7 @@ from app.application.wardrobe.delete_item import DeleteWardrobeItem
 from app.application.wardrobe.item_photo import WIDE_CROP_SUFFIX, item_reference
 from app.application.wardrobe.list_items import ListWardrobeItems
 from app.application.wardrobe.update_item import UpdateWardrobeItem
+from app.application.wardrobe.wears import record_manual_wear
 from app.bootstrap.container import object_storage, vision_rate_limiter, vision_service
 from app.common import error_codes
 from app.common.enums import CutoutStatus, RecommendationEventType, WardrobeItemStatus
@@ -445,46 +446,8 @@ async def mark_item_worn(
     ).date()
     effective_locale = await resolve_user_locale(session, current_user.id)
 
-    # Idempotent per (item, worn_date), mirroring the outfit wear path — a
-    # double-tap must not double-count.
-    duplicate = await session.scalar(
-        select(RecommendationEvent.id).where(
-            RecommendationEvent.user_id == current_user.id,
-            RecommendationEvent.item_id == item_id,
-            RecommendationEvent.event_type == RecommendationEventType.WORN.value,
-            RecommendationEvent.source == "manual",
-            RecommendationEvent.event_metadata["worn_date"].astext == worn_date.isoformat(),
-        )
-    )
-    if duplicate is not None:
-        images = await wardrobe_image_urls(session, [item])
-        return ResponseModel(data=item_response(item, effective_locale, images[item.id]))
-
-    session.add(
-        RecommendationEvent(
-            user_id=current_user.id,
-            item_id=item_id,
-            event_type=RecommendationEventType.WORN.value,
-            source="manual",
-            event_metadata={"worn_date": worn_date.isoformat()},
-            created_at=datetime.now(UTC),
-        )
-    )
-    # Atomic in SQL (same pattern as the outfit wear path): concurrent wears
-    # must not lose increments, and last_worn_at only moves forward.
-    await session.execute(
-        update(WardrobeItem)
-        .where(WardrobeItem.id == item.id)
-        .values(
-            wear_count=WardrobeItem.wear_count + 1,
-            last_worn_at=func.greatest(
-                func.coalesce(WardrobeItem.last_worn_at, worn_date),
-                worn_date,
-            ),
-        )
-    )
-    await session.flush()
-    await session.refresh(item)
-    await invalidate_daily_recommendation_cache(redis_client, current_user.id)
+    if await record_manual_wear(session, current_user.id, item_id, worn_date):
+        await session.refresh(item)
+        await invalidate_daily_recommendation_cache(redis_client, current_user.id)
     images = await wardrobe_image_urls(session, [item])
     return ResponseModel(data=item_response(item, effective_locale, images[item.id]))
