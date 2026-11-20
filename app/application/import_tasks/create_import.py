@@ -8,6 +8,7 @@ from app.common import error_codes
 from app.common.enums import ImportStatus
 from app.common.exceptions import FriendlyException
 from app.infrastructure.persistence.models.import_task import ImportTask
+from app.infrastructure.persistence.repositories.ask_conversation_repo import SqlAlchemyAskConversationRepository
 from app.infrastructure.persistence.repositories.import_task_repo import (
     SqlAlchemyImportTaskRepository,
 )
@@ -30,10 +31,15 @@ class CreateImageImportTask:
         source_url: str | None = None,
         locale: str | None = None,
         idempotency_key: str | None = None,
+        conversation_id: uuid.UUID | None = None,
     ) -> tuple[ImportTask, bool]:
         """Returns (task, created). With an `Idempotency-Key`, a retried request
         (double tap, flaky network) gets the task the first attempt created
         instead of a second task that would later confirm into a duplicate item."""
+        if conversation_id is not None and await SqlAlchemyAskConversationRepository(
+            self.repository.session
+        ).get_owned_conversation(user_id, conversation_id) is None:
+            raise FriendlyException(error_codes.NOT_FOUND, "Conversation not found", 404)
         if idempotency_key:
             existing = await self._find_by_key(user_id, idempotency_key)
             if existing is not None:
@@ -62,6 +68,7 @@ class CreateImageImportTask:
                 source_type=source_type,
                 task_status=ImportStatus.QUEUED.value,
                 input_payload=input_payload,
+                conversation_id=conversation_id,
             )
         )
         return task, True

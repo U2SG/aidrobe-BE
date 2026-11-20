@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.import_tasks.candidates import (
     PARTIALLY_HIDDEN,
+    RECOGNIZED_KEY,
     confirmed_item_ids,
     normalize_candidates,
     store_candidates,
@@ -108,7 +109,10 @@ def _crop_candidate(task: ImportTask | None, job: AsyncJob) -> tuple[list[dict[s
     candidates = normalize_candidates(task)
     candidate_id = payload.get("candidate_id")
     candidate = next((candidate for candidate in candidates if candidate["temp_item_id"] == candidate_id), None)
-    if candidate is None or candidate.get("should_import") is False or candidate.get("crop_object_key"):
+    # A note can deselect a garment the user may still re-select; only
+    # recognition's own exclusion skips the crop.
+    recognized = (candidate or {}).get(RECOGNIZED_KEY) or candidate or {}
+    if candidate is None or recognized.get("should_import") is False or candidate.get("crop_object_key"):
         return None
     if task.task_status == ImportStatus.COMPLETED.value and candidate_id not in confirmed_item_ids(task):
         return None

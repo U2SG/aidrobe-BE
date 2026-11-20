@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.application.import_tasks.candidates import (
     PARTIALLY_HIDDEN,
+    RECOGNIZED_KEY,
     confirmed_item_ids,
     normalize_candidates,
     store_candidates,
@@ -51,6 +52,7 @@ class ConfirmItemInput:
     fit_intent: str | None = None
     purchase_price: Decimal | None = None
     purchase_date: date | None = None
+    material: str | None = None
 
 
 @dataclass(frozen=True)
@@ -210,12 +212,18 @@ class ConfirmImageImportTask:
         )
         cover_url = generated_url or crop_url or original_url
         cover_key = None if generated_url else (crop_key if crop_url else original_key)
-        ai_title = candidate.get("display_name") or candidate.get("title")
+        # A title from the user's note is the user's name, not the AI's.
+        recognized = candidate.get(RECOGNIZED_KEY)
+        named_by = recognized if isinstance(recognized, dict) else candidate
+        ai_title = named_by.get("display_name") or named_by.get("title")
         uses_ai_name = (
             entry.title.strip() == str(ai_title or "").strip() and entry.category == candidate.get("category")
         )
         canonical_name = candidate.get("canonical_name")
         localized_names = candidate.get("localized_names")
+        attributes = _recognised_attributes(candidate, confirmed_category=entry.category)
+        if entry.material is not None:
+            attributes["material"] = entry.material
 
         item = await self.wardrobe_repository.add(
             WardrobeItem(
@@ -239,7 +247,7 @@ class ConfirmImageImportTask:
                     else _to_decimal(candidate.get("purchase_price"))
                 ),
                 purchase_date=entry.purchase_date or _to_date(candidate.get("purchase_date")),
-                **_recognised_attributes(candidate, confirmed_category=entry.category),
+                **attributes,
             )
         )
         for image_type, url, key in (

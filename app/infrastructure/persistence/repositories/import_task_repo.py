@@ -46,5 +46,13 @@ class SqlAlchemyImportTaskRepository:
         )
         return list(result)
 
+    async def list_for_conversation(self, user_id: uuid.UUID, conversation_id: uuid.UUID) -> list[ImportTask]:
+        result = await self.session.scalars(
+            select(ImportTask)
+            .where(ImportTask.user_id == user_id, ImportTask.conversation_id == conversation_id)
+            .order_by(ImportTask.created_at, ImportTask.id)
+        )
+        return list(result)
+
     async def flush(self) -> None:
         await self.session.flush()

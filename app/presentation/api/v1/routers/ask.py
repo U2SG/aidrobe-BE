@@ -36,6 +36,7 @@ from app.infrastructure.persistence.models.ask_session import AskSession
 from app.infrastructure.persistence.models.recommendation import RecommendationEvent
 from app.infrastructure.persistence.models.user import User, UserSettings
 from app.infrastructure.persistence.repositories.ask_conversation_repo import SqlAlchemyAskConversationRepository
+from app.infrastructure.persistence.repositories.import_task_repo import SqlAlchemyImportTaskRepository
 from app.infrastructure.persistence.repositories.purchase_decision_repo import SqlAlchemyWardrobeDecisionRepository
 from app.infrastructure.persistence.repositories.recommendation_repo import (
     SqlAlchemyRecommendationRepository,
@@ -44,6 +45,7 @@ from app.infrastructure.persistence.repositories.user_repo import SqlAlchemyUser
 from app.infrastructure.persistence.session import get_db_session
 from app.presentation.api.v1.deps import get_current_user
 from app.presentation.api.v1.render_url import resolve_render_url
+from app.presentation.api.v1.routers.import_tasks import render_import_task
 from app.presentation.api.v1.routers.packing_list import render_packing_list
 from app.presentation.api.v1.routers.purchase_candidates import render_purchase_decisions
 from app.presentation.api.v1.routers.recommendations import render_styling
@@ -342,6 +344,12 @@ async def get_conversation(
         design_brief=service.brief(conversation, current) if settings.ENABLE_DESIGNER_SESSIONS else None,
         packing_list=render_packing_list(packing_list) if packing_list is not None else None,
         purchase_decisions=await render_purchase_decisions(session, purchases),
+        import_tasks=[
+            await render_import_task(session, task)
+            for task in await SqlAlchemyImportTaskRepository(session).list_for_conversation(
+                current_user.id, conversation.id,
+            )
+        ],
         messages=restored,
     )
 

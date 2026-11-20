@@ -8,6 +8,9 @@ from app.infrastructure.persistence.models.import_task import ImportTask
 SINGLE_CANDIDATE_ID = "__single__"
 #: Candidate `visibility`: mostly covered by an outer layer, so no product image is generated for it.
 PARTIALLY_HIDDEN = "partially_hidden"
+#: Candidate sub-dict holding the recognised values a user note overwrote, so a
+#: later note starts from recognition again instead of compounding.
+RECOGNIZED_KEY = "recognized"
 
 
 def normalize_candidates(task: ImportTask) -> list[dict[str, Any]]:

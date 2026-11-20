@@ -1,3 +1,4 @@
+from decimal import Decimal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -18,6 +19,16 @@ class CreateImportTaskRequest(BaseModel):
     # BE#30 — optional locale hint for the AI display name. When omitted, the
     # worker falls back to the user's persisted settings locale (then zh-CN).
     locale: str | None = Field(default=None, max_length=16)
+    # Ask conversation the photo was attached in; must belong to the caller.
+    # GET /v1/ask/conversations/{id} lists the linked tasks under `import_tasks`.
+    conversation_id: UUID | None = None
+
+
+class ApplyImportNoteRequest(BaseModel):
+    """The user's words about the photo ("只要外套，399 买的，羊毛"), applied to
+    the waiting candidates as prefilled include / title / price / material."""
+
+    note: str = Field(min_length=1, max_length=500)
 
 
 class ImportDuplicateHint(BaseModel):
@@ -74,6 +85,9 @@ class ConfirmItemInput(BaseModel):
     size_label: str | None = Field(default=None, max_length=32)
     fit_status: str | None = None
     fit_intent: FitIntent | None = None
+    # Omitted = the candidate's value (OCR or an applied note), like size_label.
+    purchase_price: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
+    material: str | None = Field(default=None, min_length=1, max_length=32)
 
 
 class ConfirmItemsRequest(BaseModel):
