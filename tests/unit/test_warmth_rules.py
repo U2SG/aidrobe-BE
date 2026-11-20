@@ -40,6 +40,8 @@ def _traits(category: str, *names: str, **attrs: object) -> frozenset[str]:
         ("bottom", "Linen trousers", {"season_tags": ("summer",)}, {SUMMER_ONLY}),
         ("top", "Black tank top", {}, {SUMMER_ONLY}),
         ("top", "真丝吊带", {}, {SUMMER_ONLY}),
+        ("top", "灰色针织背心", {}, set()),  # knit vest is a cold-weather layer
+        ("outerwear", "Grey fleece vest", {}, set()),
         ("shoes", "Black sandals", {}, {SUMMER_ONLY}),
         ("shoes", "人字拖", {}, {SUMMER_ONLY}),
     ],
