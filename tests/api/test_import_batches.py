@@ -265,8 +265,10 @@ async def test_batch_matches_existing_items(db_session: AsyncSession) -> None:
         garment("shirt", "top", "white", "shirt", "shirt-1"),
         garment("inner", "top", "white", "tank_top", "tank-1", visibility="partially_hidden"),
         garment("watch", "accessory", "black", "watch", None),
+        garment("necklace", "accessory", "white", "pearl necklace", None),
     ])
     same = await seed_item(db_session, user_id, "white t_shirt", "tee-1")
+    await seed_item(db_session, user_id, "white baseball cap", "cap-1", category="accessory")
     lookalike = await seed_item(db_session, user_id, "white shirt", "other-shirt")
     async with AsyncClient(transport=ASGITransport(app=build_app(db_session)), base_url="http://t") as client:
         response = await settled(client, db_session, user_id, batch_id)
@@ -279,6 +281,8 @@ async def test_batch_matches_existing_items(db_session: AsyncSession) -> None:
     assert groups["tank_top"]["kind"] == "uncertain"  # hidden layer: never verified
     assert groups["watch"]["kind"] == "uncertain"
     assert groups["watch"]["best_crop_url"] is None
+    # Unknown garment kinds never pair a necklace with a cap.
+    assert groups["pearl necklace"]["existing_item"] is None
     assert response.json()["data"]["complete"] is True
 
 
