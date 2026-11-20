@@ -409,8 +409,13 @@ async def _classify(
         if (item.category, color_family(item.color_main)) == best.bucket
         and kinds_compatible(item_kind(item), best.kind)
     ][:EXISTING_MATCH_LIMIT]
+    # Shown to the user as "is it your …?" without a model yes: only when both garment kinds are
+    # known and equal (an unknown kind must not pair a necklace with a cap).
+    suggestion = next(
+        (item for item in lookalikes if best.kind is not None and item_kind(item) == best.kind), None
+    )
     if not best.mergeable or best.image is None:
-        return BatchGroup(group_id, "uncertain", status, members, best, lookalikes[0] if lookalikes else None), False
+        return BatchGroup(group_id, "uncertain", status, members, best, suggestion), False
     checked = [item for item in lookalikes if item.id in state.images]
     verdicts = await asyncio.gather(
         *(
@@ -423,8 +428,9 @@ async def _classify(
     if match is not None:
         return BatchGroup(group_id, "existing", status, members, best, match), False
     pending = any(verdict is None for verdict in verdicts)
-    if lookalikes:
-        return BatchGroup(group_id, "uncertain", status, members, best, lookalikes[0]), pending
+    if suggestion is not None or (pending and checked):
+        # An unanswered comparison hasn't ruled out an existing item: stay uncertain.
+        return BatchGroup(group_id, "uncertain", status, members, best, suggestion), pending
     return BatchGroup(group_id, "new", status, members, best, None), pending
 
 

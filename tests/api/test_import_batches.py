@@ -241,6 +241,27 @@ async def test_daily_quota_stops_comparisons(db_session: AsyncSession, monkeypat
     assert repeat == final and len(await match_jobs(db_session)) == 2
 
 
+async def test_unanswered_wardrobe_comparison_stays_uncertain(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cost_guard, "get_settings", lambda: Settings(ENABLE_COST_GUARD=True, GARMENT_MATCH_DAILY_CALL_LIMIT=0),
+    )
+    user_id, batch_id = uuid.uuid4(), uuid.uuid4()
+    await seed_photo(db_session, user_id, batch_id, "p1", [
+        garment("necklace", "accessory", "white", "pearl necklace", "necklace-1"),
+    ])
+    await seed_item(db_session, user_id, "white baseball cap", "cap-1", category="accessory")
+    async with AsyncClient(transport=ASGITransport(app=build_app(db_session)), base_url="http://t") as client:
+        await get_batch(client, user_id, batch_id)
+        await run_matching(db_session)
+        final = (await get_batch(client, user_id, batch_id)).json()["data"]
+
+    group = group_by_title(final)["pearl necklace"]
+    # Not compared (quota spent) is not "ruled out": no suggestion, but not "new" either.
+    assert (group["kind"], group["existing_item"]) == ("uncertain", None)
+
+
 async def test_batch_tasks_stay_out_of_the_pending_list(db_session: AsyncSession) -> None:
     user_id, batch_id = uuid.uuid4(), uuid.uuid4()
     scanned = await seed_photo(db_session, user_id, batch_id, "p1", [garment("tee", "top", "white", "t_shirt", "t")])
@@ -265,8 +286,10 @@ async def test_batch_matches_existing_items(db_session: AsyncSession) -> None:
         garment("shirt", "top", "white", "shirt", "shirt-1"),
         garment("inner", "top", "white", "tank_top", "tank-1", visibility="partially_hidden"),
         garment("watch", "accessory", "black", "watch", None),
+        garment("necklace", "accessory", "white", "pearl necklace", None),
     ])
     same = await seed_item(db_session, user_id, "white t_shirt", "tee-1")
+    await seed_item(db_session, user_id, "white baseball cap", "cap-1", category="accessory")
     lookalike = await seed_item(db_session, user_id, "white shirt", "other-shirt")
     async with AsyncClient(transport=ASGITransport(app=build_app(db_session)), base_url="http://t") as client:
         response = await settled(client, db_session, user_id, batch_id)
@@ -279,6 +302,8 @@ async def test_batch_matches_existing_items(db_session: AsyncSession) -> None:
     assert groups["tank_top"]["kind"] == "uncertain"  # hidden layer: never verified
     assert groups["watch"]["kind"] == "uncertain"
     assert groups["watch"]["best_crop_url"] is None
+    # Unknown garment kinds never pair a necklace with a cap.
+    assert groups["pearl necklace"]["existing_item"] is None
     assert response.json()["data"]["complete"] is True
 
 
