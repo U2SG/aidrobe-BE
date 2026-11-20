@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, time
 
-from sqlalchemy import DateTime, ForeignKey, String, Time, func
+from sqlalchemy import DateTime, ForeignKey, String, Time, false, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -52,6 +52,8 @@ class UserSettings(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # 'more_outdoor' | 'less_outdoor' — commute exposure for indoor-climate inference.
     # Added via migration 0042; NULL means not yet answered.
     commute_exposure: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Opt-in: show purchase prices and cost per wear. Off by default — it asks the user for more input.
+    track_item_costs: Mapped[bool] = mapped_column(default=False, server_default=false(), nullable=False)
 
     user: Mapped[User] = relationship(back_populates="settings")
 

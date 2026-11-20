@@ -16517,6 +16517,17 @@
               }
             ],
             "title": "Commute Exposure"
+          },
+          "track_item_costs": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Item Costs"
           }
         },
         "type": "object",
@@ -16801,6 +16812,11 @@
               }
             ],
             "title": "Commute Exposure"
+          },
+          "track_item_costs": {
+            "type": "boolean",
+            "title": "Track Item Costs",
+            "default": false
           }
         },
         "type": "object",

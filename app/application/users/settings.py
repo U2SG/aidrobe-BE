@@ -25,6 +25,7 @@ class UserSettingsUseCase:
         locale: str | None = None,
         commute_exposure: str | None = None,
         commute_exposure_set: bool = False,
+        track_item_costs: bool | None = None,
     ) -> UserSettings:
         settings = await self.user_repository.get_or_create_settings(user_id)
         if departure_time_set:
@@ -42,5 +43,7 @@ class UserSettingsUseCase:
         if commute_exposure_set:
             # *_set pattern (like departure_time): explicit null clears the value.
             settings.commute_exposure = commute_exposure
+        if track_item_costs is not None:
+            settings.track_item_costs = track_item_costs
         await self.user_repository.flush()
         return settings
