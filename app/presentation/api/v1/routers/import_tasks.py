@@ -205,7 +205,8 @@ async def list_pending_import_tasks(
     offset: Annotated[int, Query(ge=0)] = 0,
     statuses: Annotated[list[ImportStatus] | None, Query(alias="status")] = None,
 ) -> ResponseModel[list[ImportTaskResponse]]:
-    """List this account's imports. Defaults to tasks waiting for confirmation."""
+    """List this account's imports (album-scan batches excluded; see /v1/import-batches).
+    Defaults to tasks waiting for confirmation."""
     tasks = await SqlAlchemyImportTaskRepository(session).list_for_user(
         current_user.id, limit=limit, offset=offset, statuses=statuses,
     )

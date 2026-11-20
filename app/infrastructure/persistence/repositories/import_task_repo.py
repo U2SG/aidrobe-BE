@@ -39,6 +39,8 @@ class SqlAlchemyImportTaskRepository:
             .where(
                 ImportTask.user_id == user_id,
                 ImportTask.task_status.in_(statuses or [ImportStatus.WAITING_CONFIRM]),
+                # Album-scan photos are reviewed on their batch page, not one by one.
+                ImportTask.batch_id.is_(None),
             )
             .order_by(ImportTask.created_at.desc(), ImportTask.id.desc())
             .limit(limit)
