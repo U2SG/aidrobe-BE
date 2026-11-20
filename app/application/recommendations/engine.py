@@ -126,9 +126,14 @@ class EngineItem:
     # Warmth rules read garment type from the names + material (None = unknown).
     canonical_name: str | None = None
     material: str | None = None
+    # Traits recorded in a decision trace; trace replay uses them instead of re-deriving
+    # (the trace keeps derived labels, not titles or materials).
+    recorded_warmth_traits: frozenset[str] | None = None
 
     @property
     def warmth_traits(self) -> frozenset[str]:
+        if self.recorded_warmth_traits is not None:
+            return self.recorded_warmth_traits
         return garment_warmth_traits(
             category=self.category,
             names=(self.canonical_name, self.title),

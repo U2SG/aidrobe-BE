@@ -224,6 +224,11 @@ def _engine_item(item: dict[str, Any]) -> EngineItem:
         sub_category=item.get("subcategory")
         if isinstance(item.get("subcategory"), str)
         else None,
+        recorded_warmth_traits=frozenset(
+            trait for trait in item.get("warmth_traits") or () if isinstance(trait, str)
+        )
+        if isinstance(item.get("warmth_traits"), list)
+        else None,
     )
 
 

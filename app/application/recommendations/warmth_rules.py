@@ -59,6 +59,7 @@ _SUMMER_ONLY_ZH = ("吊带", "背心", "短裤", "热裤", "凉鞋", "人字拖"
 # Knit / fleece vests are cold-weather layers even though they are "vests".
 _WARM_LAYER_EN = ("knit", "fleece", "sweater vest", "wool")
 _WARM_LAYER_ZH = ("针织", "毛线", "毛织", "羊毛", "抓绒", "摇粒绒", "加绒")
+_WARM_LAYER_MATERIALS = {"knit", "fleece", "wool"}
 # Materials that make an upper heavy on their own: down/cashmere anywhere on the
 # upper body; wool only on a top (a wool top is a sweater; a wool blazer is not).
 _HEAVY_MATERIALS = {"down", "cashmere"}
@@ -114,7 +115,8 @@ def garment_warmth_traits(
         traits.add(SHORT_BOTTOM)
 
     # A heavy piece is never summer-only, whatever its name ("羽绒背心" is a down vest).
-    if HEAVY_UPPER not in traits and not _mentions(text, _WARM_LAYER_EN, _WARM_LAYER_ZH) and (
+    warm_layer = _mentions(text, _WARM_LAYER_EN, _WARM_LAYER_ZH) or material_key in _WARM_LAYER_MATERIALS
+    if HEAVY_UPPER not in traits and not warm_layer and (
         _mentions(text, _SUMMER_ONLY_EN, _SUMMER_ONLY_ZH)
         or (category in {Category.BOTTOM.value, Category.SHOES.value} and tags == {"summer"})
     ):

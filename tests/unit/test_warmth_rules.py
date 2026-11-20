@@ -42,6 +42,7 @@ def _traits(category: str, *names: str, **attrs: object) -> frozenset[str]:
         ("top", "真丝吊带", {}, {SUMMER_ONLY}),
         ("top", "灰色针织背心", {}, set()),  # knit vest is a cold-weather layer
         ("outerwear", "Grey fleece vest", {}, set()),
+        ("top", "黑色背心", {"material": "knit"}, set()),  # recognised knit material, generic name
         ("shoes", "Black sandals", {}, {SUMMER_ONLY}),
         ("shoes", "人字拖", {}, {SUMMER_ONLY}),
     ],
@@ -116,3 +117,12 @@ def test_feels_like_uses_provider_value_plus_thermal_offset() -> None:
 def test_feels_like_falls_back_to_air_temperature_when_missing() -> None:
     weather = WeatherInfo(temperature_c=14.0, feels_like_c=float("nan"), rain_probability=0.0, condition="x")
     assert feels_like_c(weather) == 14.0
+
+
+def test_trace_replay_uses_recorded_warmth_traits() -> None:
+    from evals.recommendations.replay import _engine_item
+
+    recorded = _engine_item({"id": "a", "category": "top", "color": "grey", "warmth_traits": [HEAVY_UPPER]})
+    legacy = _engine_item({"id": "b", "category": "top", "color": "grey"})
+    assert recorded.warmth_traits == frozenset({HEAVY_UPPER})
+    assert legacy.warmth_traits == frozenset()
