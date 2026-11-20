@@ -47,6 +47,7 @@ from typing import Any
 
 from app.application.ports.weather import WeatherInfo
 from app.application.recommendations.indoor_climate import INDOOR_COLD
+from app.application.recommendations.warmth_rules import feels_like_c
 from app.common.enums import Category
 
 _COLD_C = 10.0
@@ -169,10 +170,11 @@ def build_reasoning(
                 confidence="high",
             ))
 
-    # 1. Weather — only claims that match the actual outfit + forecast.
-    if weather is not None:
+    # 1. Weather — only claims that match the actual outfit + forecast. Judged
+    # on feels-like, the same temperature the engine dressed for.
+    if weather is not None and (felt_c := feels_like_c(weather)) is not None:
         has_outer = Category.OUTERWEAR.value in cats
-        if weather.temperature_c < _COLD_C and has_outer:
+        if felt_c < _COLD_C and has_outer:
             # Rule: cold + outerwear present → warmth claim, cite the outerwear.
             reasons.append(_entry(
                 WEATHER,
@@ -181,7 +183,7 @@ def build_reasoning(
                 confidence="high",
                 referenced_item_ids=outerwear_ids,
             ))
-        elif weather.temperature_c >= _WARM_C:
+        elif felt_c >= _WARM_C:
             # Rule: warm day, whole-look claim — no specific item.
             reasons.append(_entry(
                 WEATHER,
@@ -189,7 +191,7 @@ def build_reasoning(
                 source="weather_rule",
                 confidence="high",
             ))
-        elif weather.temperature_c >= _COLD_C:
+        elif felt_c >= _COLD_C:
             # Heuristic: neutral temperature — moderate confidence.
             reasons.append(_entry(
                 WEATHER,

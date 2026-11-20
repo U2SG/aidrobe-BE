@@ -562,3 +562,128 @@ async def test_without_attributes_or_feedback_scores_are_unchanged() -> None:
     keys = {"out_of_season_penalty", "formality_feedback_penalty"}
     assert all(not keys & c.score_breakdown.keys() for c in result.candidates)
     assert all(r["type"] != "feedback" for outfit in result.outfits for r in outfit.reasoning)
+
+
+# ── Feels-like + common-sense warmth rules (warmth_rules.py) ────────────────
+
+
+def _felt(temperature_c: float, feels_like_c: float) -> WeatherInfo:
+    return WeatherInfo(
+        temperature_c=temperature_c, feels_like_c=feels_like_c, rain_probability=0.0, condition="多云"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sweater_never_pairs_with_shorts_even_without_profile_or_weather() -> None:
+    result = await RecommendationEngine().generate(
+        [
+            EngineItem("sw", "Chunky knit sweater", "top", "navy"),
+            EngineItem("sh", "Denim shorts", "bottom", "white"),
+            EngineItem("tr", "Grey trousers", "bottom", "grey"),
+            EngineItem("s1", "White sneakers", "shoes", "white"),
+        ]
+    )
+
+    assert all("sh" not in outfit.item_ids for outfit in result.outfits)
+    assert all("sh" not in candidate.item_ids for candidate in result.candidates)
+    assert result.warmth_exclusions[0].rule == "heavy_upper_with_short_bottom"
+    assert not result.warmth_rules_relaxed
+
+
+@pytest.mark.asyncio
+async def test_material_and_canonical_name_feed_the_rules() -> None:
+    result = await RecommendationEngine().generate(
+        [
+            EngineItem("knit", "米色上衣", "top", "beige", material="cashmere"),
+            EngineItem("sh", "下装", "bottom", "white", canonical_name="White shorts"),
+            EngineItem("tr", "下装", "bottom", "black"),
+            EngineItem("s1", "鞋", "shoes", "white"),
+        ]
+    )
+
+    assert all("sh" not in candidate.item_ids for candidate in result.candidates)
+
+
+@pytest.mark.asyncio
+async def test_cold_feels_like_swaps_sandals_for_boots_and_adds_the_coat() -> None:
+    # Air 14°C (not "cold"), but the wind makes it feel like 8°C.
+    result = await RecommendationEngine().generate(
+        [
+            EngineItem("tee", "Grey long-sleeve tee", "top", "grey"),
+            EngineItem("tr", "Black trousers", "bottom", "black"),
+            EngineItem("coat", "Camel wool coat", "outerwear", "beige"),
+            EngineItem("sandals", "Black sandals", "shoes", "black"),
+            EngineItem("boots", "Brown leather boots", "shoes", "brown"),
+        ],
+        weather=_felt(14, 8),
+    )
+
+    assert result.feels_like_c == 8
+    assert all("sandals" not in outfit.item_ids for outfit in result.outfits)
+    assert result.outfits[0].item_ids == ["tee", "tr", "coat", "boots"]
+    # The cold-start (no profile) branch now feels the weather term too.
+    no_coat = [c for c in result.candidates if "coat" not in c.item_ids]
+    assert no_coat and all(c.score_breakdown["weather_score"] < 0.8 for c in no_coat)
+
+
+@pytest.mark.asyncio
+async def test_hot_feels_like_attaches_the_light_layer_not_the_puffer() -> None:
+    result = await RecommendationEngine().generate(
+        [
+            EngineItem("tee", "White tee", "top", "white"),
+            EngineItem("ch", "Beige chinos", "bottom", "beige"),
+            EngineItem("puffer", "Black puffer jacket", "outerwear", "black"),
+            EngineItem("denim", "Light denim jacket", "outerwear", "blue"),
+            EngineItem("s1", "White sneakers", "shoes", "white"),
+        ],
+        weather=_felt(23, 28),
+    )
+
+    assert all("puffer" not in candidate.item_ids for candidate in result.candidates)
+    assert any("denim" in candidate.item_ids for candidate in result.candidates)
+
+
+@pytest.mark.asyncio
+async def test_thermal_offset_shifts_the_feels_like_the_rules_use() -> None:
+    items = [
+        EngineItem("tank", "Black tank top", "top", "black"),
+        EngineItem("tee", "Grey tee", "top", "grey"),
+        EngineItem("tr", "Black trousers", "bottom", "black"),
+        EngineItem("s1", "Black loafers", "shoes", "black"),
+    ]
+    plain = await RecommendationEngine().generate(items, weather=_felt(16, 15))
+    runs_cold = await RecommendationEngine().generate(items, weather=_felt(16, 15), thermal_offset_c=-6.0)
+
+    assert any("tank" in c.item_ids for c in plain.candidates)
+    assert runs_cold.feels_like_c == 9
+    assert all("tank" not in c.item_ids for c in runs_cold.candidates)
+
+
+@pytest.mark.asyncio
+async def test_rules_relax_instead_of_emptying_today() -> None:
+    # Every possible look breaks a rule (only shorts + a sweater, 5°C): keep Today.
+    result = await RecommendationEngine().generate(
+        [
+            EngineItem("sw", "毛衣", "top", "grey"),
+            EngineItem("sh", "短裤", "bottom", "black"),
+            EngineItem("s1", "Black sandals", "shoes", "black"),
+        ],
+        weather=_felt(6, 5),
+    )
+
+    assert result.status == "ready" and result.outfits
+    assert result.warmth_rules_relaxed
+    assert result.warmth_exclusions
+
+
+@pytest.mark.asyncio
+async def test_weather_reasons_on_feels_like_not_air_temperature() -> None:
+    items = [
+        EngineItem("tee", "Grey tee", "top", "grey"),
+        EngineItem("tr", "Black trousers", "bottom", "black"),
+        EngineItem("s1", "Black loafers", "shoes", "black"),
+    ]
+    result = await RecommendationEngine().generate(items, weather=_felt(12, 7))
+
+    # 12°C air would not count as cold; 7°C feels-like does.
+    assert result.outfits[0].score_breakdown["weather_score"] < 0.8

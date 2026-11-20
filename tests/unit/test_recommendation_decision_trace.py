@@ -9,6 +9,7 @@ from app.application.recommendations.decision_trace import (
     build_decision_trace_payload,
 )
 from app.application.recommendations.engine import EngineOutfit, EngineResult
+from app.application.recommendations.warmth_rules import WarmthExclusion
 from app.infrastructure.persistence.models.preference_memory import UserPreferenceMemory
 from app.infrastructure.persistence.models.wardrobe import WardrobeItem
 
@@ -136,3 +137,83 @@ def test_trace_payload_is_versioned_replayable_and_privacy_safe() -> None:
     assert "image_url" not in serialized
     assert "not persisted in trace" not in serialized
     assert "private closet name" not in serialized
+
+
+def test_trace_records_warmth_traits_exclusions_and_relaxation() -> None:
+    sweater = WardrobeItem(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        title="我的粗针毛衣",
+        category="top",
+        color_main="grey",
+        status="wearable",
+        fit_status="unknown",
+        wear_count=0,
+    )
+    shorts = WardrobeItem(
+        id=uuid.uuid4(),
+        user_id=sweater.user_id,
+        title="private title",
+        canonical_name="Denim shorts",
+        category="bottom",
+        color_main="blue",
+        status="wearable",
+        fit_status="unknown",
+        wear_count=0,
+    )
+    outfit = EngineOutfit(
+        outfit_type="safe",
+        title="safe",
+        reason_text="r",
+        item_ids=[str(sweater.id), str(shorts.id)],
+        score_total=0.5,
+        score_breakdown={},
+    )
+    result = EngineResult(
+        status="ready",
+        outfits=[outfit],
+        candidates=[outfit],
+        feels_like_c=6.0,
+        warmth_exclusions=[
+            WarmthExclusion((str(sweater.id), str(shorts.id)), "heavy_upper_with_short_bottom")
+        ],
+        warmth_rules_relaxed=True,
+    )
+
+    payload = build_decision_trace_payload(
+        target_date=date(2026, 12, 5),
+        captured_at=datetime(2026, 12, 5, 1, 2, tzinfo=UTC),
+        timezone_bucket="Asia/Shanghai",
+        weather=WeatherInfo(temperature_c=9, feels_like_c=6, rain_probability=0.0, condition="windy"),
+        weather_resolved_at=None,
+        commute_exposure=None,
+        indoor_climate=None,
+        normalized_constraints=[],
+        wardrobe_items=[sweater, shorts],
+        memory_items=[],
+        engine_result=result,
+        recent_worn_main_item_ids=set(),
+        recent_outfit_item_ids=[],
+        style_profile={},
+        fit_profile={},
+        disliked_colors=set(),
+        relationship_edges=[],
+        suppressed_outfit_item_ids=[],
+        avoid_exact_repeats=False,
+        persisted_rules_version=None,
+        llm_provider=None,
+        llm_model=None,
+        deterministic_seed=None,
+    )
+
+    items = payload["wardrobe"]["items"]
+    assert [item["warmth_traits"] for item in items] == [["heavy_upper"], ["short_bottom", "summer_only"]]
+    assert payload["candidate_trace"]["warmth_rules"] == {
+        "feels_like_c": 6.0,
+        "excluded_combos": [
+            {"item_ids": [str(sweater.id), str(shorts.id)], "rule": "heavy_upper_with_short_bottom"}
+        ],
+        "relaxed": True,
+    }
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "毛衣" not in serialized and "private title" not in serialized
